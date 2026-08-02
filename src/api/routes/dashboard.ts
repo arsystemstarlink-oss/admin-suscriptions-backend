@@ -1,0 +1,163 @@
+import { Router, Request, Response, NextFunction } from 'express';
+import {
+  clientRepository,
+  planRepository,
+  subscriptionRepository,
+  billingPeriodRepository,
+} from '../../infrastructure/repositories';
+
+const router = Router();
+
+router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const [clients, plans, subscriptions, periods] = await Promise.all([
+      clientRepository.list(),
+      planRepository.list(),
+      subscriptionRepository.list(),
+      billingPeriodRepository.list(),
+    ]);
+
+    const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
+    const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
+
+    const paidPeriods = periods.filter((p) => p.status === 'PAID');
+    const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
+    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    const currentMonthPeriods = paidPeriods.filter((p) => {
+      const paidDate = p.paidAt;
+      return paidDate && paidDate.getMonth() === currentMonth && paidDate.getFullYear() === currentYear;
+    });
+
+    const monthlyIncome = currentMonthPeriods.reduce((sum, p) => sum + p.amount, 0);
+    const totalIncome = paidPeriods.reduce((sum, p) => sum + p.amount, 0);
+    const totalPending = pendingPeriods.reduce((sum, p) => sum + p.amount, 0);
+    const totalOverdue = overduePeriods.reduce((sum, p) => sum + p.amount, 0);
+
+    res.json({
+      clients: {
+        total: clients.length,
+      },
+      plans: {
+        total: plans.length,
+        active: plans.filter((p) => p.active).length,
+      },
+      subscriptions: {
+        total: subscriptions.length,
+        active: activeSubscriptions.length,
+        suspended: suspendedSubscriptions.length,
+      },
+      billingPeriods: {
+        total: periods.length,
+        paid: paidPeriods.length,
+        pending: pendingPeriods.length,
+        overdue: overduePeriods.length,
+      },
+      financial: {
+        monthlyIncome,
+        totalIncome,
+        totalPending,
+        totalOverdue,
+        totalDebt: totalPending + totalOverdue,
+      },
+      generatedAt: now,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const [subscriptions, periods, clients] = await Promise.all([
+      subscriptionRepository.list(),
+      billingPeriodRepository.list(),
+      clientRepository.list(),
+    ]);
+
+    const now = new Date();
+    const in3Days = new Date(now);
+    in3Days.setDate(in3Days.getDate() + 3);
+    const in7Days = new Date(now);
+    in7Days.setDate(in7Days.getDate() + 7);
+
+    const expiringSoon = periods.filter(
+      (p) =>
+        p.status === 'PENDING' &&
+        p.endDate > now &&
+        p.endDate <= in3Days
+    );
+
+    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+
+    const topDebtorsMap = new Map<string, { clientId: string; totalDebt: number; overdueCount: number }>();
+    for (const period of overduePeriods) {
+      const sub = subscriptions.find((s) => s.id === period.subscriptionId);
+      if (!sub) continue;
+      const existing = topDebtorsMap.get(sub.clientId) || { clientId: sub.clientId, totalDebt: 0, overdueCount: 0 };
+      existing.totalDebt += period.amount;
+      existing.overdueCount += 1;
+      topDebtorsMap.set(sub.clientId, existing);
+    }
+
+    const topDebtors = Array.from(topDebtorsMap.values())
+      .sort((a, b) => b.totalDebt - a.totalDebt)
+      .slice(0, 5)
+      .map((debtor) => {
+        const client = clients.find((c) => c.id === debtor.clientId);
+        return {
+          clientId: debtor.clientId,
+          clientName: client?.name || 'Desconocido',
+          clientPhone: client?.phone || '',
+          totalDebt: debtor.totalDebt,
+          overdueCount: debtor.overdueCount,
+        };
+      });
+
+    const suspendedCount = subscriptions.filter((s) => s.status === 'SUSPENDED').length;
+
+    const expiringSoonEnriched = await Promise.all(
+      expiringSoon.map(async (period) => {
+        const sub = subscriptions.find((s) => s.id === period.subscriptionId);
+        const client = sub ? await clientRepository.getById(sub.clientId) : null;
+        return {
+          periodId: period.id,
+          periodLabel: period.periodLabel,
+          amount: period.amount,
+          endDate: period.endDate,
+          subscriptionId: sub?.id,
+          kitNumber: sub?.kitNumber,
+          clientName: client?.name,
+          clientPhone: client?.phone,
+        };
+      })
+    );
+
+    res.json({
+      generatedAt: now,
+      expiringSoon: {
+        count: expiringSoonEnriched.length,
+        description: `Períodos que vencen en los próximos 3 días`,
+        items: expiringSoonEnriched,
+      },
+      overdue: {
+        totalOverduePeriods: overduePeriods.length,
+        totalOverdueAmount: overduePeriods.reduce((sum, p) => sum + p.amount, 0),
+        suspendedSubscriptions: suspendedCount,
+      },
+      topDebtors: {
+        count: topDebtors.length,
+        description: 'Top 5 clientes con mayor deuda',
+        items: topDebtors,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;
