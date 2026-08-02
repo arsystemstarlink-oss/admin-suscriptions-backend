@@ -66,6 +66,23 @@ interface BillingPeriod {
   paidAt?: string; paymentMethod?: PaymentMethod; notes?: string;
   createdAt: string;
 }
+
+type MessageDirection = 'INBOUND' | 'OUTBOUND';
+type MessageStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+
+interface WhatsAppMessage {
+  id: string;
+  clientId?: string;
+  phone: string;
+  direction: MessageDirection;
+  messageSid: string;
+  body: string;
+  templateName?: string;
+  status: MessageStatus;
+  errorMessage?: string;
+  profileName?: string;
+  createdAt: string;
+}
 ```
 
 ### Tipos Enriquecidos (respuestas de GET)
@@ -386,6 +403,52 @@ interface DebtorItem {
 // Ejecuta el Daily Job inmediatamente (independiente del estado enabled)
 // Response 200
 { message: string }
+```
+
+---
+
+### WhatsApp
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| POST | /api/whatsapp/send | Enviar mensaje (texto o template) |
+| GET | /api/whatsapp/messages/:phone | Historial de mensajes por teléfono |
+| POST | /communications/webhook | Webhook para recibir mensajes de Twilio |
+
+**POST /api/whatsapp/send**
+```typescript
+// Request (mensaje de texto libre - solo dentro de ventana de 24h)
+{ to: string; body: string }
+
+// Request (template aprobado - fuera de ventana de 24h)
+{ 
+  to: string; 
+  templateName: string;
+  variables?: Record<string, string> // Variables posicionales: {"1": "valor", "2": "valor"}
+}
+
+// Response 201
+{
+  success: boolean;
+  messageSid: string;
+  message: string;
+}
+```
+
+**GET /api/whatsapp/messages/:phone**
+```typescript
+// Response 200
+{
+  messages: WhatsAppMessage[];
+  total: number;
+}
+```
+
+**POST /communications/webhook** (interno - Twilio)
+```typescript
+// Webhook configurado en Twilio Console
+// No requiere autenticación (Twilio firma las requests)
+// Guarda mensajes entrantes en Firestore
 ```
 
 ---
