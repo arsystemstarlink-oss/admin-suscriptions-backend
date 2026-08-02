@@ -88,7 +88,6 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
         throw new BusinessError('INVALID_WEBHOOK', 'Firma de Twilio inválida.');
       }
     }
-    }
 
     const parsed = whatsappService.parseIncomingMessage(req.body);
 
