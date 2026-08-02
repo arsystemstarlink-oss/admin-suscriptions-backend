@@ -7,6 +7,18 @@ let initialized = false;
 export function initializeFirebase(): void {
   if (initialized) return;
 
+  const credJson = process.env.FIREBASE_CREDENTIALS;
+
+  if (credJson) {
+    const serviceAccount = JSON.parse(credJson);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log('[Firebase] Inicializado con credenciales desde variable de entorno.');
+    initialized = true;
+    return;
+  }
+
   const credPath = process.env.FIREBASE_CREDENTIALS_PATH;
 
   if (credPath && fs.existsSync(credPath)) {
