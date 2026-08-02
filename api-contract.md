@@ -521,6 +521,55 @@ GET /billing-periods?subscriptionId=xxx
 - Mostrar indicador visual "Datos pendientes"
 - Editar con `PUT /billing-periods/:id`
 
+### 7. Enviar mensaje de WhatsApp desde perfil de cliente
+
+**Opción A: Mensaje libre (solo si cliente escribió en últimas 24h)**
+```
+POST /api/whatsapp/send
+{ to: "+584123456789", body: "Hola, tu pago fue recibido correctamente" }
+```
+- Solo funciona si el cliente inició la conversación en las últimas 24 horas
+- Si falla, usar template
+
+**Opción B: Template aprobado (siempre funciona)**
+```
+POST /api/whatsapp/send
+{ 
+  to: "+584123456789",
+  templateName: "subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b",
+  variables: { "1": "Juan Pérez", "2": "2026-02-29" }
+}
+```
+- Funciona en cualquier momento
+- Usar cuando el cliente no ha escrito recientemente
+
+**Ver historial de conversación:**
+```
+GET /api/whatsapp/messages/+584123456789
+```
+- Mostrar en perfil del cliente
+- Ordenado por fecha (más reciente primero)
+- Diferenciar visualmente mensajes entrantes vs salientes
+
+### 8. Templates de WhatsApp disponibles
+
+**Template 1: Recordatorio de pago (3 días antes)**
+- **Nombre:** `subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b`
+- **Variables:**
+  - `{1}` = Nombre del cliente (string)
+  - `{2}` = Fecha de vencimiento (YYYY-MM-DD)
+- **Uso:** Enviar 3 días antes del vencimiento del período
+
+**Template 2: Advertencia de suspensión**
+- **Nombre:** `subscription_suspension_warning_1day_2v_hxfcc8ae438db9df662a0e1f7d801e946b`
+- **Variables:**
+  - `{1}` = Nombre del cliente (string)
+  - `{2}` = Número de KIT (string)
+  - `{3}` = Fecha de vencimiento (YYYY-MM-DD)
+- **Uso:** Enviar cuando la suscripción está por vencer o vencida
+
+**Nota:** El scheduler envía estos templates automáticamente. El frontend solo necesita mostrar el historial.
+
 ---
 
 ## Reglas Rapidas

@@ -65,18 +65,29 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
 
 router.post('/webhook', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    console.log('[WhatsApp Webhook] Request received');
+    console.log('[WhatsApp Webhook] Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('[WhatsApp Webhook] Body:', req.body);
+    console.log('[WhatsApp Webhook] BASE_URL:', process.env.BASE_URL);
+
     const shouldValidate = process.env.TWILIO_WEBHOOK_VALIDATION === 'true';
 
     if (shouldValidate) {
+      const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/communications/webhook`;
+      console.log('[WhatsApp Webhook] Validating with URL:', webhookUrl);
+      
       const isValid = whatsappService.validateWebhook(
         req.headers,
         req.body,
-        `${process.env.BASE_URL || 'http://localhost:3000'}/communications/webhook`
+        webhookUrl
       );
+
+      console.log('[WhatsApp Webhook] Validation result:', isValid);
 
       if (!isValid) {
         throw new BusinessError('INVALID_WEBHOOK', 'Firma de Twilio inválida.');
       }
+    }
     }
 
     const parsed = whatsappService.parseIncomingMessage(req.body);
