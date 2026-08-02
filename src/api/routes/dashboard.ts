@@ -80,8 +80,8 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     ]);
 
     const now = new Date();
-    const in3Days = new Date(now);
-    in3Days.setDate(in3Days.getDate() + 3);
+    const in7Days = new Date(now);
+    in7Days.setDate(in7Days.getDate() + 7);
 
     const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
     const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
@@ -91,9 +91,9 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     const expiringSoon = periods.filter(
       (p) =>
         activeSubIds.has(p.subscriptionId) &&
-        p.status === 'PENDING' &&
+        (p.status === 'PENDING' || p.status === 'PAID') &&
         p.endDate > now &&
-        p.endDate <= in3Days
+        p.endDate <= in7Days
     );
 
     const overdueDebt = periods.filter(
@@ -150,7 +150,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       generatedAt: now,
       expiringSoon: {
         count: expiringSoonEnriched.length,
-        description: 'Suscripciones ACTIVAS con período por vencer en los próximos 3 días',
+        description: 'Suscripciones ACTIVAS con período por vencer en los próximos 7 días',
         items: expiringSoonEnriched,
       },
       overdueDebt: {

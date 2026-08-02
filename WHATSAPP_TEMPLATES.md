@@ -26,7 +26,7 @@ A|R System
 ```
 
 **Cuando se envia:**
-- Suscripcion `ACTIVE` + periodo `PENDING` + exactamente 3 dias antes del vencimiento
+- Suscripcion `ACTIVE` + periodo `PENDING` o `PAID` + exactamente 3 dias antes del vencimiento
 - Tipo de notificacion: `reminder`
 
 ---
@@ -92,8 +92,9 @@ A|R System
 
 | Condicion | Tipo | Template | Variables |
 |---|---|---|---|
-| `ACTIVE` + `PENDING` + 3 dias exactos | `reminder` | `PAYMENT_REMINDER` | `{1}` nombre, `{2}` fecha |
-| `ACTIVE` + `PENDING` + 0 dias (hoy) | `suspension-warning` | `SUSPENSION_WARNING` | `{1}` nombre, `{2}` kit, `{3}` fecha |
+| `ACTIVE` + `PENDING`/`PAID` + ≤7 días | — | Dashboard `expiringSoon` | `{1}` nombre, `{2}` fecha |
+| `ACTIVE` + `PENDING`/`PAID` + 3 dias exactos | `reminder` | `PAYMENT_REMINDER` | `{1}` nombre, `{2}` fecha |
+| `ACTIVE` + `PENDING`/`PAID` + 0 dias (hoy) | `suspension-warning` | `SUSPENSION_WARNING` | `{1}` nombre, `{2}` kit, `{3}` fecha |
 | Cambio a `SUSPENDED` | `suspended-notice` | `SUSPENDED_NOTICE` | `{1}` nombre, `{2}` kit |
 | `SUSPENDED` (sin cambio) | — | Silencio | — |
 
