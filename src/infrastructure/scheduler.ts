@@ -80,19 +80,28 @@ export async function runDailyJob(): Promise<void> {
         
         const client = clients.find(c => c.id === subscription.clientId);
         if (client) {
-          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension');
+          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice');
           notificationCount++;
         }
       }
     }
 
-    if (currentPeriod.status === 'PENDING') {
-      const daysUntilDue = Math.ceil((currentPeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-      if (daysUntilDue <= 3 && daysUntilDue >= 0) {
+    const finalSubscription = updatedSubscription.status !== subscription.status 
+      ? updatedSubscription 
+      : subscription;
+
+    if (finalSubscription.status === 'ACTIVE') {
+      if (currentPeriod.status === 'PENDING') {
+        const daysUntilDue = Math.ceil((currentPeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
         const client = clients.find(c => c.id === subscription.clientId);
         if (client) {
-          await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder');
-          notificationCount++;
+          if (daysUntilDue === 3) {
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder');
+            notificationCount++;
+          } else if (daysUntilDue === 0) {
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning');
+            notificationCount++;
+          }
         }
       }
     }
@@ -109,11 +118,15 @@ async function sendWhatsAppNotification(
   client: { id: string; name: string; phone: string },
   subscription: { kitNumber: string },
   period: { endDate: Date },
-  type: 'reminder' | 'suspension'
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice'
 ): Promise<void> {
-  const templateName = type === 'reminder' 
-    ? process.env.TWILIO_TEMPLATE_PAYMENT_REMINDER 
-    : process.env.TWILIO_TEMPLATE_SUSPENSION_WARNING;
+  const templateMap: Record<string, string | undefined> = {
+    'reminder': process.env.TWILIO_TEMPLATE_PAYMENT_REMINDER,
+    'suspension-warning': process.env.TWILIO_TEMPLATE_SUSPENSION_WARNING,
+    'suspended-notice': process.env.TWILIO_TEMPLATE_SUSPENDED_NOTICE,
+  };
+
+  const templateName = templateMap[type];
 
   if (!templateName) {
     console.log(`[WhatsApp] Template no configurado para ${type}. Skipping.`);
@@ -123,16 +136,21 @@ async function sendWhatsAppNotification(
   const endDateStr = period.endDate.toISOString().split('T')[0];
   
   let variables: Record<string, string>;
-  if (type === 'reminder') {
+  if (type === 'suspended-notice') {
     variables = {
       '1': client.name,
-      '2': endDateStr,
+      '2': subscription.kitNumber,
     };
-  } else {
+  } else if (type === 'suspension-warning') {
     variables = {
       '1': client.name,
       '2': subscription.kitNumber,
       '3': endDateStr,
+    };
+  } else {
+    variables = {
+      '1': client.name,
+      '2': endDateStr,
     };
   }
 

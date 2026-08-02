@@ -122,12 +122,6 @@ Revisar logs para confirmar que el scheduler está activo:
 [Scheduler] Daily Job programado con cron: 0 0 * * *
 ```
 
-### 5. Ejecutar Daily Job manualmente (opcional)
-```bash
-curl -X POST http://localhost:3000/api/billing-periods/evaluate-overdue \
-  -H "Authorization: Bearer YOUR_JWT_TOKEN"
-```
-
 ## Configuración de Firewall
 
 Asegurar que el puerto configurado (default: 3000) está abierto:

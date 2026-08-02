@@ -82,20 +82,28 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     const now = new Date();
     const in3Days = new Date(now);
     in3Days.setDate(in3Days.getDate() + 3);
-    const in7Days = new Date(now);
-    in7Days.setDate(in7Days.getDate() + 7);
+
+    const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
+    const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
+
+    const activeSubIds = new Set(activeSubscriptions.map((s) => s.id));
 
     const expiringSoon = periods.filter(
       (p) =>
+        activeSubIds.has(p.subscriptionId) &&
         p.status === 'PENDING' &&
         p.endDate > now &&
         p.endDate <= in3Days
     );
 
-    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+    const overdueDebt = periods.filter(
+      (p) =>
+        activeSubIds.has(p.subscriptionId) &&
+        p.status === 'OVERDUE'
+    );
 
     const topDebtorsMap = new Map<string, { clientId: string; totalDebt: number; overdueCount: number }>();
-    for (const period of overduePeriods) {
+    for (const period of overdueDebt) {
       const sub = subscriptions.find((s) => s.id === period.subscriptionId);
       if (!sub) continue;
       const existing = topDebtorsMap.get(sub.clientId) || { clientId: sub.clientId, totalDebt: 0, overdueCount: 0 };
@@ -118,40 +126,46 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         };
       });
 
-    const suspendedCount = subscriptions.filter((s) => s.status === 'SUSPENDED').length;
+    const enrichPeriod = async (period: (typeof periods)[number]) => {
+      const sub = subscriptions.find((s) => s.id === period.subscriptionId);
+      const client = sub ? clients.find((c) => c.id === sub.clientId) : null;
+      return {
+        periodId: period.id,
+        periodLabel: period.periodLabel,
+        amount: period.amount,
+        endDate: period.endDate,
+        subscriptionId: sub?.id,
+        kitNumber: sub?.kitNumber,
+        clientName: client?.name,
+        clientPhone: client?.phone,
+      };
+    };
 
-    const expiringSoonEnriched = await Promise.all(
-      expiringSoon.map(async (period) => {
-        const sub = subscriptions.find((s) => s.id === period.subscriptionId);
-        const client = sub ? await clientRepository.getById(sub.clientId) : null;
-        return {
-          periodId: period.id,
-          periodLabel: period.periodLabel,
-          amount: period.amount,
-          endDate: period.endDate,
-          subscriptionId: sub?.id,
-          kitNumber: sub?.kitNumber,
-          clientName: client?.name,
-          clientPhone: client?.phone,
-        };
-      })
-    );
+    const [expiringSoonEnriched, overdueDebtEnriched] = await Promise.all([
+      Promise.all(expiringSoon.map(enrichPeriod)),
+      Promise.all(overdueDebt.map(enrichPeriod)),
+    ]);
 
     res.json({
       generatedAt: now,
       expiringSoon: {
         count: expiringSoonEnriched.length,
-        description: `Períodos que vencen en los próximos 3 días`,
+        description: 'Suscripciones ACTIVAS con período por vencer en los próximos 3 días',
         items: expiringSoonEnriched,
       },
-      overdue: {
-        totalOverduePeriods: overduePeriods.length,
-        totalOverdueAmount: overduePeriods.reduce((sum, p) => sum + p.amount, 0),
-        suspendedSubscriptions: suspendedCount,
+      overdueDebt: {
+        count: overdueDebtEnriched.length,
+        description: 'Suscripciones ACTIVAS con períodos vencidos (adeudados)',
+        totalAmount: overdueDebt.reduce((sum, p) => sum + p.amount, 0),
+        items: overdueDebtEnriched,
+      },
+      suspended: {
+        count: suspendedSubscriptions.length,
+        description: 'Suscripciones suspendidas (sin notificaciones)',
       },
       topDebtors: {
         count: topDebtors.length,
-        description: 'Top 5 clientes con mayor deuda',
+        description: 'Top 5 clientes con mayor deuda (solo suscripciones ACTIVAS)',
         items: topDebtors,
       },
     });

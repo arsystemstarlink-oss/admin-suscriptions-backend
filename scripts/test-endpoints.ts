@@ -159,15 +159,6 @@ async function testUpdateSubscription(subscriptionId: string, newPlanId: string)
   return updated;
 }
 
-async function testEvaluateOverdue() {
-  log('9. EVALUAR VENCIMIENTOS');
-
-  const result = await request('POST', '/billing-periods/evaluate-overdue');
-  logOk(result.message);
-  logOk(`Evaluado en: ${result.evaluatedAt}`);
-  return result;
-}
-
 async function testListClients() {
   log('10. LISTAR CLIENTES');
 
@@ -267,10 +258,6 @@ async function runAllTests() {
 
     log('8. CAMBIAR PLAN DE SUSCRIPCIÓN');
     await testUpdateSubscription(subscriptionData.subscription.id, plan.id);
-    passed++;
-
-    log('9. EVALUAR VENCIMIENTOS');
-    await testEvaluateOverdue();
     passed++;
 
     log('10. LISTAR CLIENTES');

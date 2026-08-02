@@ -321,7 +321,6 @@ interface DebtorItem {
 | PUT | /billing-periods/:id | Editar datos de pago |
 | POST | /billing-periods/:id/pay | Registrar pago |
 | POST | /billing-periods/generate-next/:subscriptionId | Generar siguiente periodo |
-| POST | /billing-periods/evaluate-overdue | Evaluar vencimientos |
 
 **GET /billing-periods**
 ```typescript
@@ -354,12 +353,6 @@ interface DebtorItem {
 ```
 
 **POST /billing-periods/generate-next/:subscriptionId** → Response 201 → `BillingPeriod`
-
-**POST /billing-periods/evaluate-overdue**
-```typescript
-// Response 200
-{ message: string; evaluatedAt: string }
-```
 
 ---
 

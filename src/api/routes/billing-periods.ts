@@ -286,44 +286,4 @@ router.post('/generate-next/:subscriptionId', async (req: Request, res: Response
   }
 });
 
-router.post('/evaluate-overdue', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const now = new Date();
-    const allPeriods = await billingPeriodRepository.list();
-
-    const updatedPeriods = businessService.markPendingPeriodsOverdue(allPeriods, now);
-    
-    for (const period of updatedPeriods) {
-      const original = allPeriods.find((p) => p.id === period.id);
-      if (original && original.status !== period.status) {
-        await billingPeriodRepository.update(period);
-      }
-    }
-
-    const subscriptions = await subscriptionRepository.list();
-    
-    for (const subscription of subscriptions) {
-      const subscriptionPeriods = updatedPeriods.filter(
-        (p) => p.subscriptionId === subscription.id
-      );
-
-      const updatedSubscription = businessService.evaluateSubscriptionStatus(
-        subscription,
-        subscriptionPeriods
-      );
-
-      if (updatedSubscription.status !== subscription.status) {
-        await subscriptionRepository.update(updatedSubscription);
-      }
-    }
-
-    res.json({
-      message: 'Evaluación completada.',
-      evaluatedAt: now,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
 export default router;

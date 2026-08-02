@@ -109,7 +109,6 @@ Construir un backend limpio y sólido para el sistema de gestión de suscripcion
 
 **Implementación**: Scheduler con node-cron en `src/infrastructure/scheduler.ts`
 - Ejecución automática según configuración `CRON_SCHEDULE` en `.env`
-- Endpoint manual disponible: `POST /api/billing-periods/evaluate-overdue`
 
 ## Fase 4: Pagos y reactivación
 
