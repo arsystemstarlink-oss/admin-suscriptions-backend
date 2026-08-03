@@ -47,17 +47,13 @@ export class WhatsAppService {
   }
 
   async sendTemplate(message: WhatsAppTemplateMessage): Promise<string> {
-    const variablesArray = message.variables
-      ? Object.entries(message.variables)
-          .sort(([a], [b]) => Number(a) - Number(b))
-          .map(([, value]) => value)
-      : [];
+    const contentVariables = message.variables || {};
 
     const sentMessage = await this.getClient().messages.create({
       from: this.getFromNumber(),
       to: `whatsapp:${message.to}`,
       contentSid: message.templateName,
-      contentVariables: JSON.stringify(variablesArray),
+      contentVariables: JSON.stringify(contentVariables),
     });
 
     return sentMessage.sid;
