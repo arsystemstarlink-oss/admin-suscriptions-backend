@@ -33,7 +33,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     let activationDate: Date | undefined;
     if (dto.activationDate) {
-      activationDate = new Date(dto.activationDate);
+      activationDate = parseDateOnly(dto.activationDate);
       if (isNaN(activationDate.getTime())) {
         throw new BusinessError('INVALID_ACTIVATION_DATE', 'Fecha de activación inválida.');
       }
@@ -53,8 +53,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       }
       return {
         periodLabel: p.periodLabel,
-        startDate: new Date(p.startDate),
-        endDate: new Date(p.endDate),
+        startDate: parseDateOnly(p.startDate),
+        endDate: parseDateOnly(p.endDate),
         amount: p.amount,
         paidAt: parseDateOnly(p.paidAt),
         paymentMethod: p.paymentMethod,
