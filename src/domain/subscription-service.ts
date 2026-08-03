@@ -184,7 +184,7 @@ export class SubscriptionBusinessService {
     const nextMonth = activationDate.getMonth() + 1;
     const nextMonthYear = nextMonth > 11 ? activationDate.getFullYear() + 1 : activationDate.getFullYear();
     const nextMonthNormalized = nextMonth > 11 ? 0 : nextMonth;
-    const firstPeriodEnd = new Date(nextMonthYear, nextMonthNormalized, billingDay, 12, 0, 0, 0);
+    const firstPeriodEnd = new Date(nextMonthYear, nextMonthNormalized, billingDay);
 
     let periodStart = new Date(activationDate);
     let isFirstPeriod = true;

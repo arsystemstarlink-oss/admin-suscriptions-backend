@@ -118,14 +118,14 @@ describe('SubscriptionBusinessService', () => {
   describe('createSubscription (retroactiva)', () => {
     it('debería crear suscripción retroactiva con períodos históricos pagados', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
-      const activationDate = new Date(2026, 4, 5, 12);
+      const activationDate = new Date(2026, 4, 5);
       const historicalPayments: HistoricalPaymentInput[] = [
         {
           periodLabel: 'Mayo - Junio',
-          startDate: new Date(2026, 4, 5, 12),
-          endDate: new Date(2026, 5, 6, 12),
+          startDate: new Date(2026, 4, 5),
+          endDate: new Date(2026, 5, 6),
           amount: testPlan.price,
           paidAt: new Date(2026, 5, 5, 10, 30),
           paymentMethod: 'CASH',
@@ -133,8 +133,8 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           periodLabel: 'Junio - Julio',
-          startDate: new Date(2026, 5, 6, 12),
-          endDate: new Date(2026, 6, 6, 12),
+          startDate: new Date(2026, 5, 6),
+          endDate: new Date(2026, 6, 6),
           amount: testPlan.price,
           paidAt: new Date(2026, 6, 4, 15, 20),
           paymentMethod: 'TRANSFER',
@@ -158,17 +158,17 @@ describe('SubscriptionBusinessService', () => {
 
       expect(result.billingPeriods[0].status).toBe('PAID');
       expect(result.billingPeriods[0].paymentMethod).toBe('CASH');
-      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 4, 5, 12));
-      expect(result.billingPeriods[0].endDate).toEqual(new Date(2026, 5, 6, 12));
+      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 4, 5));
+      expect(result.billingPeriods[0].endDate).toEqual(new Date(2026, 5, 6));
 
       expect(result.billingPeriods[1].status).toBe('PAID');
       expect(result.billingPeriods[1].paymentMethod).toBe('TRANSFER');
-      expect(result.billingPeriods[1].startDate).toEqual(new Date(2026, 5, 6, 12));
-      expect(result.billingPeriods[1].endDate).toEqual(new Date(2026, 6, 6, 12));
+      expect(result.billingPeriods[1].startDate).toEqual(new Date(2026, 5, 6));
+      expect(result.billingPeriods[1].endDate).toEqual(new Date(2026, 6, 6));
 
       expect(result.billingPeriods[2].status).toBe('PENDING');
-      expect(result.billingPeriods[2].startDate).toEqual(new Date(2026, 6, 6, 12));
-      expect(result.billingPeriods[2].endDate).toEqual(new Date(2026, 7, 6, 12));
+      expect(result.billingPeriods[2].startDate).toEqual(new Date(2026, 6, 6));
+      expect(result.billingPeriods[2].endDate).toEqual(new Date(2026, 7, 6));
 
       expect(result.summary.totalPeriods).toBe(3);
       expect(result.summary.paidPeriods).toBe(2);
@@ -182,9 +182,9 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería crear suscripción retroactiva sin pagos históricos (todos OVERDUE)', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
-      const activationDate = new Date(2026, 4, 5, 12);
+      const activationDate = new Date(2026, 4, 5);
 
       const result = service.createSubscription({
         clientId: testClient.id,
@@ -210,7 +210,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar fecha de activación futura', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -220,7 +220,7 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 11, 31, 12),
+          activationDate: new Date(2026, 11, 31),
           historicalPayments: [],
         });
       }).toThrow('La fecha de activación no puede ser futura.');
@@ -230,7 +230,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar pagos con fecha futura', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -240,14 +240,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5, 12),
-              endDate: new Date(2026, 5, 6, 12),
+              startDate: new Date(2026, 4, 5),
+              endDate: new Date(2026, 5, 6),
               amount: testPlan.price,
-              paidAt: new Date(2027, 0, 1, 12),
+              paidAt: new Date(2027, 0, 1),
               paymentMethod: 'CASH',
             },
           ],
@@ -259,7 +259,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar períodos que inician antes de la activación', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -269,14 +269,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Abril - Mayo',
-              startDate: new Date(2026, 3, 1, 12),
-              endDate: new Date(2026, 4, 6, 12),
+              startDate: new Date(2026, 3, 1),
+              endDate: new Date(2026, 4, 6),
               amount: testPlan.price,
-              paidAt: new Date(2026, 4, 1, 12),
+              paidAt: new Date(2026, 4, 1),
               paymentMethod: 'CASH',
             },
           ],
@@ -288,7 +288,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar períodos con rango inválido (endDate <= startDate)', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -298,14 +298,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Invalid',
-              startDate: new Date(2026, 5, 6, 12),
-              endDate: new Date(2026, 4, 5, 12),
+              startDate: new Date(2026, 5, 6),
+              endDate: new Date(2026, 4, 5),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1, 12),
+              paidAt: new Date(2026, 5, 1),
               paymentMethod: 'CASH',
             },
           ],
@@ -317,7 +317,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar monto diferente al precio del plan', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -327,14 +327,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5, 12),
-              endDate: new Date(2026, 5, 6, 12),
+              startDate: new Date(2026, 4, 5),
+              endDate: new Date(2026, 5, 6),
               amount: 30,
-              paidAt: new Date(2026, 5, 1, 12),
+              paidAt: new Date(2026, 5, 1),
               paymentMethod: 'CASH',
             },
           ],
@@ -346,7 +346,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar INITIAL_PAYMENT en pagos históricos', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -356,14 +356,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5, 12),
-              endDate: new Date(2026, 5, 6, 12),
+              startDate: new Date(2026, 4, 5),
+              endDate: new Date(2026, 5, 6),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1, 12),
+              paidAt: new Date(2026, 5, 1),
               paymentMethod: 'INITIAL_PAYMENT',
             },
           ],
@@ -375,7 +375,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería rechazar períodos históricos superpuestos', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       expect(() => {
         service.createSubscription({
@@ -385,22 +385,22 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5, 12),
+          activationDate: new Date(2026, 4, 5),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5, 12),
-              endDate: new Date(2026, 5, 10, 12),
+              startDate: new Date(2026, 4, 5),
+              endDate: new Date(2026, 5, 10),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1, 12),
+              paidAt: new Date(2026, 5, 1),
               paymentMethod: 'CASH',
             },
             {
               periodLabel: 'Junio - Julio',
-              startDate: new Date(2026, 5, 6, 12),
-              endDate: new Date(2026, 6, 6, 12),
+              startDate: new Date(2026, 5, 6),
+              endDate: new Date(2026, 6, 6),
               amount: testPlan.price,
-              paidAt: new Date(2026, 6, 1, 12),
+              paidAt: new Date(2026, 6, 1),
               paymentMethod: 'CASH',
             },
           ],
@@ -412,7 +412,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería permitir activationDate igual a hoy', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       const result = service.createSubscription({
         clientId: testClient.id,
@@ -421,19 +421,19 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 2,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 6, 30, 12),
+        activationDate: new Date(2026, 6, 30),
       });
 
       expect(result.billingPeriods.length).toBe(1);
       expect(result.billingPeriods[0].status).toBe('PENDING');
-      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 6, 30, 12));
+      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 6, 30));
 
       jest.useRealTimers();
     });
 
     it('debería crear suscripción SUSPENDED cuando hay suficientes períodos OVERDUE', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       const result = service.createSubscription({
         clientId: testClient.id,
@@ -442,7 +442,7 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 2,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 4, 5, 12),
+        activationDate: new Date(2026, 4, 5),
       });
 
       expect(result.subscription.status).toBe('SUSPENDED');
@@ -456,7 +456,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería crear suscripción ACTIVE cuando no hay suficientes períodos OVERDUE', () => {
       jest.useFakeTimers();
-      jest.setSystemTime(new Date(2026, 6, 30, 12));
+      jest.setSystemTime(new Date(2026, 6, 30));
 
       const result = service.createSubscription({
         clientId: testClient.id,
@@ -465,7 +465,7 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 3,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 4, 5, 12),
+        activationDate: new Date(2026, 4, 5),
       });
 
       expect(result.subscription.status).toBe('ACTIVE');

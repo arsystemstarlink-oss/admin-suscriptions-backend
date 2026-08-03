@@ -92,7 +92,9 @@ export async function runDailyJob(): Promise<void> {
 
     if (finalSubscription.status === 'ACTIVE') {
       if (currentPeriod.status === 'PENDING' || currentPeriod.status === 'PAID') {
-        const daysUntilDue = Math.ceil((currentPeriod.endDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const endDateNormalized = new Date(currentPeriod.endDate.getFullYear(), currentPeriod.endDate.getMonth(), currentPeriod.endDate.getDate());
+        const nowNormalized = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
         const client = clients.find(c => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
