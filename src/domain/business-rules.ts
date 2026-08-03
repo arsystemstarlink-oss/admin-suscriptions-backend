@@ -55,7 +55,7 @@ export function getBillingPeriodRange(referenceDate: Date, billingDay: number) {
     }
   }
 
-  const startDate = new Date(startYear, startMonth, billingDay, 0, 0, 0, 0);
+  const startDate = new Date(startYear, startMonth, billingDay, 12, 0, 0, 0);
   const endDate = new Date(startDate);
   endDate.setMonth(endDate.getMonth() + 1);
 
@@ -80,7 +80,7 @@ export function areSameDay(dateA: Date, dateB: Date): boolean {
 
 export function parseDateOnly(dateStr: string): Date {
   const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(year, month - 1, day);
+  return new Date(year, month - 1, day, 12, 0, 0, 0);
 }
 
 export function isValidDateString(dateStr: string): boolean {

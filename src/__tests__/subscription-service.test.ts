@@ -120,12 +120,12 @@ describe('SubscriptionBusinessService', () => {
       jest.useFakeTimers();
       jest.setSystemTime(new Date(2026, 6, 30, 12));
 
-      const activationDate = new Date(2026, 4, 5);
+      const activationDate = new Date(2026, 4, 5, 12);
       const historicalPayments: HistoricalPaymentInput[] = [
         {
           periodLabel: 'Mayo - Junio',
-          startDate: new Date(2026, 4, 5),
-          endDate: new Date(2026, 5, 6),
+          startDate: new Date(2026, 4, 5, 12),
+          endDate: new Date(2026, 5, 6, 12),
           amount: testPlan.price,
           paidAt: new Date(2026, 5, 5, 10, 30),
           paymentMethod: 'CASH',
@@ -133,8 +133,8 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           periodLabel: 'Junio - Julio',
-          startDate: new Date(2026, 5, 6),
-          endDate: new Date(2026, 6, 6),
+          startDate: new Date(2026, 5, 6, 12),
+          endDate: new Date(2026, 6, 6, 12),
           amount: testPlan.price,
           paidAt: new Date(2026, 6, 4, 15, 20),
           paymentMethod: 'TRANSFER',
@@ -158,17 +158,17 @@ describe('SubscriptionBusinessService', () => {
 
       expect(result.billingPeriods[0].status).toBe('PAID');
       expect(result.billingPeriods[0].paymentMethod).toBe('CASH');
-      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 4, 5));
-      expect(result.billingPeriods[0].endDate).toEqual(new Date(2026, 5, 6));
+      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 4, 5, 12));
+      expect(result.billingPeriods[0].endDate).toEqual(new Date(2026, 5, 6, 12));
 
       expect(result.billingPeriods[1].status).toBe('PAID');
       expect(result.billingPeriods[1].paymentMethod).toBe('TRANSFER');
-      expect(result.billingPeriods[1].startDate).toEqual(new Date(2026, 5, 6));
-      expect(result.billingPeriods[1].endDate).toEqual(new Date(2026, 6, 6));
+      expect(result.billingPeriods[1].startDate).toEqual(new Date(2026, 5, 6, 12));
+      expect(result.billingPeriods[1].endDate).toEqual(new Date(2026, 6, 6, 12));
 
       expect(result.billingPeriods[2].status).toBe('PENDING');
-      expect(result.billingPeriods[2].startDate).toEqual(new Date(2026, 6, 6));
-      expect(result.billingPeriods[2].endDate).toEqual(new Date(2026, 7, 6));
+      expect(result.billingPeriods[2].startDate).toEqual(new Date(2026, 6, 6, 12));
+      expect(result.billingPeriods[2].endDate).toEqual(new Date(2026, 7, 6, 12));
 
       expect(result.summary.totalPeriods).toBe(3);
       expect(result.summary.paidPeriods).toBe(2);
@@ -184,7 +184,7 @@ describe('SubscriptionBusinessService', () => {
       jest.useFakeTimers();
       jest.setSystemTime(new Date(2026, 6, 30, 12));
 
-      const activationDate = new Date(2026, 4, 5);
+      const activationDate = new Date(2026, 4, 5, 12);
 
       const result = service.createSubscription({
         clientId: testClient.id,
@@ -220,7 +220,7 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 11, 31),
+          activationDate: new Date(2026, 11, 31, 12),
           historicalPayments: [],
         });
       }).toThrow('La fecha de activación no puede ser futura.');
@@ -240,14 +240,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5),
-              endDate: new Date(2026, 5, 6),
+              startDate: new Date(2026, 4, 5, 12),
+              endDate: new Date(2026, 5, 6, 12),
               amount: testPlan.price,
-              paidAt: new Date(2027, 0, 1),
+              paidAt: new Date(2027, 0, 1, 12),
               paymentMethod: 'CASH',
             },
           ],
@@ -269,14 +269,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Abril - Mayo',
-              startDate: new Date(2026, 3, 1),
-              endDate: new Date(2026, 4, 6),
+              startDate: new Date(2026, 3, 1, 12),
+              endDate: new Date(2026, 4, 6, 12),
               amount: testPlan.price,
-              paidAt: new Date(2026, 4, 1),
+              paidAt: new Date(2026, 4, 1, 12),
               paymentMethod: 'CASH',
             },
           ],
@@ -298,14 +298,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Invalid',
-              startDate: new Date(2026, 5, 6),
-              endDate: new Date(2026, 4, 5),
+              startDate: new Date(2026, 5, 6, 12),
+              endDate: new Date(2026, 4, 5, 12),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1),
+              paidAt: new Date(2026, 5, 1, 12),
               paymentMethod: 'CASH',
             },
           ],
@@ -327,14 +327,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5),
-              endDate: new Date(2026, 5, 6),
+              startDate: new Date(2026, 4, 5, 12),
+              endDate: new Date(2026, 5, 6, 12),
               amount: 30,
-              paidAt: new Date(2026, 5, 1),
+              paidAt: new Date(2026, 5, 1, 12),
               paymentMethod: 'CASH',
             },
           ],
@@ -356,14 +356,14 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5),
-              endDate: new Date(2026, 5, 6),
+              startDate: new Date(2026, 4, 5, 12),
+              endDate: new Date(2026, 5, 6, 12),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1),
+              paidAt: new Date(2026, 5, 1, 12),
               paymentMethod: 'INITIAL_PAYMENT',
             },
           ],
@@ -385,22 +385,22 @@ describe('SubscriptionBusinessService', () => {
           billingDay: 6,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
-          activationDate: new Date(2026, 4, 5),
+          activationDate: new Date(2026, 4, 5, 12),
           historicalPayments: [
             {
               periodLabel: 'Mayo - Junio',
-              startDate: new Date(2026, 4, 5),
-              endDate: new Date(2026, 5, 10),
+              startDate: new Date(2026, 4, 5, 12),
+              endDate: new Date(2026, 5, 10, 12),
               amount: testPlan.price,
-              paidAt: new Date(2026, 5, 1),
+              paidAt: new Date(2026, 5, 1, 12),
               paymentMethod: 'CASH',
             },
             {
               periodLabel: 'Junio - Julio',
-              startDate: new Date(2026, 5, 6),
-              endDate: new Date(2026, 6, 6),
+              startDate: new Date(2026, 5, 6, 12),
+              endDate: new Date(2026, 6, 6, 12),
               amount: testPlan.price,
-              paidAt: new Date(2026, 6, 1),
+              paidAt: new Date(2026, 6, 1, 12),
               paymentMethod: 'CASH',
             },
           ],
@@ -421,12 +421,12 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 2,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 6, 30),
+        activationDate: new Date(2026, 6, 30, 12),
       });
 
       expect(result.billingPeriods.length).toBe(1);
       expect(result.billingPeriods[0].status).toBe('PENDING');
-      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 6, 30));
+      expect(result.billingPeriods[0].startDate).toEqual(new Date(2026, 6, 30, 12));
 
       jest.useRealTimers();
     });
@@ -442,7 +442,7 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 2,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 4, 5),
+        activationDate: new Date(2026, 4, 5, 12),
       });
 
       expect(result.subscription.status).toBe('SUSPENDED');
@@ -465,7 +465,7 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 3,
         registrationDate: new Date(),
-        activationDate: new Date(2026, 4, 5),
+        activationDate: new Date(2026, 4, 5, 12),
       });
 
       expect(result.subscription.status).toBe('ACTIVE');
