@@ -32,7 +32,7 @@ export function createId(): string {
 }
 
 function formatMonthName(date: Date): string {
-  return MONTH_NAMES_ES[date.getMonth()];
+  return MONTH_NAMES_ES[date.getUTCMonth()];
 }
 
 export function buildPeriodLabel(startDate: Date, endDate: Date): string {
@@ -40,9 +40,9 @@ export function buildPeriodLabel(startDate: Date, endDate: Date): string {
 }
 
 export function getBillingPeriodRange(referenceDate: Date, billingDay: number) {
-  const year = referenceDate.getFullYear();
-  const month = referenceDate.getMonth();
-  const day = referenceDate.getDate();
+  const year = referenceDate.getUTCFullYear();
+  const month = referenceDate.getUTCMonth();
+  const day = referenceDate.getUTCDate();
 
   let startYear = year;
   let startMonth = month;
@@ -55,9 +55,8 @@ export function getBillingPeriodRange(referenceDate: Date, billingDay: number) {
     }
   }
 
-  const startDate = new Date(startYear, startMonth, billingDay);
-  const endDate = new Date(startDate);
-  endDate.setMonth(endDate.getMonth() + 1);
+  const startDate = new Date(Date.UTC(startYear, startMonth, billingDay));
+  const endDate = new Date(Date.UTC(startYear, startMonth + 1, billingDay));
 
   return {
     startDate,
@@ -72,15 +71,15 @@ export function isDateAfter(date: Date, compareTo: Date): boolean {
 
 export function areSameDay(dateA: Date, dateB: Date): boolean {
   return (
-    dateA.getFullYear() === dateB.getFullYear() &&
-    dateA.getMonth() === dateB.getMonth() &&
-    dateA.getDate() === dateB.getDate()
+    dateA.getUTCFullYear() === dateB.getUTCFullYear() &&
+    dateA.getUTCMonth() === dateB.getUTCMonth() &&
+    dateA.getUTCDate() === dateB.getUTCDate()
   );
 }
 
 export function parseDateOnly(dateStr: string): Date {
   const [year, month, day] = dateStr.split('-').map(Number);
-  return new Date(year, month - 1, day);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 export function isValidDateString(dateStr: string): boolean {

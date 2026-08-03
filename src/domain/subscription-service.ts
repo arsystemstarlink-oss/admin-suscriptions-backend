@@ -181,10 +181,10 @@ export class SubscriptionBusinessService {
   ): BillingPeriod[] {
     const periods: BillingPeriod[] = [];
 
-    const nextMonth = activationDate.getMonth() + 1;
-    const nextMonthYear = nextMonth > 11 ? activationDate.getFullYear() + 1 : activationDate.getFullYear();
+    const nextMonth = activationDate.getUTCMonth() + 1;
+    const nextMonthYear = nextMonth > 11 ? activationDate.getUTCFullYear() + 1 : activationDate.getUTCFullYear();
     const nextMonthNormalized = nextMonth > 11 ? 0 : nextMonth;
-    const firstPeriodEnd = new Date(nextMonthYear, nextMonthNormalized, billingDay);
+    const firstPeriodEnd = new Date(Date.UTC(nextMonthYear, nextMonthNormalized, billingDay));
 
     let periodStart = new Date(activationDate);
     let isFirstPeriod = true;
@@ -196,8 +196,7 @@ export class SubscriptionBusinessService {
         periodEnd = firstPeriodEnd;
         isFirstPeriod = false;
       } else {
-        periodEnd = new Date(periodStart);
-        periodEnd.setMonth(periodEnd.getMonth() + 1);
+        periodEnd = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, periodStart.getUTCDate()));
       }
 
       const matchingPayment = historicalPayments.find(
@@ -282,8 +281,7 @@ export class SubscriptionBusinessService {
     }
 
     const nextStartDate = new Date(currentPeriod.endDate);
-    const nextEndDate = new Date(nextStartDate);
-    nextEndDate.setMonth(nextEndDate.getMonth() + 1);
+    const nextEndDate = new Date(Date.UTC(nextStartDate.getUTCFullYear(), nextStartDate.getUTCMonth() + 1, nextStartDate.getUTCDate()));
 
     return {
       id: createId(),
