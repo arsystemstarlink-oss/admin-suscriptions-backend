@@ -123,9 +123,9 @@ async function sendWhatsAppNotification(
   type: 'reminder' | 'suspension-warning' | 'suspended-notice'
 ): Promise<void> {
   const templateMap: Record<string, string | undefined> = {
-    'reminder': process.env.TWILIO_TEMPLATE_PAYMENT_REMINDER,
-    'suspension-warning': process.env.TWILIO_TEMPLATE_SUSPENSION_WARNING,
-    'suspended-notice': process.env.TWILIO_TEMPLATE_SUSPENDED_NOTICE,
+    'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
+    'suspension-warning': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V,
+    'suspended-notice': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V,
   };
 
   const templateName = templateMap[type];

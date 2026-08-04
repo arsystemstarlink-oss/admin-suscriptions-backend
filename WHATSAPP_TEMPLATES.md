@@ -95,7 +95,7 @@ A|R System
 | `ACTIVE` + `PENDING`/`PAID` + ≤7 días | — | Dashboard `expiringSoon` | `{1}` nombre, `{2}` fecha |
 | `ACTIVE` + `PENDING`/`PAID` + 3 dias exactos | `reminder` | `PAYMENT_REMINDER` | `{1}` nombre, `{2}` fecha |
 | `ACTIVE` + `PENDING`/`PAID` + 0 dias (hoy) | `suspension-warning` | `SUSPENSION_WARNING` | `{1}` nombre, `{2}` kit, `{3}` fecha |
-| Cambio a `SUSPENDED` | `suspended-notice` | `SUSPENDED_NOTICE` | `{1}` nombre, `{2}` kit |
+| Cambio a `SUSPENDED` | `suspended-notice` | `REMINDER_TODAY` | `{1}` nombre, `{2}` kit |
 | `SUSPENDED` (sin cambio) | — | Silencio | — |
 
 ---
@@ -106,9 +106,9 @@ A|R System
 
 Configurar en `.env`:
 ```env
-TWILIO_TEMPLATE_PAYMENT_REMINDER=subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b
-TWILIO_TEMPLATE_SUSPENSION_WARNING=subscription_suspension_warning_1day_2v_hxfcc8ae438db9df662a0e1f7d801e946b
-TWILIO_TEMPLATE_SUSPENDED_NOTICE=subscription_suspended_notice_2v_hx9954143348c57d5cfb1daf4b5ab8ee6b
+TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V=HX...
+TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V=HX...
+TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 ```
 
 ### Enviar Template Manualmente
