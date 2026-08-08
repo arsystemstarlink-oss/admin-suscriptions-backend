@@ -12,6 +12,10 @@ PORT=3000
 # Por defecto: diariamente a las 00:00
 CRON_SCHEDULE=0 0 * * *
 
+# Zona horaria en la que se interpreta CRON_SCHEDULE / la expresión del scheduler
+# Por defecto: America/Caracas (UTC-4). Sin esta variable, el cron usa la hora del servidor (generalmente UTC).
+SCHEDULER_TIMEZONE=America/Caracas
+
 # Entorno de ejecución
 NODE_ENV=production
 

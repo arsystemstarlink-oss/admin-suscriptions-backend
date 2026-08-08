@@ -13,8 +13,21 @@ import { whatsappService } from './whatsapp-service';
 import { WhatsAppMessage } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
+const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
 
 let currentTask: ScheduledTask | null = null;
+
+function getNextRun(cronExpression: string, timezone: string): Date {
+  const TimeMatcher = require('node-cron/src/time-matcher');
+  const matcher = new TimeMatcher(cronExpression, timezone);
+  const start = Math.ceil(Date.now() / 1000) * 1000;
+  const maxMs = 7 * 24 * 60 * 60 * 1000;
+  for (let t = start; t < start + maxMs; t += 1000) {
+    const candidate = new Date(t);
+    if (matcher.match(candidate)) return candidate;
+  }
+  return new Date(start);
+}
 
 export async function runDailyJob(): Promise<void> {
   const now = new Date();
@@ -211,9 +224,12 @@ export async function scheduleFromConfig(): Promise<void> {
     } catch (error) {
       console.error('[Scheduler] Error en Daily Job:', error);
     }
-  });
+  }, { timezone: SCHEDULER_TIMEZONE });
 
-  console.log(`[Scheduler] Daily Job programado con cron: ${config.cronSchedule} (enabled: ${config.enabled})`);
+  console.log(
+    `[Scheduler] Daily Job programado con cron: ${config.cronSchedule} (enabled: ${config.enabled}) ` +
+    `en zona horaria: ${SCHEDULER_TIMEZONE}. Próxima ejecución: ${getNextRun(config.cronSchedule, SCHEDULER_TIMEZONE).toString()}`
+  );
 }
 
 export async function reschedule(): Promise<void> {
