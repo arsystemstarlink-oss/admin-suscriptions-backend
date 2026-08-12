@@ -17,13 +17,14 @@ async function createAdmin() {
     const name = args[0] || 'Admin';
     const email = args[1] || 'admin@example.com';
     const password = args[2];
+    const phone = args[3];
 
     if (!password) {
       console.error('❌ Error: Debes proporcionar una contraseña.');
       console.log('\n📝 Uso:');
-      console.log('   npm run create-admin "Nombre" email@example.com "tu-contraseña"');
+      console.log('   npm run create-admin "Nombre" email@example.com "tu-contraseña" "teléfono(opcional)"');
       console.log('\n💡 Ejemplo:');
-      console.log('   npm run create-admin "Admin" admin@example.com "MiPassword123!"');
+      console.log('   npm run create-admin "Admin" admin@example.com "MiPassword123!" "+584123456789"');
       process.exit(1);
     }
 
@@ -53,6 +54,7 @@ async function createAdmin() {
       email,
       password: hashedPassword,
       role: 'admin',
+      phone,
       createdAt: new Date(),
     };
 
@@ -79,6 +81,9 @@ async function createAdmin() {
     console.log(`   ID: ${adminUser.id}`);
     console.log(`   Nombre: ${adminUser.name}`);
     console.log(`   Email: ${adminUser.email}`);
+    if (adminUser.phone) {
+      console.log(`   Teléfono: ${adminUser.phone}`);
+    }
     console.log(`   Rol: ${adminUser.role}`);
     console.log(`   Creado: ${adminUser.createdAt.toISOString()}\n`);
 

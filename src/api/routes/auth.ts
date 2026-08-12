@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { userRepository } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
 import { BusinessError } from '../../domain/entities';
+import { authenticateAdmin } from '../middleware/auth';
 
 const router = Router();
 
@@ -39,6 +40,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
         id: user.id,
         name: user.name,
         email: user.email,
+        phone: user.phone,
         role: user.role,
       },
     });
@@ -68,6 +70,30 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     res.json({
       accessToken: newAccessToken,
       refreshToken: newRefreshToken,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/me', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).user?.userId;
+
+    const user = await userRepository.getById(userId);
+    if (!user) {
+      throw new BusinessError('USER_NOT_FOUND', 'Usuario no encontrado.');
+    }
+
+    res.json({
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        createdAt: user.createdAt,
+      },
     });
   } catch (err) {
     next(err);

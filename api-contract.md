@@ -33,6 +33,12 @@ enum BillingPeriodStatus { PENDING, PAID, OVERDUE }
 ### Entidades
 
 ```typescript
+interface User {
+  id: string; name: string; email: string;
+  role: 'admin'; phone?: string;
+  createdAt: string;
+}
+
 interface Client {
   id: string; firstName: string; lastName: string; phone: string;
   email?: string; address?: string; notes?: string;
@@ -147,6 +153,7 @@ interface DebtorItem {
 |--------|------|-------------|
 | POST | /auth/login | Login |
 | POST | /auth/refresh | Renovar tokens |
+| GET | /auth/me | Perfil del admin logueado (requiere Bearer token) |
 
 **POST /auth/login**
 ```typescript
@@ -162,6 +169,14 @@ interface DebtorItem {
 { refreshToken: string }
 // Response 200
 { accessToken: string; refreshToken: string }
+```
+
+**GET /auth/me**
+```typescript
+// Header: Authorization: Bearer {accessToken}
+// Response 200
+{ user: User }
+// Error 404: USER_NOT_FOUND | Error 401: UNAUTHORIZED
 ```
 
 ---
