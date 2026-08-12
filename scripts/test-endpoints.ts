@@ -67,14 +67,15 @@ async function testCreateClient() {
   log('2. CREAR CLIENTE');
 
   const client = await request('POST', '/clients', {
-    name: 'Carlos Mendoza',
+    firstName: 'Carlos',
+    lastName: 'Mendoza',
     phone: '+584141234567',
     email: 'carlos.mendoza@example.com',
     address: 'Av. Principal 456, Maracaibo',
     notes: 'Cliente residencial - zona norte',
   });
 
-  logOk(`Cliente creado: ${client.name}`);
+  logOk(`Cliente creado: ${client.firstName} ${client.lastName}`);
   logOk(`ID: ${client.id}`);
   return client;
 }
@@ -165,7 +166,7 @@ async function testListClients() {
   const clients = await request('GET', '/clients');
   logOk(`${clients.length} cliente(s) registrado(s)`);
   clients.forEach((c: any) => {
-    console.log(`    - ${c.name} | ${c.phone} | ${c.email || 'sin email'}`);
+    console.log(`    - ${c.firstName} ${c.lastName} | ${c.phone} | ${c.email || 'sin email'}`);
   });
   return clients;
 }

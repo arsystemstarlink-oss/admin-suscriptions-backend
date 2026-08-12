@@ -119,7 +119,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         const client = clients.find((c) => c.id === debtor.clientId);
         return {
           clientId: debtor.clientId,
-          clientName: client?.name || 'Desconocido',
+          clientName: client ? `${client.firstName} ${client.lastName}` : 'Desconocido',
           clientPhone: client?.phone || '',
           totalDebt: debtor.totalDebt,
           overdueCount: debtor.overdueCount,
@@ -136,7 +136,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         endDate: period.endDate,
         subscriptionId: sub?.id,
         kitNumber: sub?.kitNumber,
-        clientName: client?.name,
+        clientName: client ? `${client.firstName} ${client.lastName}` : undefined,
         clientPhone: client?.phone,
       };
     };

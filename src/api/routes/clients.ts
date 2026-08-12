@@ -14,13 +14,14 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreateClientDto = req.body;
 
-    if (!dto.name || !dto.phone) {
-      throw new BusinessError('INVALID_DATA', 'Nombre y teléfono son obligatorios.');
+    if (!dto.firstName || !dto.lastName || !dto.phone) {
+      throw new BusinessError('INVALID_DATA', 'Nombre, apellido y teléfono son obligatorios.');
     }
 
     const client = {
       id: createId(),
-      name: dto.name,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
       phone: dto.phone,
       email: dto.email,
       address: dto.address,
@@ -50,7 +51,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       const searchLower = search.toLowerCase();
       clients = clients.filter(
         (c) =>
-          c.name.toLowerCase().includes(searchLower) ||
+          c.firstName.toLowerCase().includes(searchLower) ||
+          c.lastName.toLowerCase().includes(searchLower) ||
+          `${c.firstName} ${c.lastName}`.toLowerCase().includes(searchLower) ||
           c.phone.includes(search) ||
           c.email?.toLowerCase().includes(searchLower)
       );

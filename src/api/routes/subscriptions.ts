@@ -127,7 +127,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         return {
           ...sub,
           client: client
-            ? { id: client.id, name: client.name, phone: client.phone, email: client.email }
+            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
             : null,
           plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
           currentPeriod,
@@ -145,7 +145,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       const searchLower = search.toLowerCase();
       filteredSubscriptions = enrichedSubscriptions.filter(
         (s) =>
-          (s.client?.name?.toLowerCase().includes(searchLower)) ||
+          (s.client?.firstName?.toLowerCase().includes(searchLower)) ||
+          (s.client?.lastName?.toLowerCase().includes(searchLower)) ||
+          (`${s.client?.firstName ?? ''} ${s.client?.lastName ?? ''}`.toLowerCase().includes(searchLower)) ||
           (s.client?.email?.toLowerCase().includes(searchLower)) ||
           (s.client?.phone?.includes(search)) ||
           (s.kitNumber?.toLowerCase().includes(searchLower))
@@ -195,7 +197,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       subscription: {
         ...subscription,
         client: client
-          ? { id: client.id, name: client.name, phone: client.phone, email: client.email }
+          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
           : null,
         plan: plan ? { id: plan.id, name: plan.name, price: plan.price, description: plan.description } : null,
       },

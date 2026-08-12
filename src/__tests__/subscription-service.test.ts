@@ -12,7 +12,8 @@ describe('SubscriptionBusinessService', () => {
     
     testClient = {
       id: 'client_test_1',
-      name: 'Cliente Test',
+      firstName: 'Cliente',
+      lastName: 'Test',
       phone: '+1234567890',
       email: 'test@example.com',
       createdAt: new Date(),

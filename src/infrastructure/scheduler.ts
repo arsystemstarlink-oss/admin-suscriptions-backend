@@ -130,7 +130,7 @@ export async function runDailyJob(): Promise<void> {
 }
 
 async function sendWhatsAppNotification(
-  client: { id: string; name: string; phone: string },
+  client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
   period: { endDate: Date },
   type: 'reminder' | 'suspension-warning' | 'suspended-notice'
@@ -149,22 +149,23 @@ async function sendWhatsAppNotification(
   }
 
   const endDateStr = period.endDate.toISOString().split('T')[0];
+  const clientFullName = `${client.firstName} ${client.lastName}`;
   
   let variables: Record<string, string>;
   if (type === 'suspended-notice') {
     variables = {
-      '1': client.name,
+      '1': clientFullName,
       '2': subscription.kitNumber,
     };
   } else if (type === 'suspension-warning') {
     variables = {
-      '1': client.name,
+      '1': clientFullName,
       '2': subscription.kitNumber,
       '3': endDateStr,
     };
   } else {
     variables = {
-      '1': client.name,
+      '1': clientFullName,
       '2': endDateStr,
     };
   }
@@ -189,9 +190,9 @@ async function sendWhatsAppNotification(
     };
 
     await whatsappMessageRepository.create(whatsappMsg);
-    console.log(`[WhatsApp] Notificación ${type} enviada a ${client.name} (${client.phone})`);
+    console.log(`[WhatsApp] Notificación ${type} enviada a ${clientFullName} (${client.phone})`);
   } catch (error) {
-    console.error(`[WhatsApp] Error enviando notificación ${type} a ${client.name}:`, error);
+    console.error(`[WhatsApp] Error enviando notificación ${type} a ${clientFullName}:`, error);
   }
 }
 

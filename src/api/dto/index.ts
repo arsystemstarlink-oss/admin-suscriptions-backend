@@ -1,5 +1,6 @@
 export interface CreateClientDto {
-  name: string;
+  firstName: string;
+  lastName: string;
   phone: string;
   email?: string;
   address?: string;
@@ -7,7 +8,8 @@ export interface CreateClientDto {
 }
 
 export interface UpdateClientDto {
-  name?: string;
+  firstName?: string;
+  lastName?: string;
   phone?: string;
   email?: string;
   address?: string;

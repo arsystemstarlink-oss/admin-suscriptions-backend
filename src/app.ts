@@ -8,7 +8,8 @@ const subscriptionService = new SubscriptionBusinessService();
 
 const client: Client = {
   id: 'client_01',
-  name: 'Juan Pérez',
+  firstName: 'Juan',
+  lastName: 'Pérez',
   phone: '+5491123456789',
   email: 'juan.perez@example.com',
   address: 'Calle Falsa 123',

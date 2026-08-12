@@ -60,7 +60,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
                 status: subscription.status,
               }
             : null,
-          client: client ? { id: client.id, name: client.name, phone: client.phone, email: client.email } : null,
+          client: client
+            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
+            : null,
           plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
         };
       })
@@ -76,7 +78,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       const searchLower = search.toLowerCase();
       filteredPeriods = filteredPeriods.filter(
         (p) =>
-          (p.client?.name?.toLowerCase().includes(searchLower)) ||
+          (p.client?.firstName?.toLowerCase().includes(searchLower)) ||
+          (p.client?.lastName?.toLowerCase().includes(searchLower)) ||
+          (`${p.client?.firstName ?? ''} ${p.client?.lastName ?? ''}`.toLowerCase().includes(searchLower)) ||
           (p.client?.email?.toLowerCase().includes(searchLower)) ||
           (p.client?.phone?.includes(search)) ||
           (p.subscription?.kitNumber?.toLowerCase().includes(searchLower))
@@ -129,7 +133,9 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
             status: subscription.status,
           }
         : null,
-      client: client ? { id: client.id, name: client.name, phone: client.phone, email: client.email } : null,
+      client: client
+        ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
+        : null,
       plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
     });
   } catch (err) {
@@ -182,7 +188,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
             status: subscription.status,
           }
         : null,
-      client: client ? { id: client.id, name: client.name, phone: client.phone, email: client.email } : null,
+      client: client
+        ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
+        : null,
       plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
     });
   } catch (err) {
