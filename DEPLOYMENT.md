@@ -11,6 +11,11 @@ PORT=3000
 # Origen permitido para CORS (frontend)
 CORS_ORIGIN=https://tu-frontend.example.com
 
+# Número de saltos de proxy inverso a confiar (Railway/Heroku: 1).
+# Obligatorio cuando el deploy está detrás de un proxy para que el rate
+# limiting use la IP real (X-Forwarded-For) y no falle con ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+TRUST_PROXY=1
+
 # Configuración del cron job (formato cron)
 # Por defecto: diariamente a las 00:00
 CRON_SCHEDULE=0 0 * * *
@@ -264,6 +269,7 @@ Como el backend usa Firebase Admin SDK, el acceso a datos no pasa por las reglas
 - [ ] Dependencias actualizadas (`npm audit`)
 - [ ] Credenciales de Firebase almacenadas de forma segura (no en git)
 - [ ] Reglas de Firestore deniegan acceso público
+- [ ] TRUST_PROXY configurado cuando hay proxy inverso delante
 
 ### Configuración CORS
 El servidor ya usa `CORS_ORIGIN` desde variables de entorno:
@@ -289,6 +295,19 @@ CORS_ORIGIN=https://tu-frontend.example.com
 ### Rate limit en login (`429`)
 1. Esperar la ventana de 15 minutos o reiniciar el proceso en desarrollo
 2. Revisar intentos automatizados o credenciales incorrectas repetidas
+
+### Error `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR`
+El deploy está detrás de un proxy inverso (Railway/Heroku) y Express no confía en `X-Forwarded-For`:
+
+1. Verificar que `TRUST_PROXY=1` está configurado (o el número de saltos de tu proveedor)
+2. Redesplegar; el servidor usa `app.set('trust proxy', ...)` automáticamente
+
+### Error `JWT_SECRET must be changed from the default value in production`
+El `JWT_SECRET` en producción es el valor de ejemplo:
+
+1. Generar uno nuevo: `openssl rand -hex 32`
+2. Configurarlo en las variables de entorno del proveedor (Railway → Variables → JWT_SECRET)
+3. Redesplegar. No se acepta el valor de ejemplo a propósito; sin esto, el login falla.
 
 ### Webhook de Twilio rechazado (`INVALID_WEBHOOK`)
 1. Verificar `TWILIO_AUTH_TOKEN`

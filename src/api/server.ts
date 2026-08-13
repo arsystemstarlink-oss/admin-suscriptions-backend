@@ -21,6 +21,12 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Detrás de un proxy inverso (Railway, Heroku, etc.) Express debe confiar en
+// el primer salto para leer X-Forwarded-For y que express-rate-limit pueda
+// identificar la IP real del cliente.
+const trustProxy = process.env.TRUST_PROXY ?? '1';
+app.set('trust proxy', trustProxy === 'false' ? false : Number(trustProxy));
+
 try {
   initializeFirebase();
 } catch (error) {
