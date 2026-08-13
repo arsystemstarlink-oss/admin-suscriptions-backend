@@ -3,10 +3,11 @@ import { whatsappService } from '../../infrastructure/whatsapp-service';
 import { whatsappMessageRepository, clientRepository } from '../../infrastructure/repositories';
 import { BusinessError, WhatsAppMessage } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
+import { authenticateAdmin } from '../middleware/auth';
 
 const router = Router();
 
-router.post('/send', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { to, body, templateName, variables } = req.body;
 
@@ -65,24 +66,16 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
 
 router.post('/webhook', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    console.log('[WhatsApp Webhook] Request received');
-    console.log('[WhatsApp Webhook] Headers:', JSON.stringify(req.headers, null, 2));
-    console.log('[WhatsApp Webhook] Body:', req.body);
-    console.log('[WhatsApp Webhook] BASE_URL:', process.env.BASE_URL);
+    const isProduction = process.env.NODE_ENV === 'production';
+    const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';
 
-    const shouldValidate = process.env.TWILIO_WEBHOOK_VALIDATION === 'true';
-
-    if (shouldValidate) {
+    if (isProduction || !validationDisabled) {
       const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/communications/webhook`;
-      console.log('[WhatsApp Webhook] Validating with URL:', webhookUrl);
-      
       const isValid = whatsappService.validateWebhook(
         req.headers,
         req.body,
         webhookUrl
       );
-
-      console.log('[WhatsApp Webhook] Validation result:', isValid);
 
       if (!isValid) {
         throw new BusinessError('INVALID_WEBHOOK', 'Firma de Twilio inválida.');
@@ -90,6 +83,10 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const parsed = whatsappService.parseIncomingMessage(req.body);
+
+    if (!parsed.from || !parsed.messageSid) {
+      throw new BusinessError('INVALID_DATA', 'Payload de webhook incompleto.');
+    }
 
     const clients = await clientRepository.list();
     const client = clients.find(c => c.phone === parsed.from);
@@ -108,7 +105,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
     await whatsappMessageRepository.create(whatsappMsg);
 
-    console.log('[WhatsApp] Mensaje recibido:', parsed);
+    console.log('[WhatsApp] Mensaje inbound recibido de', parsed.from);
 
     res.status(200).json({
       success: true,
@@ -119,11 +116,11 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
-router.get('/messages/:phone', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phone } = req.params;
     const messages = await whatsappMessageRepository.listByPhone(phone);
-    
+
     const sortedMessages = messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
     res.json({

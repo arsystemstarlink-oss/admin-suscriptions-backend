@@ -1,5 +1,5 @@
 import { FirestoreRepository } from './firestore-repository';
-import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage } from '../domain/entities';
+import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, RefreshTokenSession } from '../domain/entities';
 
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
@@ -45,6 +45,32 @@ export class UserFirestoreRepository extends FirestoreRepository<User> {
   async findByEmail(email: string): Promise<User | undefined> {
     const results = await this.listByField('email', email);
     return results[0];
+  }
+}
+
+export class RefreshTokenSessionFirestoreRepository extends FirestoreRepository<RefreshTokenSession> {
+  constructor() {
+    super('refreshTokenSessions');
+  }
+
+  async listByUserId(userId: string): Promise<RefreshTokenSession[]> {
+    return this.listByField('userId', userId);
+  }
+
+  async revokeAllForUser(userId: string): Promise<number> {
+    const snapshot = await this.db
+      .collection(this.collectionName)
+      .where('userId', '==', userId)
+      .get();
+
+    const now = new Date();
+    const batch = this.db.batch();
+    snapshot.docs.forEach((doc) => {
+      batch.update(doc.ref, { revokedAt: now });
+    });
+
+    await batch.commit();
+    return snapshot.size;
   }
 }
 
@@ -101,5 +127,6 @@ export const planRepository = new PlanFirestoreRepository();
 export const subscriptionRepository = new SubscriptionFirestoreRepository();
 export const billingPeriodRepository = new BillingPeriodFirestoreRepository();
 export const userRepository = new UserFirestoreRepository();
+export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRepository();
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();

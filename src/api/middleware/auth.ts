@@ -1,6 +1,10 @@
 import { Request, Response, NextFunction } from 'express';
 import { BusinessError } from '../../domain/entities';
-import { authService } from '../../domain/auth-service';
+import { authService, TokenPayload } from '../../domain/auth-service';
+
+export interface AuthenticatedRequest extends Request {
+  user?: TokenPayload;
+}
 
 export function authenticateAdmin(
   req: Request,
@@ -18,9 +22,17 @@ export function authenticateAdmin(
 
     try {
       const payload = authService.verifyAccessToken(token);
-      (req as any).user = payload;
+
+      if (payload.role !== 'admin') {
+        throw new BusinessError('FORBIDDEN', 'Se requieren permisos de administrador.');
+      }
+
+      (req as AuthenticatedRequest).user = payload;
       next();
     } catch (error) {
+      if (error instanceof BusinessError) {
+        throw error;
+      }
       throw new BusinessError('UNAUTHORIZED', 'Token inválido o expirado.');
     }
   } catch (err) {

@@ -9,6 +9,16 @@ Auth: Authorization: Bearer {accessToken}
 
 **Tokens:** accessToken (15 min) | refreshToken (7 dias)
 
+**Seguridad:**
+- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout` y webhooks Twilio) requieren JWT de admin.
+- Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId) y `jti` (refresh); no son intercambiables.
+- El refresh token es de un solo uso: cada `POST /auth/refresh` rota a un token nuevo y revoca el anterior (sesión persistida en `refreshTokenSessions`).
+- Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
+- `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
+- Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP) y `POST /api/auth/refresh` (60 / 15 min por IP).
+- Headers de seguridad HTTP vía Helmet.
+- `POST /communications/webhook` (público) valida firma Twilio (obligatoria en production).
+
 **Paginacion:** Todos los endpoints de lista devuelven:
 ```typescript
 {
@@ -35,8 +45,17 @@ enum BillingPeriodStatus { PENDING, PAID, OVERDUE }
 ```typescript
 interface User {
   id: string; name: string; email: string;
-  role: 'admin'; phone?: string;
+  role: 'admin'; phone?: string; // normalizado a E.164 (+58...)
+  lastLoginAt?: string;
   createdAt: string;
+}
+
+interface RefreshTokenSession {
+  id: string; // jti
+  userId: string;
+  tokenHash: string; // sha256 del refresh token (interno, no se expone)
+  createdAt: string; expiresAt: string; lastUsedAt: string;
+  revokedAt?: string; replacedBy?: string;
 }
 
 interface Client {
@@ -149,11 +168,40 @@ interface DebtorItem {
 
 ### Auth
 
-| Metodo | Path | Descripcion |
-|--------|------|-------------|
-| POST | /auth/login | Login |
-| POST | /auth/refresh | Renovar tokens |
-| GET | /auth/me | Perfil del admin logueado (requiere Bearer token) |
+| Metodo | Path | Auth | Descripcion |
+|--------|------|------|-------------|
+| POST | /auth/setup | Header `X-Setup-Key` | Crear el PRIMER admin (solo sin admins existentes) |
+| POST | /auth/register | Bearer admin | Crear un admin adicional |
+| POST | /auth/login | - | Login |
+| POST | /auth/refresh | - | Renovar tokens (rota refresh token) |
+| POST | /auth/logout | - | Revocar refresh token (logout por sesión) |
+| GET | /auth/me | Bearer admin | Perfil del admin logueado |
+| PUT | /auth/me | Bearer admin | Editar name/email/phone |
+| POST | /auth/change-password | Bearer admin | Cambiar contraseña |
+
+**POST /auth/setup**
+```typescript
+// Header: X-Setup-Key: {SETUP_KEY}
+// Request
+{ name: string; email: string; password: string; phone?: string }
+// password: mínimo 8 caracteres, letras y números
+// Response 201
+{ message: string; user: User }
+// Solo funciona mientras NO exista ningún admin
+// Errors: 403 SETUP_DISABLED (no configurado o ya hay admin) | 403 INVALID_SETUP_KEY
+//         400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
+// Rate limit: 5 intentos / 15 min por IP
+```
+
+**POST /auth/register**
+```typescript
+// Header: Authorization: Bearer {accessToken} (admin existente)
+// Request
+{ name: string; email: string; password: string; phone?: string }
+// Response 201
+{ message: string; user: User }
+// Errors: 401 UNAUTHORIZED | 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
+```
 
 **POST /auth/login**
 ```typescript
@@ -161,6 +209,7 @@ interface DebtorItem {
 { email: string; password: string }
 // Response 200
 { accessToken: string; refreshToken: string; user: User }
+// Actualiza lastLoginAt del usuario
 ```
 
 **POST /auth/refresh**
@@ -169,6 +218,16 @@ interface DebtorItem {
 { refreshToken: string }
 // Response 200
 { accessToken: string; refreshToken: string }
+// Rota el refresh token (revoca el anterior)
+// Error 401: UNAUTHORIZED (inválido/expirado) | REFRESH_TOKEN_REVOKED (reuso detectado)
+```
+
+**POST /auth/logout**
+```typescript
+// Request
+{ refreshToken: string }
+// Response 204
+// Revoca la sesión asociada al refresh token. Idempotente.
 ```
 
 **GET /auth/me**
@@ -177,6 +236,30 @@ interface DebtorItem {
 // Response 200
 { user: User }
 // Error 404: USER_NOT_FOUND | Error 401: UNAUTHORIZED
+```
+
+**PUT /auth/me**
+```typescript
+// Header: Authorization: Bearer {accessToken}
+// Request (parcial, al menos un campo)
+{ name?: string; email?: string; phone?: string; currentPassword?: string }
+// currentPassword es obligatorio SOLO si email cambia
+// phone se normaliza a E.164 (+58...)
+// Response 200
+{ user: User }
+// Errors: 400 INVALID_EMAIL | 400 INVALID_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
+```
+
+**POST /auth/change-password**
+```typescript
+// Header: Authorization: Bearer {accessToken}
+// Request
+{ currentPassword: string; newPassword: string }
+// newPassword: mínimo 8 caracteres, letras y números
+// Revoca todas las sesiones y emite un par de tokens nuevo para la sesión actual
+// Response 200
+{ message: string; accessToken: string; refreshToken: string }
+// Errors: 400 INVALID_PASSWORD (actual incorrecta) | 400 WEAK_PASSWORD
 ```
 
 ---
@@ -417,13 +500,13 @@ interface DebtorItem {
 
 ### WhatsApp
 
-| Metodo | Path | Descripcion |
-|--------|------|-------------|
-| POST | /api/whatsapp/send | Enviar mensaje (texto o template) |
-| GET | /api/whatsapp/messages/:phone | Historial de mensajes por teléfono |
-| POST | /communications/webhook | Webhook para recibir mensajes de Twilio |
+| Metodo | Path | Auth | Descripcion |
+|--------|------|------|-------------|
+| POST | /api/whatsapp/send | Bearer admin | Enviar mensaje (texto o template) |
+| GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
+| POST | /communications/webhook | Firma Twilio | Webhook para recibir mensajes de Twilio |
 
-**POST /api/whatsapp/send**
+**POST /api/whatsapp/send** (requiere `Authorization: Bearer {accessToken}`)
 ```typescript
 // Request (mensaje de texto libre - solo dentro de ventana de 24h)
 { to: string; body: string }
@@ -441,24 +524,28 @@ interface DebtorItem {
   messageSid: string;
   message: string;
 }
+// Error 401: UNAUTHORIZED
 ```
 
-**GET /api/whatsapp/messages/:phone**
+**GET /api/whatsapp/messages/:phone** (requiere `Authorization: Bearer {accessToken}`)
 ```typescript
 // Response 200
 {
   messages: WhatsAppMessage[];
   total: number;
 }
+// Error 401: UNAUTHORIZED
 ```
 
 **POST /communications/webhook** (interno - Twilio)
 ```typescript
 // Webhook configurado en Twilio Console
-// No requiere autenticación (Twilio firma las requests)
+// No usa JWT de admin
+// Valida firma X-Twilio-Signature (obligatoria en NODE_ENV=production)
+// En development se puede desactivar con TWILIO_WEBHOOK_VALIDATION=false
 // Guarda mensajes entrantes en Firestore
+// Error 403: INVALID_WEBHOOK
 ```
-
 ---
 
 ## Casos de Uso
@@ -531,9 +618,12 @@ GET /billing-periods?subscriptionId=xxx
 
 ### 7. Enviar mensaje de WhatsApp desde perfil de cliente
 
+> Requiere header `Authorization: Bearer {accessToken}` en send e historial.
+
 **Opción A: Mensaje libre (solo si cliente escribió en últimas 24h)**
 ```
 POST /api/whatsapp/send
+Authorization: Bearer {accessToken}
 { to: "+584123456789", body: "Hola, tu pago fue recibido correctamente" }
 ```
 - Solo funciona si el cliente inició la conversación en las últimas 24 horas
@@ -542,6 +632,7 @@ POST /api/whatsapp/send
 **Opción B: Template aprobado (siempre funciona)**
 ```
 POST /api/whatsapp/send
+Authorization: Bearer {accessToken}
 { 
   to: "+584123456789",
   templateName: "subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b",
@@ -554,11 +645,11 @@ POST /api/whatsapp/send
 **Ver historial de conversación:**
 ```
 GET /api/whatsapp/messages/+584123456789
+Authorization: Bearer {accessToken}
 ```
 - Mostrar en perfil del cliente
 - Ordenado por fecha (más reciente primero)
 - Diferenciar visualmente mensajes entrantes vs salientes
-
 ### 8. Templates de WhatsApp disponibles
 
 **Template 1: Recordatorio de pago (3 días antes)**

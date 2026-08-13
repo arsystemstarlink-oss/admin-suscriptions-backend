@@ -8,6 +8,9 @@ Crear archivo `.env` basado en `.env.example`:
 # Puerto del servidor
 PORT=3000
 
+# Origen permitido para CORS (frontend)
+CORS_ORIGIN=https://tu-frontend.example.com
+
 # Configuración del cron job (formato cron)
 # Por defecto: diariamente a las 00:00
 CRON_SCHEDULE=0 0 * * *
@@ -22,8 +25,25 @@ NODE_ENV=production
 # Ruta a credenciales de Firebase
 FIREBASE_CREDENTIALS_PATH=./api-gestion-starlink-firebase-adminsdk-fbsvc-a7cdd010e2.json
 
-# Secreto para firmar tokens JWT (mínimo 32 caracteres)
+# Secreto para firmar tokens JWT (mínimo 32 caracteres, obligatorio)
+# En production no se acepta el valor de ejemplo "change-this-in-production"
 JWT_SECRET=your-super-secret-jwt-key-change-this-in-production-min-32-chars
+
+# Clave para crear el PRIMER admin desde el frontend (POST /api/auth/setup).
+# Solo funciona mientras no exista ningún admin. Generar con: openssl rand -hex 32
+# Los admins adicionales se crean con POST /api/auth/register (requiere JWT de admin).
+SETUP_KEY=
+
+# URL pública del backend (usada para validar firmas de webhooks de Twilio)
+BASE_URL=https://tu-api.example.com
+
+# Twilio
+TWILIO_ACCOUNT_SID=
+TWILIO_AUTH_TOKEN=
+TWILIO_FROM_NUMBER=
+# En development se puede desactivar con false.
+# En production la validación de firma del webhook es siempre obligatoria.
+TWILIO_WEBHOOK_VALIDATION=true
 ```
 
 ### Generar JWT_SECRET seguro
@@ -80,9 +100,10 @@ pm2 save
 ### 1. Verificar que el servidor responde
 ```bash
 curl http://localhost:3000/
+curl http://localhost:3000/health
 ```
 
-**Respuesta esperada:**
+**Respuesta esperada (`/`):**
 ```json
 {
   "message": "API de Gestión de Suscripciones",
@@ -92,19 +113,37 @@ curl http://localhost:3000/
     "clients": "/api/clients",
     "plans": "/api/plans",
     "subscriptions": "/api/subscriptions",
-    "billingPeriods": "/api/billing-periods"
+    "billingPeriods": "/api/billing-periods",
+    "whatsapp": "/api/whatsapp",
+    "dashboard": "/api/dashboard",
+    "scheduler": "/api/scheduler"
   }
 }
 ```
 
 ### 2. Crear usuario administrador
+
+Hay dos formas:
+
+**Opción A - Desde el frontend (recomendada):**
 ```bash
-npm run create-admin "Admin" admin@example.com
+curl -X POST http://localhost:3000/api/auth/setup \
+  -H "Content-Type: application/json" \
+  -H "X-Setup-Key: TU_SETUP_KEY" \
+  -d '{"name": "Admin", "email": "admin@example.com", "password": "MiPasswordSegura123!", "phone": "+584123456789"}'
+```
+- `SETUP_KEY` debe estar configurado en `.env`
+- Solo funciona mientras no exista ningún admin
+- Los admins adicionales se crean con `POST /api/auth/register` (requiere JWT de un admin existente)
+
+**Opción B - Script CLI (solo uso operativo/dev):**
+```bash
+npm run create-admin "Admin" admin@example.com "TuPasswordSegura123!" "+584123456789"
 ```
 
-Esto creará el usuario, generará una contraseña aleatoria y tokens JWT automáticamente.
+**Importante:** Guarda la contraseña. No se podrá recuperar después.
 
-**Importante:** Guarda la contraseña que se muestra en la consola. No se podrá recuperar después.
+> **Seguridad del script en repositorios públicos:** `scripts/create-admin.ts` no contiene secretos. Las credenciales reales están en `.env` y en `api-gestion-starlink-firebase-adminsdk-*.json`, ambos ignorados por git (`.gitignore`) y nunca commiteados. Sin esas credenciales el script es inerte. No subas `.env` ni el JSON de Firebase a ningún repositorio.
 
 ### 3. Verificar autenticación con JWT
 ```bash
@@ -118,7 +157,7 @@ curl http://localhost:3000/api/clients \
   -H "Authorization: Bearer YOUR_JWT_TOKEN"
 ```
 
-**Respuesta esperada:** `[]` (lista vacía)
+**Respuesta esperada:** lista paginada de clientes (vacía al inicio)
 
 ### 4. Verificar scheduler
 Revisar logs para confirmar que el scheduler está activo:
@@ -141,7 +180,7 @@ New-NetFirewallRule -DisplayName "Subscription API" -Direction Inbound -LocalPor
 ## Logs
 
 ### Desarrollo
-Los logs se muestran en la consola.
+Los logs se muestran en la consola. No se registran headers/body completos de webhooks ni payloads sensibles de Twilio.
 
 ### Producción con PM2
 ```bash
@@ -155,16 +194,16 @@ pm2 logs subscription-api --lines 100
 ## Monitoreo
 
 ### Health Check
-Implementar endpoint de health check:
+```bash
+curl http://localhost:3000/health
+```
 
-```typescript
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
-});
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-08-12T00:00:00.000Z",
+  "uptime": 123.45
+}
 ```
 
 ### Métricas recomendadas
@@ -172,6 +211,7 @@ app.get('/health', (req, res) => {
 - Tasa de errores 4xx y 5xx
 - Uso de memoria
 - Estado del scheduler
+- Intentos de login rate-limited
 
 ## Backup
 
@@ -184,27 +224,52 @@ El sistema usa Firebase Firestore para persistencia de datos. Los datos se manti
 - `subscriptions` - Suscripciones activas
 - `billingPeriods` - Períodos de facturación
 - `users` - Usuarios administradores
+- `refreshTokenSessions` - Sesiones de refresh token (rotación/revocación)
+- `whatsappMessages` - Historial de mensajes WhatsApp
+- `schedulerConfig` - Configuración del cron job
+
+### Reglas de Firestore
+Como el backend usa Firebase Admin SDK, el acceso a datos no pasa por las reglas del cliente. Aun así, en la consola de Firebase las reglas de la base de datos deben denegar acceso público de lectura/escritura (especialmente la colección `users` con hashes bcrypt).
 
 ## Seguridad
 
+### Controles implementados
+- JWT obligatorio en todas las rutas de negocio (`/api/clients`, `/api/plans`, `/api/subscriptions`, `/api/billing-periods`, `/api/dashboard`, `/api/scheduler`)
+- WhatsApp protegido: `POST /api/whatsapp/send` y `GET /api/whatsapp/messages/:phone` requieren admin JWT
+- Webhook público solo en `POST /communications/webhook` (y alias bajo `/api/whatsapp/webhook`)
+- Validación de firma Twilio: obligatoria en production; en development se puede desactivar con `TWILIO_WEBHOOK_VALIDATION=false`
+- Access y refresh tokens con claim `type` distinto (un access token no sirve como refresh) y `sub` (userId)
+- Refresh tokens de un solo uso: rotación en cada refresh, revocación en logout, y revocación de todas las sesiones si se detecta reuso (`refreshTokenSessions`)
+- `POST /auth/logout` revoca el refresh token presentado (logout por sesión)
+- Middleware verifica `role === 'admin'`
+- `JWT_SECRET` obligatorio (mín. 32 chars); en production se rechaza el valor de ejemplo
+- Rate limits: `POST /api/auth/login` (20 intentos / 15 min), `POST /api/auth/refresh` (60 / 15 min) y `POST /api/auth/setup` (5 / 15 min)
+- Creación de admin: primer admin vía `POST /api/auth/setup` con clave `SETUP_KEY` (solo sin admins existentes); admins adicionales vía `POST /api/auth/register` con JWT de admin
+- Helmet para headers HTTP de seguridad
+- Límite de body JSON a 1mb
+- CORS restringido por `CORS_ORIGIN`
+- Edición de perfil: email normalizado a minúsculas + unicidad + requiere contraseña actual; phone normalizado a E.164 (+58)
+- Cambio de contraseña valida la actual, exige contraseña fuerte (mín. 8, letras y números) y revoca sesiones previas
+- El DTO de usuario nunca expone `password` ni hashes de tokens
+
 ### Checklist de seguridad
 - [ ] JWT_SECRET es suficientemente largo y aleatorio (mínimo 32 caracteres)
+- [ ] JWT_SECRET no es el valor de ejemplo en production
 - [ ] NODE_ENV está configurado como "production"
-- [ ] CORS está configurado correctamente (solo dominios permitidos)
-- [ ] Rate limiting implementado (opcional)
-- [ ] HTTPS configurado en producción
+- [ ] CORS_ORIGIN apunta solo al dominio del frontend
+- [ ] BASE_URL es la URL pública HTTPS del backend (webhooks Twilio)
+- [ ] TWILIO_WEBHOOK_VALIDATION no está en false en production
+- [ ] HTTPS configurado en producción (reverse proxy / load balancer)
 - [ ] Logs no contienen información sensible
 - [ ] Dependencias actualizadas (`npm audit`)
-- [ ] Credenciales de Firebase almacenadas de forma segura
+- [ ] Credenciales de Firebase almacenadas de forma segura (no en git)
+- [ ] Reglas de Firestore deniegan acceso público
 
-### Configuración CORS para producción
-```typescript
-const corsOptions = {
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || [],
-  credentials: true
-};
+### Configuración CORS
+El servidor ya usa `CORS_ORIGIN` desde variables de entorno:
 
-app.use(cors(corsOptions));
+```bash
+CORS_ORIGIN=https://tu-frontend.example.com
 ```
 
 ## Troubleshooting
@@ -216,9 +281,19 @@ app.use(cors(corsOptions));
 
 ### Errores de autenticación JWT
 1. Verificar que el token no haya expirado (15 minutos para access token)
-2. Usar el refresh token para obtener un nuevo access token
+2. Usar el refresh token (`POST /api/auth/refresh`) para obtener un nuevo access token
 3. Verificar que el header sea `Authorization: Bearer {token}`
 4. Asegurar que no hay espacios extra en el token
+5. Confirmar que `JWT_SECRET` es el mismo con el que se firmaron los tokens
+
+### Rate limit en login (`429`)
+1. Esperar la ventana de 15 minutos o reiniciar el proceso en desarrollo
+2. Revisar intentos automatizados o credenciales incorrectas repetidas
+
+### Webhook de Twilio rechazado (`INVALID_WEBHOOK`)
+1. Verificar `TWILIO_AUTH_TOKEN`
+2. Verificar que `BASE_URL` coincide exactamente con la URL configurada en Twilio Console
+3. En development, solo si es necesario: `TWILIO_WEBHOOK_VALIDATION=false`
 
 ### Errores de Firebase
 1. Verificar que `FIREBASE_CREDENTIALS_PATH` apunta al archivo correcto
@@ -235,6 +310,7 @@ npm run build
 ## Soporte
 
 Para problemas o preguntas:
-1. Revisar `API-DOCS.md` para documentación de endpoints
+1. Revisar `api-contract.md` para documentación de endpoints
 2. Revisar `plan.md` para arquitectura y reglas de negocio
 3. Revisar `document-proyect.md` para requisitos del sistema
+4. Revisar `WHATSAPP_TEMPLATES.md` para integración de WhatsApp

@@ -3,8 +3,16 @@ import { BusinessError } from '../../domain/entities';
 
 const STATUS_BY_CODE: Record<string, number> = {
   UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
   INVALID_CREDENTIALS: 401,
+  INVALID_WEBHOOK: 403,
+  REFRESH_TOKEN_REVOKED: 401,
   NOT_FOUND: 404,
+  USER_NOT_FOUND: 404,
+  EMAIL_TAKEN: 409,
+  SETUP_DISABLED: 403,
+  INVALID_SETUP_KEY: 403,
+  RATE_LIMITED: 429,
 };
 
 export function errorHandler(

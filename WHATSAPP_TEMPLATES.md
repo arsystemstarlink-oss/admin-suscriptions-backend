@@ -113,7 +113,8 @@ TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 
 ### Enviar Template Manualmente
 
-**Endpoint:** `POST /api/whatsapp/send`
+**Endpoint:** `POST /api/whatsapp/send`  
+**Auth:** `Authorization: Bearer {accessToken}` (admin JWT obligatorio)
 
 **Ejemplo de request (Recordatorio):**
 ```json
@@ -186,7 +187,17 @@ Todos los mensajes (entrantes y salientes) se guardan en Firestore en la colecci
 **Ver historial de un cliente:**
 ```
 GET /api/whatsapp/messages/:phone
+Authorization: Bearer {accessToken}
 ```
+
+**Webhook entrante (Twilio):**
+```
+POST /communications/webhook
+```
+- Público (sin JWT admin)
+- Valida firma `X-Twilio-Signature` (obligatoria en production)
+- Requiere `BASE_URL` coincidente con la URL configurada en Twilio Console
+- En development se puede desactivar con `TWILIO_WEBHOOK_VALIDATION=false`
 
 ---
 
@@ -197,3 +208,4 @@ GET /api/whatsapp/messages/:phone
 - El numero de telefono debe incluir el codigo de pais (ej: `+584123456789`)
 - Todos los mensajes se guardan en Firestore para auditoria
 - El scheduler se ejecuta diariamente segun el cron configurado en `CRON_SCHEDULE`
+- `send` e historial requieren JWT de admin; solo el webhook de Twilio es público

@@ -9,7 +9,19 @@ export interface User {
   password: string;
   role: UserRole;
   phone?: string;
+  lastLoginAt?: Date;
   createdAt: Date;
+}
+
+export interface RefreshTokenSession {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  createdAt: Date;
+  expiresAt: Date;
+  lastUsedAt: Date;
+  revokedAt?: Date;
+  replacedBy?: string;
 }
 
 export interface Client {

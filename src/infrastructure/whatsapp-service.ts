@@ -56,8 +56,6 @@ export class WhatsAppService {
       contentVariables: JSON.stringify(contentVariables),
     };
 
-    console.log('[WhatsApp] Payload enviado:', JSON.stringify(payload, null, 2));
-
     const sentMessage = await this.getClient().messages.create(payload);
 
     return sentMessage.sid;

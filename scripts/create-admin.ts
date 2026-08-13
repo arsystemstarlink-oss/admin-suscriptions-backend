@@ -89,13 +89,13 @@ async function createAdmin() {
 
     console.log('🔑 Generando tokens JWT para pruebas...\n');
     const accessToken = authService.generateAccessToken(adminUser);
-    const refreshToken = authService.generateRefreshToken(adminUser);
+    const refresh = authService.generateRefreshToken(adminUser);
 
     console.log('✅ Tokens generados:\n');
     console.log('Access Token (15 min):');
     console.log(accessToken);
     console.log('\nRefresh Token (7 días):');
-    console.log(refreshToken);
+    console.log(refresh.token);
     console.log('\n📝 Uso en Postman:');
     console.log('   Header: Authorization');
     console.log(`   Value:  Bearer ${accessToken}\n`);
