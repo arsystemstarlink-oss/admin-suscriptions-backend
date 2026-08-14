@@ -86,6 +86,7 @@ export class SubscriptionBusinessService {
         billingDay,
         plan.price,
         payments,
+        subscription.maxOverduePeriods,
         new Date()
       );
       subscription.status = this.evaluateInitialSubscriptionStatus(subscription, billingPeriods);
@@ -177,9 +178,11 @@ export class SubscriptionBusinessService {
     billingDay: number,
     planPrice: number,
     historicalPayments: HistoricalPaymentInput[],
+    maxOverduePeriods: number,
     now: Date
   ): BillingPeriod[] {
     const periods: BillingPeriod[] = [];
+    let overdueGenerated = 0;
 
     const nextMonth = activationDate.getUTCMonth() + 1;
     const nextMonthYear = nextMonth > 11 ? activationDate.getUTCFullYear() + 1 : activationDate.getUTCFullYear();
@@ -207,8 +210,15 @@ export class SubscriptionBusinessService {
       if (matchingPayment) {
         status = 'PAID';
       } else if (isDateAfter(now, periodEnd) || areSameDay(now, periodEnd)) {
+        if (overdueGenerated >= maxOverduePeriods) {
+          break;
+        }
         status = 'OVERDUE';
+        overdueGenerated++;
       } else {
+        if (overdueGenerated >= maxOverduePeriods) {
+          break;
+        }
         status = 'PENDING';
       }
 
@@ -249,7 +259,7 @@ export class SubscriptionBusinessService {
       pendingPeriods: pendingPeriods.length,
       overduePeriods: overduePeriods.length,
       totalPaid: paidPeriods.reduce((sum, p) => sum + p.amount, 0),
-      totalPending: [...pendingPeriods, ...overduePeriods].reduce((sum, p) => sum + p.amount, 0),
+      totalPending: pendingPeriods.reduce((sum, p) => sum + p.amount, 0),
     };
   }
 
@@ -270,6 +280,10 @@ export class SubscriptionBusinessService {
     plan: Plan;
   }): BillingPeriod {
     const { currentPeriod, subscription, plan } = params;
+
+    if (subscription.status === 'SUSPENDED') {
+      throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede generar un período para una suscripción suspendida.');
+    }
 
     if (currentPeriod.status !== 'PAID') {
       throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede generar un nuevo período cuando el período actual está PAID.');

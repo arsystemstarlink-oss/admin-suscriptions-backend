@@ -204,7 +204,7 @@ describe('SubscriptionBusinessService', () => {
 
       expect(result.summary.overduePeriods).toBe(2);
       expect(result.summary.pendingPeriods).toBe(1);
-      expect(result.summary.totalPending).toBe(150);
+      expect(result.summary.totalPending).toBe(50);
 
       jest.useRealTimers();
     });
@@ -447,10 +447,11 @@ describe('SubscriptionBusinessService', () => {
       });
 
       expect(result.subscription.status).toBe('SUSPENDED');
-      expect(result.billingPeriods.length).toBe(3);
+      expect(result.billingPeriods.length).toBe(2);
       expect(result.billingPeriods[0].status).toBe('OVERDUE');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
-      expect(result.billingPeriods[2].status).toBe('PENDING');
+      expect(result.summary.overduePeriods).toBe(2);
+      expect(result.summary.pendingPeriods).toBe(0);
 
       jest.useRealTimers();
     });
@@ -552,6 +553,40 @@ describe('SubscriptionBusinessService', () => {
           plan: testPlan,
         });
       }).toThrow('Solo se puede generar un nuevo período cuando el período actual está PAID.');
+    });
+
+    it('debería rechazar si la suscripción está suspendida', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 5,
+        status: 'SUSPENDED',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      const paidPeriod: BillingPeriod = {
+        id: 'period_1',
+        subscriptionId: subscription.id,
+        periodLabel: 'Julio - Agosto',
+        startDate: new Date('2026-07-05'),
+        endDate: new Date('2026-08-05'),
+        amount: testPlan.price,
+        status: 'PAID',
+        paidAt: new Date('2026-07-20'),
+        paymentMethod: 'CASH',
+        createdAt: new Date(),
+      };
+
+      expect(() => {
+        service.createNextBillingPeriod({
+          currentPeriod: paidPeriod,
+          subscription,
+          plan: testPlan,
+        });
+      }).toThrow('No se puede generar un período para una suscripción suspendida.');
     });
   });
 

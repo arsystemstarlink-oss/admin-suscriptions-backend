@@ -211,7 +211,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
           .filter((p) => p.status === 'PAID')
           .reduce((sum, p) => sum + p.amount, 0),
         totalPending: periods
-          .filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE')
+          .filter((p) => p.status === 'PENDING')
           .reduce((sum, p) => sum + p.amount, 0),
         hasDebt: periods.some((p) => p.status === 'OVERDUE'),
       },

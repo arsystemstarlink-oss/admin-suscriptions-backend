@@ -42,7 +42,15 @@ export async function runDailyJob(): Promise<void> {
   let suspendedCount = 0;
   let notificationCount = 0;
 
-  const updatedPeriods = businessService.markPendingPeriodsOverdue(allPeriods, now);
+  const suspendedSubscriptionIds = new Set(
+    subscriptions.filter((s) => s.status === 'SUSPENDED').map((s) => s.id)
+  );
+
+  const eligiblePeriods = allPeriods.filter(
+    (p) => !suspendedSubscriptionIds.has(p.subscriptionId)
+  );
+
+  const updatedPeriods = businessService.markPendingPeriodsOverdue(eligiblePeriods, now);
   
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
@@ -53,6 +61,8 @@ export async function runDailyJob(): Promise<void> {
   }
 
   for (const subscription of subscriptions) {
+    if (subscription.status === 'SUSPENDED') continue;
+
     const subscriptionPeriods = updatedPeriods
       .filter((p) => p.subscriptionId === subscription.id)
       .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
