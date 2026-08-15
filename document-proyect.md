@@ -286,9 +286,9 @@ Subscription.status = ACTIVE
 
 y
 
-Primer BillingPeriod = PAID
+Primer BillingPeriod = PENDING
 
-Porque el primer período ya fue pagado.
+Porque el período se registra pendiente de pago; el pago se confirma después.
 
 Ejemplo:
 
@@ -312,7 +312,7 @@ BillingPeriod
 
 Julio-Agosto
 
-PAID
+PENDING
 5. Fecha de corte
 
 La fecha de corte determina los períodos.
@@ -339,10 +339,9 @@ Período:
 Los períodos no son creados manualmente.
 
 Un proceso automático revisa diariamente.
-
 Reglas:
 
-Si el período actual está pagado
+Si el período actual finalizó (PAID u OVERDUE)
 
 Cuando llega su fecha final:
 
@@ -357,6 +356,23 @@ Crear
 Agosto-Septiembre
 
 PENDING
+
+Si el período actual finalizó sin pagar:
+
+Julio-Agosto
+
+OVERDUE
+
+↓
+
+Crear
+
+Agosto-Septiembre
+
+PENDING
+
+(Se permite acumular deuda hasta el límite de la política del servicio.)
+
 Si el período no está pagado
 
 Cuando vence:
@@ -411,6 +427,23 @@ Overdue
 =
 
 Suspended
+
+Durante la suspensión:
+
+No se generan períodos vencidos nuevos.
+
+Los meses que transcurren suspendida no generan deuda.
+
+No existe período actual mientras está suspendida.
+
+Al pagar TODOS los períodos vencidos:
+
+Suspended
+→
+Active
+
+Se genera el período actual desde hoy + fecha de corte como PENDING.
+
 8. Cambio de plan
 
 Permitido.
@@ -482,7 +515,7 @@ Responsable de:
 Revisar períodos vencidos.
 Crear nuevos períodos.
 Suspender servicios.
-Reactivar servicios cuando corresponda.
+Reactivar servicios cuando corresponda (la reactivación se dispara al registrar el pago que salda toda la deuda).
 11. Colecciones Firebase propuestas
 users
 

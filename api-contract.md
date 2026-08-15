@@ -33,7 +33,7 @@ Auth: Authorization: Bearer {accessToken}
 
 ```typescript
 enum PaymentMethod { CASH, TRANSFER, USDT, CARD, OTHER }
-// INITIAL_PAYMENT es interno, no usar en el frontend
+// INITIAL_PAYMENT ya no se crea en el registro; se conserva por compatibilidad con períodos existentes
 
 enum SubscriptionStatus { ACTIVE, SUSPENDED }
 
@@ -550,15 +550,15 @@ interface DebtorItem {
 
 ## Casos de Uso
 
-### 1. Crear suscripcion nueva (cliente nuevo, paga hoy)
+### 1. Crear suscripcion nueva (cliente nuevo)
 
 ```
 POST /subscriptions
 { clientId, planId, kitNumber, billingDay: 5, maxOverduePeriods: 2 }
 ```
-- Crea suscripcion `ACTIVE` + 1 periodo `PAID` con `paymentMethod: INITIAL_PAYMENT`
-- Frontend detecta `INITIAL_PAYMENT` → mostrar badge "Datos pendientes"
-- Editar con `PUT /billing-periods/:id` para poner datos reales del pago
+- Crea suscripcion `ACTIVE` + 1 periodo actual `PENDING` (segun fecha de corte)
+- No se generan periodos anteriores a la fecha de registro
+- El pago del periodo inicial se registra despues con `POST /billing-periods/:id/pay`
 
 ### 2. Crear suscripcion retroactiva (cliente antiguo, sin comprobantes)
 
@@ -567,8 +567,11 @@ POST /subscriptions
 { clientId, planId, kitNumber, billingDay: 6, maxOverduePeriods: 2, activationDate: "2026-01-05" }
 ```
 - Genera periodos desde activationDate hasta hoy
-- Periodos pasados → `OVERDUE`, periodo actual → `PENDING`
-- Si overdueCount >= maxOverduePeriods → suscripcion `SUSPENDED`
+- El primer mes de activacion siempre nace `PENDING` (el cliente pago para activar, aunque el pago no este registrado aun)
+- Periodos siguientes pasados → `OVERDUE`, periodo actual → `PENDING` (maximo `maxOverduePeriods` vencidos)
+- Si overdueCount >= maxOverduePeriods → suscripcion `SUSPENDED` y NO se genera el periodo actual (los meses durante la suspension no generan deuda)
+- El primer mes de activacion nunca pasa a `OVERDUE`, ni siquiera por el Daily Job
+- Al pagar todos los vencidos, la suscripcion se reactiva y se genera el periodo actual desde hoy + billingDay
 - Frontend muestra periodos vencidos con boton "Registrar Pago"
 
 ### 3. Crear suscripcion retroactiva (cliente antiguo, con comprobantes)
@@ -585,6 +588,7 @@ POST /subscriptions
 }
 ```
 - Genera periodos, marca como `PAID` los que coinciden con pagos historicos
+- El primer mes de activacion sin pago historico queda `PENDING` (regla de activacion)
 - Resto: `OVERDUE` o `PENDING` segun fecha
 - amount debe ser igual al precio del plan
 
@@ -595,7 +599,9 @@ POST /billing-periods/:id/pay
 { paymentMethod: "CASH", amount: 50, paidAt: "2026-07-31" }
 ```
 - amount debe coincidir con el amount del periodo
+- La reactivacion requiere pagar TODOS los periodos vencidos (overdueCount === 0)
 - Si la suscripcion estaba `SUSPENDED` y se reactiva → `reactivated: true`
+- Al reactivar se genera el periodo actual `PENDING` desde hoy + billingDay (respuesta: `currentPeriod`)
 
 ### 5. Editar datos de pago de periodo ya pagado
 
@@ -605,16 +611,17 @@ PUT /billing-periods/:id
 ```
 - Solo funciona en periodos `PAID`
 - Actualizacion parcial (solo campos enviados)
-- Caso principal: editar primer periodo con `INITIAL_PAYMENT`
+- Caso principal: corregir datos de pago de periodos existentes (incluye periodos antiguos con `INITIAL_PAYMENT`)
 
-### 6. Identificar periodos con datos incompletos
+### 6. Registrar el pago de un período pendiente o vencido
 
 ```
-GET /billing-periods?subscriptionId=xxx
-// Filtrar donde paymentMethod === 'INITIAL_PAYMENT'
+POST /billing-periods/:id/pay
+{ paymentMethod: "CASH", amount: 50, paidAt: "2026-07-31" }
 ```
-- Mostrar indicador visual "Datos pendientes"
-- Editar con `PUT /billing-periods/:id`
+- El período pasa de `PENDING`/`OVERDUE` a `PAID`
+- Si era el último vencido de una suscripcion `SUSPENDED`, se reactiva y se genera el período actual `PENDING`
+- Ver Caso de Uso 4
 
 ### 7. Enviar mensaje de WhatsApp desde perfil de cliente
 
@@ -685,13 +692,14 @@ Authorization: Bearer {accessToken}
 | paymentMethod (pagos historicos) | No INITIAL_PAYMENT |
 | POST /pay (amount) | Debe coincidir con amount del periodo |
 | PUT /billing-periods/:id | Solo periodos PAID |
-| generate-next | Periodo actual debe estar PAID y finalizado |
+| generate-next | Periodo actual finalizado (PAID u OVERDUE) |
 | DELETE /subscriptions/:id | Elimina suscripcion y sus periodos de facturacion |
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
 | scheduler enabled | Si es false, el Daily Job no se ejecuta automaticamente |
 | POST /scheduler/run | Ejecuta el job manualmente sin importar enabled |
 | Suscripcion SUSPENDED | overdueCount >= maxOverduePeriods |
-| Suscripcion reactivada | overdueCount < maxOverduePeriods al pagar |
+| Suscripcion reactivada | overdueCount === 0 al pagar (todos los vencidos) |
+| Periodo actual al reactivar | Se genera desde hoy + billingDay como PENDING |
 
 ---
 

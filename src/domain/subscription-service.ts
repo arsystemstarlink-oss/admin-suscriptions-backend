@@ -100,10 +100,7 @@ export class SubscriptionBusinessService {
         startDate,
         endDate,
         amount: plan.price,
-        status: 'PAID',
-        paidAt: registrationDate,
-        paymentMethod: 'INITIAL_PAYMENT',
-        notes: 'Primer período registrado como pagado al crear la suscripción.',
+        status: 'PENDING',
         createdAt: new Date(),
       };
 
@@ -195,6 +192,7 @@ export class SubscriptionBusinessService {
     while (true) {
       let periodEnd: Date;
 
+      const isActivationMonth = isFirstPeriod;
       if (isFirstPeriod) {
         periodEnd = firstPeriodEnd;
         isFirstPeriod = false;
@@ -209,6 +207,8 @@ export class SubscriptionBusinessService {
       let status: BillingPeriodStatus;
       if (matchingPayment) {
         status = 'PAID';
+      } else if (isActivationMonth) {
+        status = 'PENDING';
       } else if (isDateAfter(now, periodEnd) || areSameDay(now, periodEnd)) {
         if (overdueGenerated >= maxOverduePeriods) {
           break;
@@ -285,8 +285,8 @@ export class SubscriptionBusinessService {
       throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede generar un período para una suscripción suspendida.');
     }
 
-    if (currentPeriod.status !== 'PAID') {
-      throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede generar un nuevo período cuando el período actual está PAID.');
+    if (currentPeriod.status !== 'PAID' && currentPeriod.status !== 'OVERDUE') {
+      throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede generar un nuevo período cuando el período actual está PAID o OVERDUE.');
     }
 
     const now = new Date();
@@ -303,6 +303,31 @@ export class SubscriptionBusinessService {
       periodLabel: buildPeriodLabel(nextStartDate, nextEndDate),
       startDate: nextStartDate,
       endDate: nextEndDate,
+      amount: plan.price,
+      status: 'PENDING',
+      createdAt: now,
+    };
+  }
+
+  generateCurrentPeriod(params: {
+    subscription: Subscription;
+    plan: Plan;
+    now: Date;
+  }): BillingPeriod {
+    const { subscription, plan, now } = params;
+
+    if (subscription.status === 'SUSPENDED') {
+      throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede generar un período para una suscripción suspendida.');
+    }
+
+    const { startDate, endDate, periodLabel } = getBillingPeriodRange(now, subscription.billingDay);
+
+    return {
+      id: createId(),
+      subscriptionId: subscription.id,
+      periodLabel,
+      startDate,
+      endDate,
       amount: plan.price,
       status: 'PENDING',
       createdAt: now,
@@ -365,9 +390,13 @@ export class SubscriptionBusinessService {
     };
   }
 
-  markPendingPeriodsOverdue(periods: BillingPeriod[], referenceDate: Date): BillingPeriod[] {
+  markPendingPeriodsOverdue(periods: BillingPeriod[], referenceDate: Date, protectedPeriodIds?: Set<string>): BillingPeriod[] {
     return periods.map((period) => {
       if (period.status !== 'PENDING') {
+        return period;
+      }
+
+      if (protectedPeriodIds?.has(period.id)) {
         return period;
       }
 
@@ -392,7 +421,7 @@ export class SubscriptionBusinessService {
       };
     }
 
-    if (overdueCount < subscription.maxOverduePeriods && subscription.status === 'SUSPENDED') {
+    if (overdueCount === 0 && subscription.status === 'SUSPENDED') {
       return {
         ...subscription,
         status: 'ACTIVE',

@@ -30,7 +30,7 @@ describe('SubscriptionBusinessService', () => {
   });
 
   describe('createSubscription', () => {
-    it('debería crear una suscripción con el primer período PAID', () => {
+    it('debería crear una suscripción con el primer período PENDING', () => {
       const registrationDate = new Date('2026-07-20T10:00:00Z');
       
       const result = service.createSubscription({
@@ -50,8 +50,10 @@ describe('SubscriptionBusinessService', () => {
 
       expect(result.billingPeriods).toBeDefined();
       expect(result.billingPeriods.length).toBe(1);
-      expect(result.billingPeriods[0].status).toBe('PAID');
+      expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[0].amount).toBe(testPlan.price);
+      expect(result.billingPeriods[0].paymentMethod).toBeUndefined();
+      expect(result.billingPeriods[0].paidAt).toBeUndefined();
       expect(result.billingPeriods[0].subscriptionId).toBe(result.subscription.id);
     });
 
@@ -111,8 +113,10 @@ describe('SubscriptionBusinessService', () => {
       expect(result.billingPeriods.length).toBe(1);
       expect(result.summary).toBeDefined();
       expect(result.summary.totalPeriods).toBe(1);
-      expect(result.summary.paidPeriods).toBe(1);
-      expect(result.summary.totalPaid).toBe(testPlan.price);
+      expect(result.summary.pendingPeriods).toBe(1);
+      expect(result.summary.paidPeriods).toBe(0);
+      expect(result.summary.totalPaid).toBe(0);
+      expect(result.summary.totalPending).toBe(testPlan.price);
     });
   });
 
@@ -181,7 +185,7 @@ describe('SubscriptionBusinessService', () => {
       jest.useRealTimers();
     });
 
-    it('debería crear suscripción retroactiva sin pagos históricos (todos OVERDUE)', () => {
+    it('debería crear suscripción retroactiva sin pagos históricos (primer mes PENDING, siguientes vencidos)', () => {
       jest.useFakeTimers();
       jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
 
@@ -198,13 +202,14 @@ describe('SubscriptionBusinessService', () => {
       });
 
       expect(result.billingPeriods.length).toBe(3);
-      expect(result.billingPeriods[0].status).toBe('OVERDUE');
+      expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
       expect(result.billingPeriods[2].status).toBe('PENDING');
 
-      expect(result.summary.overduePeriods).toBe(2);
-      expect(result.summary.pendingPeriods).toBe(1);
-      expect(result.summary.totalPending).toBe(50);
+      expect(result.summary.overduePeriods).toBe(1);
+      expect(result.summary.pendingPeriods).toBe(2);
+      expect(result.summary.totalPending).toBe(100);
+      expect(result.subscription.status).toBe('ACTIVE');
 
       jest.useRealTimers();
     });
@@ -443,15 +448,17 @@ describe('SubscriptionBusinessService', () => {
         billingDay: 6,
         maxOverduePeriods: 2,
         registrationDate: new Date(),
-        activationDate: new Date(Date.UTC(2026, 4, 5)),
+        activationDate: new Date(Date.UTC(2026, 3, 5)),
       });
 
       expect(result.subscription.status).toBe('SUSPENDED');
-      expect(result.billingPeriods.length).toBe(2);
-      expect(result.billingPeriods[0].status).toBe('OVERDUE');
+      expect(result.billingPeriods.length).toBe(3);
+      expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
+      expect(result.billingPeriods[2].status).toBe('OVERDUE');
       expect(result.summary.overduePeriods).toBe(2);
-      expect(result.summary.pendingPeriods).toBe(0);
+      expect(result.summary.pendingPeriods).toBe(1);
+      expect(result.summary.totalPending).toBe(50);
 
       jest.useRealTimers();
     });
@@ -472,7 +479,7 @@ describe('SubscriptionBusinessService', () => {
 
       expect(result.subscription.status).toBe('ACTIVE');
       expect(result.billingPeriods.length).toBe(3);
-      expect(result.billingPeriods[0].status).toBe('OVERDUE');
+      expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
       expect(result.billingPeriods[2].status).toBe('PENDING');
 
@@ -523,7 +530,7 @@ describe('SubscriptionBusinessService', () => {
       jest.useRealTimers();
     });
 
-    it('debería rechazar si el período actual no está PAID', () => {
+    it('debería rechazar si el período actual no está PAID ni OVERDUE', () => {
       const subscription: Subscription = {
         id: 'sub_1',
         clientId: testClient.id,
@@ -552,7 +559,46 @@ describe('SubscriptionBusinessService', () => {
           subscription,
           plan: testPlan,
         });
-      }).toThrow('Solo se puede generar un nuevo período cuando el período actual está PAID.');
+      }).toThrow('Solo se puede generar un nuevo período cuando el período actual está PAID o OVERDUE.');
+    });
+
+    it('debería generar el siguiente período cuando el actual está OVERDUE y finalizado', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 5,
+        status: 'ACTIVE',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2025-08-06'));
+
+      const overduePeriod: BillingPeriod = {
+        id: 'period_1',
+        subscriptionId: subscription.id,
+        periodLabel: 'Julio - Agosto',
+        startDate: new Date('2025-07-05'),
+        endDate: new Date('2025-08-05'),
+        amount: testPlan.price,
+        status: 'OVERDUE',
+        createdAt: new Date(),
+      };
+
+      const nextPeriod = service.createNextBillingPeriod({
+        currentPeriod: overduePeriod,
+        subscription,
+        plan: testPlan,
+      });
+
+      expect(nextPeriod.status).toBe('PENDING');
+      expect(nextPeriod.amount).toBe(testPlan.price);
+      expect(nextPeriod.startDate.getTime()).toBe(overduePeriod.endDate.getTime());
+
+      jest.useRealTimers();
     });
 
     it('debería rechazar si la suscripción está suspendida', () => {
@@ -585,6 +631,89 @@ describe('SubscriptionBusinessService', () => {
           currentPeriod: paidPeriod,
           subscription,
           plan: testPlan,
+        });
+      }).toThrow('No se puede generar un período para una suscripción suspendida.');
+    });
+  });
+
+  describe('generateCurrentPeriod', () => {
+    it('debería generar el período actual PENDING desde hoy + billingDay', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 5,
+        status: 'ACTIVE',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(Date.UTC(2026, 7, 14)));
+
+      const currentPeriod = service.generateCurrentPeriod({
+        subscription,
+        plan: testPlan,
+        now: new Date(),
+      });
+
+      expect(currentPeriod.status).toBe('PENDING');
+      expect(currentPeriod.amount).toBe(testPlan.price);
+      expect(currentPeriod.startDate).toEqual(new Date(Date.UTC(2026, 7, 5)));
+      expect(currentPeriod.endDate).toEqual(new Date(Date.UTC(2026, 8, 5)));
+      expect(currentPeriod.subscriptionId).toBe(subscription.id);
+      expect(currentPeriod.paidAt).toBeUndefined();
+      expect(currentPeriod.paymentMethod).toBeUndefined();
+
+      jest.useRealTimers();
+    });
+
+    it('debería generar el período actual cuando hoy es antes del billingDay', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 20,
+        status: 'ACTIVE',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(Date.UTC(2026, 7, 14)));
+
+      const currentPeriod = service.generateCurrentPeriod({
+        subscription,
+        plan: testPlan,
+        now: new Date(),
+      });
+
+      expect(currentPeriod.startDate).toEqual(new Date(Date.UTC(2026, 6, 20)));
+      expect(currentPeriod.endDate).toEqual(new Date(Date.UTC(2026, 7, 20)));
+      expect(currentPeriod.status).toBe('PENDING');
+
+      jest.useRealTimers();
+    });
+
+    it('debería rechazar generar período actual para una suscripción SUSPENDED', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 5,
+        status: 'SUSPENDED',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      expect(() => {
+        service.generateCurrentPeriod({
+          subscription,
+          plan: testPlan,
+          now: new Date(),
         });
       }).toThrow('No se puede generar un período para una suscripción suspendida.');
     });
@@ -876,6 +1005,41 @@ describe('SubscriptionBusinessService', () => {
       expect(result[0].status).toBe('OVERDUE');
       expect(result[1].status).toBe('PENDING');
     });
+
+    it('debería no marcar períodos protegidos (primer mes de activación) como OVERDUE', () => {
+      const periods: BillingPeriod[] = [
+        {
+          id: 'period_1',
+          subscriptionId: 'sub_1',
+          periodLabel: 'Junio - Julio',
+          startDate: new Date('2026-06-05'),
+          endDate: new Date('2026-07-05'),
+          amount: 50,
+          status: 'PENDING',
+          createdAt: new Date(),
+        },
+        {
+          id: 'period_2',
+          subscriptionId: 'sub_1',
+          periodLabel: 'Julio - Agosto',
+          startDate: new Date('2026-07-05'),
+          endDate: new Date('2026-08-05'),
+          amount: 50,
+          status: 'PENDING',
+          createdAt: new Date(),
+        },
+      ];
+
+      const referenceDate = new Date('2026-07-10');
+      const result = service.markPendingPeriodsOverdue(
+        periods,
+        referenceDate,
+        new Set(['period_1'])
+      );
+
+      expect(result[0].status).toBe('PENDING');
+      expect(result[1].status).toBe('PENDING');
+    });
   });
 
   describe('evaluateSubscriptionStatus', () => {
@@ -918,7 +1082,7 @@ describe('SubscriptionBusinessService', () => {
       expect(result.status).toBe('SUSPENDED');
     });
 
-    it('debería reactivar suscripción cuando se reduce la deuda', () => {
+    it('debería mantener SUSPENDED cuando queda deuda parcial (regla estricta)', () => {
       const subscription: Subscription = {
         id: 'sub_1',
         clientId: testClient.id,
@@ -950,6 +1114,47 @@ describe('SubscriptionBusinessService', () => {
           endDate: new Date('2026-08-05'),
           amount: 50,
           status: 'OVERDUE',
+          createdAt: new Date(),
+        },
+      ];
+
+      const result = service.evaluateSubscriptionStatus(subscription, periods);
+      expect(result.status).toBe('SUSPENDED');
+    });
+
+    it('debería reactivar suscripción cuando se paga TODA la deuda (overdueCount === 0)', () => {
+      const subscription: Subscription = {
+        id: 'sub_1',
+        clientId: testClient.id,
+        planId: testPlan.id,
+        kitNumber: 'KIT-001',
+        billingDay: 5,
+        status: 'SUSPENDED',
+        maxOverduePeriods: 2,
+        createdAt: new Date(),
+      };
+
+      const periods: BillingPeriod[] = [
+        {
+          id: 'period_1',
+          subscriptionId: 'sub_1',
+          periodLabel: 'Mayo - Junio',
+          startDate: new Date('2026-05-05'),
+          endDate: new Date('2026-06-05'),
+          amount: 50,
+          status: 'PAID',
+          paidAt: new Date(),
+          createdAt: new Date(),
+        },
+        {
+          id: 'period_2',
+          subscriptionId: 'sub_1',
+          periodLabel: 'Junio - Julio',
+          startDate: new Date('2026-06-05'),
+          endDate: new Date('2026-07-05'),
+          amount: 50,
+          status: 'PAID',
+          paidAt: new Date(),
           createdAt: new Date(),
         },
       ];

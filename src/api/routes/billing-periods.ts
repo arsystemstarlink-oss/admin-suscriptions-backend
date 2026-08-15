@@ -6,7 +6,7 @@ import {
   clientRepository,
 } from '../../infrastructure/repositories';
 import { RegisterPaymentDto, UpdateBillingPeriodDto } from '../dto';
-import { BusinessError } from '../../domain/entities';
+import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 
@@ -229,6 +229,7 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
 
     const subscription = await subscriptionRepository.getById(period.subscriptionId);
     let updatedSubscription = subscription;
+    let currentPeriod: BillingPeriod | undefined;
 
     if (subscription) {
       const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id);
@@ -241,10 +242,26 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
       if (updatedSubscription.status !== subscription.status) {
         await subscriptionRepository.update(updatedSubscription);
       }
+
+      if (subscription.status === 'SUSPENDED' && updatedSubscription.status === 'ACTIVE') {
+        const plan = await planRepository.getById(subscription.planId);
+        if (!plan) {
+          throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+        }
+
+        currentPeriod = businessService.generateCurrentPeriod({
+          subscription: updatedSubscription,
+          plan,
+          now: new Date(),
+        });
+
+        await billingPeriodRepository.create(currentPeriod);
+      }
     }
 
     res.json({
       billingPeriod: updatedPeriod,
+      currentPeriod,
       subscription: updatedSubscription
         ? {
             id: updatedSubscription.id,

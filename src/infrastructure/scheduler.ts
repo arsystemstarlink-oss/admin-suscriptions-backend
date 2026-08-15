@@ -46,11 +46,21 @@ export async function runDailyJob(): Promise<void> {
     subscriptions.filter((s) => s.status === 'SUSPENDED').map((s) => s.id)
   );
 
+  const activationPeriodIds = new Set<string>();
+  for (const sub of subscriptions) {
+    if (!sub.activationDate) continue;
+    for (const p of allPeriods) {
+      if (p.subscriptionId === sub.id && areSameDay(p.startDate, sub.activationDate)) {
+        activationPeriodIds.add(p.id);
+      }
+    }
+  }
+
   const eligiblePeriods = allPeriods.filter(
     (p) => !suspendedSubscriptionIds.has(p.subscriptionId)
   );
 
-  const updatedPeriods = businessService.markPendingPeriodsOverdue(eligiblePeriods, now);
+  const updatedPeriods = businessService.markPendingPeriodsOverdue(eligiblePeriods, now, activationPeriodIds);
   
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
@@ -69,27 +79,6 @@ export async function runDailyJob(): Promise<void> {
 
     const currentPeriod = subscriptionPeriods[0];
     if (!currentPeriod) continue;
-
-    if (
-      currentPeriod.status === 'PAID' &&
-      (isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate))
-    ) {
-      try {
-        const plan = await planRepository.getById(subscription.planId);
-        if (!plan) continue;
-
-        const nextPeriod = businessService.createNextBillingPeriod({
-          currentPeriod,
-          subscription,
-          plan,
-        });
-
-        await billingPeriodRepository.create(nextPeriod);
-        generatedCount++;
-      } catch (error) {
-        console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
-      }
-    }
 
     const updatedSubscription = businessService.evaluateSubscriptionStatus(
       subscription,
@@ -114,6 +103,26 @@ export async function runDailyJob(): Promise<void> {
       : subscription;
 
     if (finalSubscription.status === 'ACTIVE') {
+      if (
+        isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
+      ) {
+        try {
+          const plan = await planRepository.getById(subscription.planId);
+          if (!plan) continue;
+
+          const nextPeriod = businessService.createNextBillingPeriod({
+            currentPeriod,
+            subscription,
+            plan,
+          });
+
+          await billingPeriodRepository.create(nextPeriod);
+          generatedCount++;
+        } catch (error) {
+          console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
+        }
+      }
+
       if (currentPeriod.status === 'PENDING' || currentPeriod.status === 'PAID') {
         const endDateNormalized = new Date(Date.UTC(currentPeriod.endDate.getUTCFullYear(), currentPeriod.endDate.getUTCMonth(), currentPeriod.endDate.getUTCDate()));
         const nowNormalized = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
