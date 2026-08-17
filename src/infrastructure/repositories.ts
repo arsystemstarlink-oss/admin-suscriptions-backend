@@ -1,6 +1,6 @@
 import { FirestoreRepository } from './firestore-repository';
 import { createId } from '../domain/business-rules';
-import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, RefreshTokenSession, PushSubscription } from '../domain/entities';
+import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, WhatsAppConversation, RefreshTokenSession, PushSubscription } from '../domain/entities';
 
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
@@ -120,6 +120,35 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
 
   async listByPhone(phone: string): Promise<WhatsAppMessage[]> {
     return this.listByField('phone', phone);
+  }
+
+  async listConversations(): Promise<WhatsAppConversation[]> {
+    const messages = await this.list();
+
+    const byPhone = new Map<string, WhatsAppConversation>();
+    for (const message of messages) {
+      const existing = byPhone.get(message.phone);
+
+      if (!existing) {
+        byPhone.set(message.phone, {
+          phone: message.phone,
+          clientId: message.clientId,
+          profileName: message.profileName,
+          lastMessage: message,
+          messageCount: 1,
+        });
+        continue;
+      }
+
+      existing.messageCount += 1;
+      if (message.createdAt.getTime() > existing.lastMessage.createdAt.getTime()) {
+        existing.lastMessage = message;
+        existing.clientId = message.clientId ?? existing.clientId;
+        existing.profileName = message.profileName ?? existing.profileName;
+      }
+    }
+
+    return [...byPhone.values()];
   }
 }
 

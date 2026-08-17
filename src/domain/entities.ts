@@ -96,6 +96,14 @@ export interface WhatsAppMessage {
   createdAt: Date;
 }
 
+export interface WhatsAppConversation {
+  phone: string;
+  clientId?: string;
+  profileName?: string;
+  lastMessage: WhatsAppMessage;
+  messageCount: number;
+}
+
 export class BusinessError extends Error {
   constructor(public code: string, message: string) {
     super(message);

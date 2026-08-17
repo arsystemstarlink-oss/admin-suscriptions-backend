@@ -555,6 +555,7 @@ interface DebtorItem {
 | Metodo | Path | Auth | Descripcion |
 |--------|------|------|-------------|
 | POST | /api/whatsapp/send | Bearer admin | Enviar mensaje (texto o template) |
+| GET | /api/whatsapp/conversations | Bearer admin | Conversaciones agrupadas por teléfono (incluye números sin cliente) |
 | GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
 | POST | /communications/webhook | Firma Twilio | Webhook para recibir mensajes de Twilio |
 
@@ -575,6 +576,22 @@ interface DebtorItem {
   success: boolean;
   messageSid: string;
   message: string;
+}
+// Error 401: UNAUTHORIZED
+```
+
+**GET /api/whatsapp/conversations** (requiere `Authorization: Bearer {accessToken}`)
+```typescript
+// Response 200
+{
+  conversations: {
+    phone: string;
+    clientId?: string;   // undefined si el número no pertenece a un cliente registrado
+    profileName?: string; // nombre que Twilio reportó del remitente
+    lastMessage: WhatsAppMessage;
+    messageCount: number;
+  }[];
+  total: number;
 }
 // Error 401: UNAUTHORIZED
 ```

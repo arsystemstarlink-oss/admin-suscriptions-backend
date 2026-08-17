@@ -127,6 +127,21 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
+router.get('/conversations', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const conversations = await whatsappMessageRepository.listConversations();
+
+    conversations.sort((a, b) => b.lastMessage.createdAt.getTime() - a.lastMessage.createdAt.getTime());
+
+    res.json({
+      conversations,
+      total: conversations.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phone } = req.params;
