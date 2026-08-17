@@ -49,6 +49,13 @@ TWILIO_FROM_NUMBER=
 # En development se puede desactivar con false.
 # En production la validación de firma del webhook es siempre obligatoria.
 TWILIO_WEBHOOK_VALIDATION=true
+
+# Web Push (notificaciones push del navegador). Generar el par de llaves con:
+#   npx web-push generate-vapid-keys --json
+# La llave privada nunca debe exponerse.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+VAPID_SUBJECT=mailto:admin@tu-dominio.com
 ```
 
 ### Generar JWT_SECRET seguro

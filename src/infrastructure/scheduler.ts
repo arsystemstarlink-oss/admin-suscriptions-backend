@@ -10,6 +10,7 @@ import {
 import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService } from './whatsapp-service';
+import { pushService } from './push-service';
 import { WhatsAppMessage } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
@@ -142,6 +143,24 @@ export async function runDailyJob(): Promise<void> {
   }
 
   await schedulerConfigRepository.updateConfig({ lastRun: now });
+
+  if (overdueCount > 0 || suspendedCount > 0) {
+    try {
+      const summaryParts = [
+        overdueCount > 0 ? `${overdueCount} período(s) vencido(s)` : null,
+        suspendedCount > 0 ? `${suspendedCount} suscripción(es) suspendida(s)` : null,
+      ].filter(Boolean);
+
+      await pushService.sendBroadcast({
+        title: 'Resumen diario',
+        body: summaryParts.join(' · '),
+        data: { url: '/dashboard' },
+      });
+      console.log(`[Daily Job] Push de resumen enviado a los admins.`);
+    } catch (error) {
+      console.error('[Daily Job] Error enviando push de resumen:', error);
+    }
+  }
 
   console.log(
     `[Daily Job] Completado - Períodos vencidos: ${overdueCount}, Períodos generados: ${generatedCount}, Suscripciones suspendidas: ${suspendedCount}, Notificaciones enviadas: ${notificationCount}`

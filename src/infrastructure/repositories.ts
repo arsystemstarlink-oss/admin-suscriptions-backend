@@ -1,5 +1,6 @@
 import { FirestoreRepository } from './firestore-repository';
-import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, RefreshTokenSession } from '../domain/entities';
+import { createId } from '../domain/business-rules';
+import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, RefreshTokenSession, PushSubscription } from '../domain/entities';
 
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
@@ -122,6 +123,55 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
   }
 }
 
+export class PushSubscriptionFirestoreRepository extends FirestoreRepository<PushSubscription> {
+  constructor() {
+    super('pushSubscriptions');
+  }
+
+  async findByEndpoint(endpoint: string): Promise<PushSubscription | undefined> {
+    const results = await this.listByField('endpoint', endpoint);
+    return results[0];
+  }
+
+  async listByAdminId(adminId: string): Promise<PushSubscription[]> {
+    return this.listByField('adminId', adminId);
+  }
+
+  async upsertByEndpoint(
+    endpoint: string,
+    data: { adminId: string; p256dh: string; auth: string; userAgent?: string }
+  ): Promise<PushSubscription> {
+    const existing = await this.findByEndpoint(endpoint);
+    const now = new Date();
+
+    if (existing) {
+      const updated: PushSubscription = {
+        ...existing,
+        adminId: data.adminId,
+        p256dh: data.p256dh,
+        auth: data.auth,
+        userAgent: data.userAgent,
+        updatedAt: now,
+      };
+      await this.update(updated);
+      return updated;
+    }
+
+    const created: PushSubscription = {
+      id: createId(),
+      adminId: data.adminId,
+      endpoint,
+      p256dh: data.p256dh,
+      auth: data.auth,
+      userAgent: data.userAgent,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.create(created);
+    return created;
+  }
+}
+
 export const clientRepository = new ClientFirestoreRepository();
 export const planRepository = new PlanFirestoreRepository();
 export const subscriptionRepository = new SubscriptionFirestoreRepository();
@@ -130,3 +180,4 @@ export const userRepository = new UserFirestoreRepository();
 export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRepository();
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();
+export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();

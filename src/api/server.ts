@@ -12,6 +12,7 @@ import billingPeriodRoutes from './routes/billing-periods';
 import dashboardRoutes from './routes/dashboard';
 import schedulerRoutes from './routes/scheduler';
 import whatsappRoutes from './routes/whatsapp';
+import pushRoutes from './routes/push';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { startScheduler } from '../infrastructure/scheduler';
@@ -98,6 +99,7 @@ app.get('/', (req, res) => {
       whatsapp: '/api/whatsapp',
       dashboard: '/api/dashboard',
       scheduler: '/api/scheduler',
+      push: '/api/push',
     },
   });
 });
@@ -123,6 +125,7 @@ app.use('/api/billing-periods', authenticateAdmin, billingPeriodRoutes);
 app.use('/api/scheduler', authenticateAdmin, schedulerRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/communications', whatsappRoutes);
+app.use('/api/push', pushRoutes);
 
 app.use(errorHandler);
 

@@ -15,6 +15,9 @@ const STATUS_BY_CODE: Record<string, number> = {
   RATE_LIMITED: 429,
   CANNOT_DELETE_SELF: 403,
   LAST_ADMIN: 409,
+  VAPID_NOT_CONFIGURED: 503,
+  PUSH_SUBSCRIPTION_NOT_FOUND: 404,
+  INVALID_PAYLOAD: 400,
 };
 
 export function errorHandler(

@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { whatsappService } from '../../infrastructure/whatsapp-service';
 import { whatsappMessageRepository, clientRepository } from '../../infrastructure/repositories';
+import { pushService } from '../../infrastructure/push-service';
 import { BusinessError, WhatsAppMessage } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
@@ -106,6 +107,16 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     await whatsappMessageRepository.create(whatsappMsg);
 
     console.log('[WhatsApp] Mensaje inbound recibido de', parsed.from);
+
+    pushService.sendBroadcast({
+      title: 'Nuevo mensaje de WhatsApp',
+      body: client
+        ? `${client.firstName} ${client.lastName}`
+        : parsed.profileName || parsed.from,
+      data: { url: '/chats' },
+    }).catch((error) => {
+      console.error('[Push] Error notificando mensaje entrante:', error);
+    });
 
     res.status(200).json({
       success: true,

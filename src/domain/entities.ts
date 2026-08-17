@@ -102,3 +102,14 @@ export class BusinessError extends Error {
     Object.setPrototypeOf(this, BusinessError.prototype);
   }
 }
+
+export interface PushSubscription {
+  id: string;
+  adminId: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  userAgent?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
