@@ -13,6 +13,8 @@ const STATUS_BY_CODE: Record<string, number> = {
   SETUP_DISABLED: 403,
   INVALID_SETUP_KEY: 403,
   RATE_LIMITED: 429,
+  CANNOT_DELETE_SELF: 403,
+  LAST_ADMIN: 409,
 };
 
 export function errorHandler(

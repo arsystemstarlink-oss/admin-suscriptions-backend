@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth';
+import adminRoutes from './routes/admins';
 import clientRoutes from './routes/clients';
 import planRoutes from './routes/plans';
 import subscriptionRoutes from './routes/subscriptions';
@@ -89,6 +90,7 @@ app.get('/', (req, res) => {
     version: '1.0.0',
     endpoints: {
       auth: '/api/auth',
+      admins: '/api/admins',
       clients: '/api/clients',
       plans: '/api/plans',
       subscriptions: '/api/subscriptions',
@@ -112,6 +114,7 @@ app.use('/api/auth/login', loginRateLimiter);
 app.use('/api/auth/refresh', refreshRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
 app.use('/api/auth', authRoutes);
+app.use('/api/admins', authenticateAdmin, adminRoutes);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
 app.use('/api/clients', authenticateAdmin, clientRoutes);
 app.use('/api/plans', authenticateAdmin, planRoutes);

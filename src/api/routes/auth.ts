@@ -11,9 +11,9 @@ import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
 
 const router = Router();
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function toUserDto(user: User) {
+export function toUserDto(user: User) {
   return {
     id: user.id,
     name: user.name,
@@ -25,7 +25,7 @@ function toUserDto(user: User) {
   };
 }
 
-function validatePasswordStrength(password: string): void {
+export function validatePasswordStrength(password: string): void {
   if (password.length < 8) {
     throw new BusinessError('WEAK_PASSWORD', 'La contraseña debe tener al menos 8 caracteres.');
   }
@@ -88,7 +88,7 @@ async function validateAndCreateUser(input: {
   return user;
 }
 
-function normalizePhoneToE164(value: string): string {
+export function normalizePhoneToE164(value: string): string {
   const digits = value.replace(/\D/g, '');
   let national = digits;
 

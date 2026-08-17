@@ -264,6 +264,58 @@ interface DebtorItem {
 
 ---
 
+### Administradores
+
+| Metodo | Path | Auth | Descripcion |
+|--------|------|------|-------------|
+| GET | /admins | Bearer admin | Listar admins |
+| GET | /admins/:id | Bearer admin | Detalle de admin |
+| PUT | /admins/:id | Bearer admin | Editar otro admin |
+| DELETE | /admins/:id | Bearer admin | Eliminar admin |
+
+**GET /admins**
+```typescript
+// Query params
+{ search?: string; limit?: number; offset?: number }
+// search filtra por name, email o phone
+// Response 200
+{ admins: User[]; pagination }
+// Ordenados por createdAt ascendente. Sin campo password.
+```
+
+**GET /admins/:id**
+```typescript
+// Response 200
+{ admin: User }
+// Error 404: NOT_FOUND | Error 401: UNAUTHORIZED
+```
+
+**PUT /admins/:id**
+```typescript
+// Header: Authorization: Bearer {accessToken} (admin)
+// Request (parcial, al menos un campo)
+{ name?: string; email?: string; phone?: string; newPassword?: string }
+// No requiere currentPassword del admin editado (lo hace otro admin)
+// newPassword: mínimo 8 caracteres, letras y números
+// phone se normaliza a E.164 (+58...)
+// Si email o newPassword cambian, se revocan todas las sesiones del admin editado
+// Si el admin editado es el mismo logueado, la respuesta incluye accessToken/refreshToken nuevos
+// Response 200
+{ admin: User; accessToken?: string; refreshToken?: string }
+// Errors: 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
+```
+
+**DELETE /admins/:id**
+```typescript
+// Header: Authorization: Bearer {accessToken} (admin)
+// Response 204
+// Revoca las sesiones del admin y lo elimina de Firestore y Firebase Auth
+// Errors: 403 CANNOT_DELETE_SELF | 409 LAST_ADMIN (único admin del sistema)
+//         404 NOT_FOUND | 401 UNAUTHORIZED
+```
+
+---
+
 ### Clientes
 
 | Metodo | Path | Descripcion |
@@ -709,4 +761,4 @@ Authorization: Bearer {accessToken}
 { error: { code: string; message: string } }
 ```
 
-Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS`
+Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`
