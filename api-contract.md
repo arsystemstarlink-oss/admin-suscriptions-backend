@@ -60,6 +60,7 @@ interface RefreshTokenSession {
 
 interface Client {
   id: string; firstName: string; lastName: string; phone: string;
+  dni?: string; // Cédula de identidad (formato canónico "V-2769383" o "J-123456789", única si existe)
   email?: string; address?: string; notes?: string;
   createdAt: string;
 }
@@ -119,7 +120,7 @@ interface ClientWithStats extends Client {
 }
 
 interface SubscriptionWithDetails extends Subscription {
-  client: Pick<Client, 'id' | 'firstName' | 'lastName' | 'phone' | 'email'>;
+  client: Pick<Client, 'id' | 'firstName' | 'lastName' | 'phone' | 'dni' | 'email'>;
   plan: Pick<Plan, 'id' | 'name' | 'price'>;
   currentPeriod?: BillingPeriod;
   totalPeriods: number; overduePeriods: number;
@@ -128,7 +129,7 @@ interface SubscriptionWithDetails extends Subscription {
 
 interface BillingPeriodWithDetails extends BillingPeriod {
   subscription: Pick<Subscription, 'id' | 'kitNumber' | 'status'>;
-  client: Pick<Client, 'id' | 'firstName' | 'lastName' | 'phone' | 'email'>;
+  client: Pick<Client, 'id' | 'firstName' | 'lastName' | 'phone' | 'dni' | 'email'>;
   plan: Pick<Plan, 'id' | 'name' | 'price'>;
 }
 
@@ -154,10 +155,11 @@ interface DashboardAlerts {
 interface AlertItem {
   periodId: string; periodLabel: string; amount: number; endDate: string;
   subscriptionId: string; kitNumber: string; clientName: string; clientPhone: string;
+  clientDni?: string;
 }
 
 interface DebtorItem {
-  clientId: string; clientName: string; clientPhone: string;
+  clientId: string; clientName: string; clientPhone: string; clientDni?: string;
   totalDebt: number; overdueCount: number;
 }
 ```
@@ -348,14 +350,19 @@ interface DebtorItem {
 **POST /clients**
 ```typescript
 // Request
-{ firstName: string; lastName: string; phone: string; email?: string; address?: string; notes?: string }
+{ firstName: string; lastName: string; phone: string; dni?: string; email?: string; address?: string; notes?: string }
+// dni se normaliza a formato canónico con guion (ej: "v.12.345.678" -> "V-12345678", "V12345678" -> "V-12345678")
+// dni: opcional, SOLO "V-" o "J-" + 7 a 9 dígitos numéricos. Otros formatos se rechazan (ej: "9279238239" -> INVALID_DNI)
 // Response 201 → Client
+// Errors: 400 INVALID_DNI | 409 DNI_TAKEN
 ```
 
 **PUT /clients/:id**
 ```typescript
 // Request (partial)
-{ firstName?: string; lastName?: string; phone?: string; email?: string; address?: string; notes?: string }
+{ firstName?: string; lastName?: string; phone?: string; dni?: string | null; email?: string; address?: string; notes?: string }
+// dni: null o "" elimina la cédula del cliente
+// Errors: 400 INVALID_DNI | 409 DNI_TAKEN
 // Response 200 → Client
 ```
 
@@ -762,6 +769,8 @@ Authorization: Bearer {accessToken}
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
 | scheduler enabled | Si es false, el Daily Job no se ejecuta automaticamente |
 | POST /scheduler/run | Ejecuta el job manualmente sin importar enabled |
+| dni | Opcional; SOLO "V-" o "J-" + 7-9 digitos numericos con guion (ej: V-2769383); unico |
+| PUT /clients/:id dni | null o "" elimina la cedula |
 | Suscripcion SUSPENDED | overdueCount >= maxOverduePeriods |
 | Suscripcion reactivada | overdueCount === 0 al pagar (todos los vencidos) |
 | Periodo actual al reactivar | Se genera desde hoy + billingDay como PENDING |
@@ -774,4 +783,4 @@ Authorization: Bearer {accessToken}
 { error: { code: string; message: string } }
 ```
 
-Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`
+Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`

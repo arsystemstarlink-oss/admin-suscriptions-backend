@@ -27,6 +27,18 @@ export function isValidBillingPeriodStatus(value: string): value is BillingPerio
   return value === 'PENDING' || value === 'PAID' || value === 'OVERDUE';
 }
 
+export function normalizeDni(raw: string): string {
+  const cleaned = raw.trim().toUpperCase().replace(/[^VJ0-9-]/g, '');
+  const prefix = cleaned.match(/[VJ]/)?.[0] ?? '';
+  const digits = cleaned.replace(/[^0-9]/g, '');
+  if (!digits) return '';
+  return prefix ? `${prefix}-${digits}` : digits;
+}
+
+export function isValidDni(dni: string): boolean {
+  return /^[VJ]-\d{7,9}$/.test(dni);
+}
+
 export function createId(): string {
   return `id_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
 }

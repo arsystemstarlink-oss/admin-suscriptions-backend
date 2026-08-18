@@ -127,7 +127,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         return {
           ...sub,
           client: client
-            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
+            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
             : null,
           plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
           currentPeriod,
@@ -197,7 +197,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       subscription: {
         ...subscription,
         client: client
-          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, email: client.email }
+          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
           : null,
         plan: plan ? { id: plan.id, name: plan.name, price: plan.price, description: plan.description } : null,
       },

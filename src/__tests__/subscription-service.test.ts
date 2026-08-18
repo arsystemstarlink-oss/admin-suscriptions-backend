@@ -15,6 +15,7 @@ describe('SubscriptionBusinessService', () => {
       firstName: 'Cliente',
       lastName: 'Test',
       phone: '+1234567890',
+      dni: 'V-12345678',
       email: 'test@example.com',
       createdAt: new Date(),
     };

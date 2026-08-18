@@ -121,6 +121,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
           clientId: debtor.clientId,
           clientName: client ? `${client.firstName} ${client.lastName}` : 'Desconocido',
           clientPhone: client?.phone || '',
+          clientDni: client?.dni,
           totalDebt: debtor.totalDebt,
           overdueCount: debtor.overdueCount,
         };
@@ -138,6 +139,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         kitNumber: sub?.kitNumber,
         clientName: client ? `${client.firstName} ${client.lastName}` : undefined,
         clientPhone: client?.phone,
+        clientDni: client?.dni,
       };
     };
 

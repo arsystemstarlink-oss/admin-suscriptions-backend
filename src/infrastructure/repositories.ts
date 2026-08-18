@@ -6,6 +6,11 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
     super('clients');
   }
+
+  async findByDni(dni: string): Promise<Client | undefined> {
+    const results = await this.listByField('dni', dni);
+    return results[0];
+  }
 }
 
 export class PlanFirestoreRepository extends FirestoreRepository<Plan> {

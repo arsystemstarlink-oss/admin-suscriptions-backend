@@ -2,6 +2,7 @@ export interface CreateClientDto {
   firstName: string;
   lastName: string;
   phone: string;
+  dni?: string;
   email?: string;
   address?: string;
   notes?: string;
@@ -11,6 +12,7 @@ export interface UpdateClientDto {
   firstName?: string;
   lastName?: string;
   phone?: string;
+  dni?: string | null;
   email?: string;
   address?: string;
   notes?: string;

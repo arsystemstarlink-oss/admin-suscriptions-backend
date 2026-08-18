@@ -5,8 +5,8 @@ import {
   billingPeriodRepository 
 } from '../../infrastructure/repositories';
 import { CreateClientDto, UpdateClientDto } from '../dto';
-import { BusinessError } from '../../domain/entities';
-import { createId } from '../../domain/business-rules';
+import { BusinessError, Client } from '../../domain/entities';
+import { createId, normalizeDni, isValidDni } from '../../domain/business-rules';
 
 const router = Router();
 
@@ -18,11 +18,24 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('INVALID_DATA', 'Nombre, apellido y teléfono son obligatorios.');
     }
 
+    let dni: string | undefined;
+    if (dto.dni !== undefined && dto.dni !== null && dto.dni.trim() !== '') {
+      dni = normalizeDni(dto.dni);
+      if (!isValidDni(dni)) {
+        throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
+      }
+      const existing = await clientRepository.findByDni(dni);
+      if (existing) {
+        throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad.');
+      }
+    }
+
     const client = {
       id: createId(),
       firstName: dto.firstName,
       lastName: dto.lastName,
       phone: dto.phone,
+      dni,
       email: dto.email,
       address: dto.address,
       notes: dto.notes,
@@ -55,6 +68,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           c.lastName.toLowerCase().includes(searchLower) ||
           `${c.firstName} ${c.lastName}`.toLowerCase().includes(searchLower) ||
           c.phone.includes(search) ||
+          c.dni?.toLowerCase().includes(searchLower) ||
           c.email?.toLowerCase().includes(searchLower)
       );
     }
@@ -183,10 +197,27 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
     }
 
-    const updated = {
+    const { dni: _dni, ...dtoRest } = dto;
+    let updated: Client = {
       ...existing,
-      ...dto,
+      ...dtoRest,
     };
+
+    if (dto.dni !== undefined) {
+      if (dto.dni === null || dto.dni.trim() === '') {
+        updated = { ...updated, dni: undefined };
+      } else {
+        const normalized = normalizeDni(dto.dni);
+        if (!isValidDni(normalized)) {
+          throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
+        }
+        const existingWithDni = await clientRepository.findByDni(normalized);
+        if (existingWithDni && existingWithDni.id !== existing.id) {
+          throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad.');
+        }
+        updated = { ...updated, dni: normalized };
+      }
+    }
 
     await clientRepository.update(updated);
     res.json(updated);
