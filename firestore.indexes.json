@@ -64,13 +64,6 @@
         { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "phone", "order": "ASCENDING" }
       ]
-    },
-    {
-      "collectionGroup": "users",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" }
-      ]
     }
   ],
   "fieldOverrides": []
