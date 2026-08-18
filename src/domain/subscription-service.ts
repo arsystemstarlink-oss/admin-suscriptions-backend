@@ -38,6 +38,7 @@ export interface SubscriptionSummary {
 
 export class SubscriptionBusinessService {
   createSubscription(params: {
+    organizationId: string;
     clientId: string;
     plan: Plan;
     kitNumber: string;
@@ -48,7 +49,7 @@ export class SubscriptionBusinessService {
     activationDate?: Date;
     historicalPayments?: HistoricalPaymentInput[];
   }): { subscription: Subscription; billingPeriods: BillingPeriod[]; summary: SubscriptionSummary } {
-    const { clientId, plan, kitNumber, accountNumber, billingDay, maxOverduePeriods, registrationDate, activationDate, historicalPayments } = params;
+    const { organizationId, clientId, plan, kitNumber, accountNumber, billingDay, maxOverduePeriods, registrationDate, activationDate, historicalPayments } = params;
 
     if (!clientId) {
       throw new BusinessError('INVALID_CLIENT', 'El cliente es obligatorio.');
@@ -64,6 +65,7 @@ export class SubscriptionBusinessService {
 
     const subscription: Subscription = {
       id: createId(),
+      organizationId,
       clientId,
       planId: plan.id,
       kitNumber,
@@ -82,6 +84,7 @@ export class SubscriptionBusinessService {
       this.validateRetroactiveData(activationDate, payments, plan.price);
       billingPeriods = this.generateRetroactivePeriods(
         subscription.id,
+        organizationId,
         activationDate,
         billingDay,
         plan.price,
@@ -95,6 +98,7 @@ export class SubscriptionBusinessService {
 
       const firstBillingPeriod: BillingPeriod = {
         id: createId(),
+        organizationId,
         subscriptionId: subscription.id,
         periodLabel,
         startDate,
@@ -171,6 +175,7 @@ export class SubscriptionBusinessService {
 
   private generateRetroactivePeriods(
     subscriptionId: string,
+    organizationId: string,
     activationDate: Date,
     billingDay: number,
     planPrice: number,
@@ -224,6 +229,7 @@ export class SubscriptionBusinessService {
 
       periods.push({
         id: createId(),
+        organizationId,
         subscriptionId,
         periodLabel: buildPeriodLabel(periodStart, periodEnd),
         startDate: periodStart,
@@ -299,6 +305,7 @@ export class SubscriptionBusinessService {
 
     return {
       id: createId(),
+      organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
       periodLabel: buildPeriodLabel(nextStartDate, nextEndDate),
       startDate: nextStartDate,
@@ -324,6 +331,7 @@ export class SubscriptionBusinessService {
 
     return {
       id: createId(),
+      organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
       periodLabel,
       startDate,

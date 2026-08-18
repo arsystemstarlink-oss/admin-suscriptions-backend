@@ -55,4 +55,22 @@ export function getFirestore(): admin.firestore.Firestore {
   return admin.firestore();
 }
 
+export async function syncUserCustomClaims(params: {
+  uid: string;
+  role: string;
+  organizationId: string | null;
+}): Promise<void> {
+  try {
+    await admin.auth().setCustomUserClaims(params.uid, {
+      role: params.role,
+      organizationId: params.organizationId,
+    });
+  } catch (error) {
+    console.warn(
+      `[Firebase] No se pudieron sincronizar custom claims para ${params.uid}:`,
+      (error as Error).message
+    );
+  }
+}
+
 export { admin };

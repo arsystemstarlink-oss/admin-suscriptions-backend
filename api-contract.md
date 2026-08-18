@@ -9,9 +9,15 @@ Auth: Authorization: Bearer {accessToken}
 
 **Tokens:** accessToken (15 min) | refreshToken (7 dias)
 
+**Multi-tenant (regla central):**
+- Cada usuario `admin` pertenece a una organización (`organizationId`). El backend **ignora** cualquier `organizationId` enviado por el frontend para un `admin` y usa el de su contexto autenticado (JWT + verificación en Firestore).
+- Un `super-admin` (`organizationId: null`) puede operar sobre todas las organizaciones. Puede filtrar con `?organizationId=org_X` o indicar `organizationId` en el body al crear recursos.
+- Ninguna operación de un `admin` puede cruzar el límite de su organización (previene IDOR/tenant crossing).
+- Referencias cruzadas (ej: `clientId` y `planId` de organizaciones distintas en `POST /subscriptions`) se rechazan con `403 CROSS_TENANT_REFERENCE`.
+
 **Seguridad:**
-- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout` y webhooks Twilio) requieren JWT de admin.
-- Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId) y `jti` (refresh); no son intercambiables.
+- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout` y webhooks Twilio) requieren JWT de admin/super-admin.
+- Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId), `role` y `organizationId`; no son intercambiables.
 - El refresh token es de un solo uso: cada `POST /auth/refresh` rota a un token nuevo y revoca el anterior (sesión persistida en `refreshTokenSessions`).
 - Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
@@ -32,6 +38,8 @@ Auth: Authorization: Bearer {accessToken}
 ## Tipos
 
 ```typescript
+type UserRole = 'super-admin' | 'admin';
+
 enum PaymentMethod { CASH, TRANSFER, USDT, CARD, OTHER }
 // INITIAL_PAYMENT ya no se crea en el registro; se conserva por compatibilidad con períodos existentes
 
@@ -43,9 +51,16 @@ enum BillingPeriodStatus { PENDING, PAID, OVERDUE }
 ### Entidades
 
 ```typescript
+interface Organization {
+  id: string; name: string; slug?: string; active: boolean;
+  createdAt: string; createdBy?: string;
+}
+
 interface User {
   id: string; name: string; email: string;
-  role: 'admin'; phone?: string; // normalizado a E.164 (+58...)
+  role: UserRole;
+  organizationId: string | null; // null => super-admin; requerido para admin
+  phone?: string; // normalizado a E.164 (+58...)
   lastLoginAt?: string;
   createdAt: string;
 }
@@ -59,26 +74,29 @@ interface RefreshTokenSession {
 }
 
 interface Client {
-  id: string; firstName: string; lastName: string; phone: string;
-  dni?: string; // Cédula de identidad (formato canónico "V-2769383" o "J-123456789", única si existe)
+  id: string; organizationId: string;
+  firstName: string; lastName: string; phone: string;
+  dni?: string; // Cédula de identidad (única POR organización, formato canónico "V-2769383" o "J-123456789")
   email?: string; address?: string; notes?: string;
   createdAt: string;
 }
 
 interface Plan {
-  id: string; name: string; price: number;
+  id: string; organizationId: string;
+  name: string; price: number;
   description: string; active: boolean; createdAt: string;
 }
 
 interface Subscription {
-  id: string; clientId: string; planId: string; kitNumber: string;
+  id: string; organizationId: string;
+  clientId: string; planId: string; kitNumber: string;
   accountNumber?: string;
   billingDay: number; status: SubscriptionStatus;
   maxOverduePeriods: number; activationDate?: string; createdAt: string;
 }
 
 interface SchedulerConfig {
-  id: string;
+  id: string; // organizationId para configs por org; 'global' para la configuración global
   enabled: boolean;
   cronSchedule: string;
   lastRun?: string;
@@ -86,7 +104,8 @@ interface SchedulerConfig {
 }
 
 interface BillingPeriod {
-  id: string; subscriptionId: string; periodLabel: string;
+  id: string; organizationId: string;
+  subscriptionId: string; periodLabel: string;
   startDate: string; endDate: string; amount: number;
   status: BillingPeriodStatus;
   paidAt?: string; paymentMethod?: PaymentMethod; notes?: string;
@@ -98,6 +117,7 @@ type MessageStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 interface WhatsAppMessage {
   id: string;
+  organizationId?: string;
   clientId?: string;
   phone: string;
   direction: MessageDirection;
@@ -172,14 +192,14 @@ interface DebtorItem {
 
 | Metodo | Path | Auth | Descripcion |
 |--------|------|------|-------------|
-| POST | /auth/setup | Header `X-Setup-Key` | Crear el PRIMER admin (solo sin admins existentes) |
-| POST | /auth/register | Bearer admin | Crear un admin adicional |
+| POST | /auth/setup | Header `X-Setup-Key` | Crear el PRIMER usuario (super-admin) (solo sin usuarios existentes) |
+| POST | /auth/register | Bearer admin/super-admin | Crear un admin adicional (o super-admin si lo hace un super-admin) |
 | POST | /auth/login | - | Login |
 | POST | /auth/refresh | - | Renovar tokens (rota refresh token) |
 | POST | /auth/logout | - | Revocar refresh token (logout por sesión) |
-| GET | /auth/me | Bearer admin | Perfil del admin logueado |
-| PUT | /auth/me | Bearer admin | Editar name/email/phone |
-| POST | /auth/change-password | Bearer admin | Cambiar contraseña |
+| GET | /auth/me | Bearer admin/super-admin | Perfil del usuario logueado |
+| PUT | /auth/me | Bearer admin/super-admin | Editar name/email/phone |
+| POST | /auth/change-password | Bearer admin/super-admin | Cambiar contraseña |
 
 **POST /auth/setup**
 ```typescript
@@ -189,20 +209,24 @@ interface DebtorItem {
 // password: mínimo 8 caracteres, letras y números
 // Response 201
 { message: string; user: User }
-// Solo funciona mientras NO exista ningún admin
-// Errors: 403 SETUP_DISABLED (no configurado o ya hay admin) | 403 INVALID_SETUP_KEY
+// Crea el PRIMER super-admin (organizationId: null)
+// Solo funciona mientras NO exista ningún usuario
+// Errors: 403 SETUP_DISABLED (no configurado o ya hay usuario) | 403 INVALID_SETUP_KEY
 //         400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
 // Rate limit: 5 intentos / 15 min por IP
 ```
 
 **POST /auth/register**
 ```typescript
-// Header: Authorization: Bearer {accessToken} (admin existente)
+// Header: Authorization: Bearer {accessToken} (admin o super-admin)
 // Request
-{ name: string; email: string; password: string; phone?: string }
+{ name: string; email: string; password: string; phone?: string; role?: 'admin' | 'super-admin'; organizationId?: string }
+// - Un admin solo puede crear admins dentro de SU organización (role y organizationId se ignoran).
+// - Un super-admin puede crear admins (requiere organizationId) o super-admins (organizationId: null).
 // Response 201
 { message: string; user: User }
-// Errors: 401 UNAUTHORIZED | 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
+// Errors: 401 UNAUTHORIZED | 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE
+//         403 TENANT_REQUIRED | 404 ORGANIZATION_NOT_FOUND | 409 EMAIL_TAKEN
 ```
 
 **POST /auth/login**
@@ -309,11 +333,63 @@ interface DebtorItem {
 
 **DELETE /admins/:id**
 ```typescript
-// Header: Authorization: Bearer {accessToken} (admin)
+// Header: Authorization: Bearer {accessToken} (admin o super-admin)
 // Response 204
 // Revoca las sesiones del admin y lo elimina de Firestore y Firebase Auth
+// Un admin solo puede eliminar admins de SU organización. No puede eliminar super-admins.
 // Errors: 403 CANNOT_DELETE_SELF | 409 LAST_ADMIN (único admin del sistema)
 //         404 NOT_FOUND | 401 UNAUTHORIZED
+```
+
+---
+
+### Organizaciones
+
+> Solo `super-admin`. Un `admin` no tiene endpoints de organizaciones (usa su propio contexto).
+
+| Metodo | Path | Auth | Descripcion |
+|--------|------|------|-------------|
+| GET | /organizations | Bearer super-admin | Listar organizaciones |
+| GET | /organizations/:id | Bearer super-admin | Detalle de organización (incluye usuarios) |
+| POST | /organizations | Bearer super-admin | Crear organización |
+| PUT | /organizations/:id | Bearer super-admin | Actualizar organización |
+| DELETE | /organizations/:id | Bearer super-admin | Eliminar organización (solo sin usuarios) |
+
+**POST /organizations**
+```typescript
+// Request
+{ name: string; slug?: string; active?: boolean }
+// slug se normaliza a minúsculas con guiones (ej: "Org A" -> "org-a"). Único si se usa.
+// Response 201 → Organization
+// Errors: 400 INVALID_DATA (nombre obligatorio, slug duplicado)
+```
+
+**GET /organizations**
+```typescript
+// Query params
+{ search?: string; limit?: number; offset?: number }
+// Response 200
+{ organizations: Organization[]; pagination }
+```
+
+**GET /organizations/:id**
+```typescript
+// Response 200
+{ organization: Organization; users: Array<{ id, name, email, role, createdAt }> }
+// Error 404: ORGANIZATION_NOT_FOUND
+```
+
+**PUT /organizations/:id**
+```typescript
+// Request (partial)
+{ name?: string; slug?: string; active?: boolean }
+// Response 200 → Organization
+```
+
+**DELETE /organizations/:id**
+```typescript
+// Response 204
+// Errors: 404 ORGANIZATION_NOT_FOUND | 400 INVALID_DATA (tiene usuarios asignados)
 ```
 
 ---
@@ -784,3 +860,26 @@ Authorization: Bearer {accessToken}
 ```
 
 Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`
+
+Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
+
+## Multi-Tenant: Reglas de Alcance por Endpoint
+
+| Endpoint | admin | super-admin |
+|----------|-------|-------------|
+| GET/POST/PUT/DELETE /clients, /plans, /subscriptions, /billing-periods | Solo su organización. `?organizationId` y `body.organizationId` son **ignorados** | Todas, o filtradas con `?organizationId=org_X`. Al crear, debe indicar `organizationId` (body o query) |
+| GET /dashboard/summary, /alerts | Solo su organización | Todas o filtradas |
+| GET/PUT /scheduler/config | Su organización | `?organizationId=org_X` o configuración global sin filtro |
+| POST /scheduler/run | Su organización | `?organizationId=org_X` o todas sin filtro |
+| GET/PUT/DELETE /admins | Solo admins de su organización | Todos o filtrados |
+| POST /auth/register | Crea admin en su organización | Crea admin (con org) o super-admin |
+| POST /subscriptions | Valida que `clientId` y `planId` pertenezcan a su organización (`CROSS_TENANT_REFERENCE` si no) | Igual validación contra la org indicada |
+| POST /billing-periods/:id/pay | Solo períodos de su organización | Todos o filtrados |
+
+## Migración (single-tenant → multi-tenant)
+
+```bash
+npm run migrate:tenant                # asigna todo a org_default
+npm run migrate:tenant -- --promote-super-admin  # además promueve al primer admin a super-admin
+```
+Crea `organizations/org_default` si no existe, asigna `organizationId` a `clients`, `plans`, `subscriptions`, `billingPeriods`, `whatsappMessages`, `pushSubscriptions` y `users` (admins). Valida que no queden huérfanos. Los super-admin quedan con `organizationId: null`.

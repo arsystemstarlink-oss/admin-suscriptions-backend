@@ -1,4 +1,8 @@
 Documento de Diseño - Sistema de Gestión de Suscripciones
+
+> **Anexo Multi-Tenant (2026):** el sistema soporta múltiples organizaciones aisladas.
+> Ver sección "13. Multi-Tenant por Organización" al final.
+
 1. Objetivo del sistema
 
 El sistema tiene como objetivo administrar clientes con servicios de suscripción, permitiendo:
@@ -547,3 +551,47 @@ Registra clientes.
 Crea servicios.
 Cambia planes.
 Confirma pagos.
+13. Multi-Tenant por Organización
+
+El sistema es multi-tenant: cada organización (tenant) tiene sus propios clientes, planes, suscripciones, períodos, mensajes y suscripciones push. Un admin solo opera sobre su organización; un super-admin opera globalmente.
+
+AuthContext
+
+Todo request autenticado resuelve:
+
+AuthContext {
+  userId: string;
+  role: 'super-admin' | 'admin';
+  organizationId: string | null; // null solo para super-admin
+}
+
+El backend ignora el organizationId que envíe el frontend para un admin y usa el de su contexto autenticado (JWT + verificación en Firestore). Esto impide acceso cruzado entre tenants (IDOR).
+
+Entidades
+
+- Organization: id, name, slug, active, createdAt, createdBy.
+- User: agrega role ('super-admin' | 'admin') y organizationId (null para super-admin).
+- Client, Plan, Subscription, BillingPeriod, PushSubscription: agregan organizationId obligatorio.
+- WhatsAppMessage: organizationId opcional (los mensajes inbound de números sin cliente no tienen org).
+- BillingPeriod conserva organizationId desnormalizado para filtros directos sin joins.
+- domainEvents: colección de auditoría con organizationId, type, entity, entityId, payload.
+- Payment: sigue siendo un value object embebido en BillingPeriod (paidAt, paymentMethod, amount, notes).
+
+Alcance por rol
+
+| Operación | admin | super-admin |
+|-----------|-------|-------------|
+| CRUD clientes/planes/suscripciones/períodos | Solo su org | Todas o `?organizationId=org_X` |
+| POST /subscriptions | Valida clientId y planId en su org (CROSS_TENANT_REFERENCE si no) | Idem contra la org indicada |
+| Dashboard | Solo su org | Todas o filtradas |
+| Scheduler | Su org | `?organizationId` o global |
+| Admins | Solo su org | Todos |
+| Organizations | - | CRUD completo |
+
+Daily Job
+
+El cron global ejecuta runDailyJobForOrganization(orgId) por cada organización activa, escaneando solo sus datos y enviando notificaciones (WhatsApp/Push) dentro de la org. La configuración del scheduler es por organización (schedulerConfig/{orgId}) además de la global.
+
+Migración
+
+npm run migrate:tenant crea organizations/org_default, asigna organizationId a todos los documentos existentes y valida que no queden huérfanos. Con --promote-super-admin promueve al primer admin a super-admin.

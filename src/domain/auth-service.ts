@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
 import crypto from 'crypto';
-import { User } from '../domain/entities';
+import { User, UserRole } from '../domain/entities';
+import { AuthContext } from './auth-context';
 
 const ACCESS_TOKEN_EXPIRES = '15m';
 const REFRESH_TOKEN_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000;
@@ -14,9 +15,18 @@ export interface TokenPayload {
   sub: string;
   userId: string;
   email: string;
-  role: string;
+  role: UserRole;
+  organizationId: string | null;
   type: TokenType;
   jti?: string;
+}
+
+export function toAuthContext(payload: TokenPayload): AuthContext {
+  return {
+    userId: payload.userId,
+    role: payload.role,
+    organizationId: payload.organizationId ?? null,
+  };
 }
 
 export interface GeneratedRefreshToken {
@@ -74,6 +84,7 @@ export class AuthService {
       userId: user.id,
       email: user.email,
       role: user.role,
+      organizationId: user.organizationId ?? null,
       type: 'access',
     };
 
@@ -89,6 +100,7 @@ export class AuthService {
       userId: user.id,
       email: user.email,
       role: user.role,
+      organizationId: user.organizationId ?? null,
       type: 'refresh',
       jti,
     };

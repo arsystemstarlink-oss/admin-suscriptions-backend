@@ -231,17 +231,28 @@ curl http://localhost:3000/health
 El sistema usa Firebase Firestore para persistencia de datos. Los datos se mantienen entre reinicios.
 
 ### Colecciones de Firebase
-- `clients` - Clientes del sistema
-- `plans` - Planes de suscripción
-- `subscriptions` - Suscripciones activas
-- `billingPeriods` - Períodos de facturación
-- `users` - Usuarios administradores
+- `organizations` - Organizaciones (tenants); solo super-admin CRUD
+- `clients` - Clientes del sistema (scoped por `organizationId`)
+- `plans` - Planes de suscripción (scoped por `organizationId`)
+- `subscriptions` - Suscripciones activas (scoped por `organizationId`)
+- `billingPeriods` - Períodos de facturación (scoped por `organizationId`)
+- `users` - Usuarios administradores (`role: 'super-admin' | 'admin'`, `organizationId` null solo para super-admin)
 - `refreshTokenSessions` - Sesiones de refresh token (rotación/revocación)
-- `whatsappMessages` - Historial de mensajes WhatsApp
-- `schedulerConfig` - Configuración del cron job
+- `whatsappMessages` - Historial de mensajes WhatsApp (scoped por `organizationId`)
+- `pushSubscriptions` - Suscripciones web push (scoped por `organizationId`)
+- `schedulerConfig` - Configuración del cron (por org: `schedulerConfig/{orgId}`; `global` para el schedule)
+- `domainEvents` - Auditoría de eventos de dominio (scoped por `organizationId`)
 
 ### Reglas de Firestore
-Como el backend usa Firebase Admin SDK, el acceso a datos no pasa por las reglas del cliente. Aun así, en la consola de Firebase las reglas de la base de datos deben denegar acceso público de lectura/escritura (especialmente la colección `users` con hashes bcrypt).
+El backend usa Firebase Admin SDK (bypass de reglas). Además, para protección de clientes directos se incluyen `firestore.rules` y `firestore.indexes.json` en el repo.
+
+Despliegue (requiere Firebase CLI):
+```
+firebase deploy --only firestore:rules
+firebase deploy --only firestore:indexes
+```
+
+Las reglas usan custom claims (`request.auth.token.role`, `request.auth.token.organizationId`). El backend sincroniza esos claims automáticamente al crear usuarios (`POST /auth/setup`, `POST /auth/register`), al loguear y al editar rol/org de un admin. Usuarios existentes migrados antes de este cambio deben volver a hacer login (o `npm run create-admin` en el mismo UID) para refrescar claims.
 
 ## Seguridad
 
@@ -253,7 +264,8 @@ Como el backend usa Firebase Admin SDK, el acceso a datos no pasa por las reglas
 - Access y refresh tokens con claim `type` distinto (un access token no sirve como refresh) y `sub` (userId)
 - Refresh tokens de un solo uso: rotación en cada refresh, revocación en logout, y revocación de todas las sesiones si se detecta reuso (`refreshTokenSessions`)
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión)
-- Middleware verifica `role === 'admin'`
+- Middleware verifica `role === 'admin' | 'super-admin'` y reverifica el usuario (rol + org) en Firestore en cada request
+- Aislamiento multi-tenant: un admin solo opera sobre su `organizationId`; el backend ignora el `organizationId` enviado por el frontend. Referencias cruzadas (`clientId`/`planId` de otra org) → `403 CROSS_TENANT_REFERENCE`
 - `JWT_SECRET` obligatorio (mín. 32 chars); en production se rechaza el valor de ejemplo
 - Rate limits: `POST /api/auth/login` (20 intentos / 15 min), `POST /api/auth/refresh` (60 / 15 min) y `POST /api/auth/setup` (5 / 15 min)
 - Creación de admin: primer admin vía `POST /api/auth/setup` con clave `SETUP_KEY` (solo sin admins existentes); admins adicionales vía `POST /api/auth/register` con JWT de admin
@@ -275,7 +287,10 @@ Como el backend usa Firebase Admin SDK, el acceso a datos no pasa por las reglas
 - [ ] Logs no contienen información sensible
 - [ ] Dependencias actualizadas (`npm audit`)
 - [ ] Credenciales de Firebase almacenadas de forma segura (no en git)
-- [ ] Reglas de Firestore deniegan acceso público
+- [ ] Reglas de Firestore desplegadas (`firebase deploy --only firestore:rules`)
+- [ ] Índices compuestos desplegados (`firebase deploy --only firestore:indexes`)
+- [ ] Migración multi-tenant ejecutada (`npm run migrate:tenant`) y sin huérfanos
+- [ ] Smoke test de aislamiento pasado (`npm run smoke:tenant`)
 - [ ] TRUST_PROXY configurado cuando hay proxy inverso delante
 
 ### Configuración CORS

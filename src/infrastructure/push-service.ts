@@ -35,8 +35,9 @@ export class PushService {
     return process.env.VAPID_PUBLIC_KEY as string;
   }
 
-  async registerSubscription(adminId: string, input: PushRegistrationInput): Promise<PushSubscription> {
+  async registerSubscription(adminId: string, organizationId: string, input: PushRegistrationInput): Promise<PushSubscription> {
     return pushSubscriptionRepository.upsertByEndpoint(input.endpoint, {
+      organizationId,
       adminId,
       p256dh: input.keys.p256dh,
       auth: input.keys.auth,
@@ -74,6 +75,14 @@ export class PushService {
     const admins = await userRepository.list();
     const adminIds = admins.filter((u) => u.role === 'admin').map((u) => u.id);
     return this.sendToAdmins(adminIds, payload);
+  }
+
+  async sendBroadcastToOrganization(params: { organizationId: string; title: string; body: string; data?: PushPayload['data'] }): Promise<number> {
+    const { organizationId, title, body, data } = params;
+    const adminIds = await userRepository
+      .listByOrganization(organizationId)
+      .then((admins) => admins.filter((u) => u.role === 'admin').map((u) => u.id));
+    return this.sendToAdmins(adminIds, { title, body, data });
   }
 
   async sendToAdmins(adminIds: string[], payload: PushPayload): Promise<number> {

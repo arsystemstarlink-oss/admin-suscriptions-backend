@@ -2,12 +2,15 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   userRepository,
   refreshTokenSessionRepository,
+  organizationRepository,
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
-import { BusinessError, User } from '../../domain/entities';
+import { BusinessError, User, UserRole } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
-import { admin } from '../../infrastructure/firebase';
+import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
+import { getAuth } from '../middleware/tenant';
+import { isSuperAdmin } from '../../domain/auth-context';
 
 const router = Router();
 
@@ -20,6 +23,7 @@ export function toUserDto(user: User) {
     email: user.email,
     phone: user.phone,
     role: user.role,
+    organizationId: user.organizationId,
     lastLoginAt: user.lastLoginAt,
     createdAt: user.createdAt,
   };
@@ -39,10 +43,13 @@ async function validateAndCreateUser(input: {
   email?: string;
   password?: string;
   phone?: string;
+  role?: UserRole;
+  organizationId?: string | null;
 }): Promise<User> {
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
   const password = input.password || '';
+  const role: UserRole = input.role === 'super-admin' ? 'super-admin' : 'admin';
 
   if (!name) {
     throw new BusinessError('INVALID_DATA', 'El nombre es obligatorio.');
@@ -60,12 +67,31 @@ async function validateAndCreateUser(input: {
     throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
   }
 
+  let organizationId: string | null = null;
+
+  if (role === 'super-admin') {
+    organizationId = null;
+  } else {
+    organizationId = input.organizationId ?? null;
+    if (!organizationId) {
+      throw new BusinessError(
+        'TENANT_REQUIRED',
+        'Un administrador debe pertenecer a una organización (organizationId).'
+      );
+    }
+    const organization = await organizationRepository.getById(organizationId);
+    if (!organization || !organization.active) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización indicada no existe o está inactiva.');
+    }
+  }
+
   const user: User = {
     id: createId(),
     name,
     email,
     password: await authService.hashPassword(password),
-    role: 'admin',
+    role,
+    organizationId,
     phone: input.phone ? normalizePhoneToE164(input.phone) : undefined,
     createdAt: new Date(),
   };
@@ -84,6 +110,12 @@ async function validateAndCreateUser(input: {
       console.warn('[Auth] No se pudo crear en Firebase Auth:', firebaseError.message);
     }
   }
+
+  await syncUserCustomClaims({
+    uid: user.id,
+    role: user.role,
+    organizationId: user.organizationId,
+  });
 
   return user;
 }
@@ -148,6 +180,12 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     const updatedUser: User = { ...user, lastLoginAt: new Date() };
     await userRepository.update(updatedUser);
 
+    await syncUserCustomClaims({
+      uid: user.id,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
+
     res.json({
       accessToken,
       refreshToken,
@@ -173,7 +211,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       throw new BusinessError('UNAUTHORIZED', 'Refresh token inválido o expirado.');
     }
 
-    if (payload.role !== 'admin') {
+    if (payload.role !== 'admin' && payload.role !== 'super-admin') {
       throw new BusinessError('FORBIDDEN', 'Se requieren permisos de administrador.');
     }
 
@@ -206,6 +244,12 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     });
 
     await createRefreshSession(user, newRefreshToken, newJti, newExpiresAt);
+
+    await syncUserCustomClaims({
+      uid: user.id,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
 
     res.json({
       accessToken: authService.generateAccessToken(user),
@@ -269,10 +313,12 @@ router.post('/setup', async (req: Request, res: Response, next: NextFunction) =>
       email: req.body?.email,
       password: req.body?.password,
       phone: req.body?.phone,
+      role: 'super-admin',
+      organizationId: null,
     });
 
     res.status(201).json({
-      message: 'Administrador creado correctamente.',
+      message: 'Super administrador creado correctamente.',
       user: toUserDto(user),
     });
   } catch (err) {
@@ -282,11 +328,31 @@ router.post('/setup', async (req: Request, res: Response, next: NextFunction) =>
 
 router.post('/register', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const actor = getAuth(req);
+    const requestedRole: UserRole = req.body?.role === 'super-admin' ? 'super-admin' : 'admin';
+
+    let role: UserRole;
+    let organizationId: string | null;
+
+    if (isSuperAdmin(actor)) {
+      role = requestedRole;
+      if (role === 'admin') {
+        organizationId = (req.body?.organizationId as string) || null;
+      } else {
+        organizationId = null;
+      }
+    } else {
+      role = 'admin';
+      organizationId = actor.organizationId;
+    }
+
     const user = await validateAndCreateUser({
       name: req.body?.name,
       email: req.body?.email,
       password: req.body?.password,
       phone: req.body?.phone,
+      role,
+      organizationId,
     });
 
     res.status(201).json({

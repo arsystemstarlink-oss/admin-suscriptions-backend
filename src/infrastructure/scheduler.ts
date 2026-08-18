@@ -6,12 +6,14 @@ import {
   schedulerConfigRepository,
   clientRepository,
   whatsappMessageRepository,
+  organizationRepository,
+  domainEventRepository,
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService } from './whatsapp-service';
 import { pushService } from './push-service';
-import { WhatsAppMessage } from '../domain/entities';
+import { WhatsAppMessage, DomainEventType } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
 const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
@@ -30,13 +32,40 @@ function getNextRun(cronExpression: string, timezone: string): Date {
   return new Date(start);
 }
 
-export async function runDailyJob(): Promise<void> {
-  const now = new Date();
-  console.log(`[Daily Job] Ejecutando revisión automática - ${now.toISOString()}`);
+async function recordDomainEvent(
+  type: DomainEventType,
+  organizationId: string,
+  entity: string,
+  entityId: string,
+  payload?: Record<string, unknown>
+): Promise<void> {
+  try {
+    await domainEventRepository.create({
+      id: createId(),
+      type,
+      organizationId,
+      entity,
+      entityId,
+      payload,
+      createdAt: new Date(),
+    });
+  } catch (error) {
+    console.error(`[DomainEvent] Error registrando ${type}:`, error);
+  }
+}
 
-  const allPeriods = await billingPeriodRepository.list();
-  const subscriptions = await subscriptionRepository.list();
-  const clients = await clientRepository.list();
+export async function runDailyJobForOrganization(organizationId: string): Promise<{
+  overdue: number;
+  generated: number;
+  suspended: number;
+  notifications: number;
+}> {
+  const now = new Date();
+  console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
+
+  const allPeriods = await billingPeriodRepository.listByOrganization(organizationId);
+  const subscriptions = await subscriptionRepository.listByOrganization(organizationId);
+  const clients = await clientRepository.listByOrganization(organizationId);
 
   let overdueCount = 0;
   let generatedCount = 0;
@@ -62,12 +91,19 @@ export async function runDailyJob(): Promise<void> {
   );
 
   const updatedPeriods = businessService.markPendingPeriodsOverdue(eligiblePeriods, now, activationPeriodIds);
-  
+
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
     if (original && original.status !== period.status) {
       await billingPeriodRepository.update(period);
       overdueCount++;
+      await recordDomainEvent(
+        'billing_period.overdue',
+        organizationId,
+        'billingPeriod',
+        period.id,
+        { subscriptionId: period.subscriptionId }
+      );
     }
   }
 
@@ -90,17 +126,25 @@ export async function runDailyJob(): Promise<void> {
       await subscriptionRepository.update(updatedSubscription);
       if (updatedSubscription.status === 'SUSPENDED') {
         suspendedCount++;
-        
-        const client = clients.find(c => c.id === subscription.clientId);
+
+        const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice');
+          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId);
           notificationCount++;
         }
+
+        await recordDomainEvent(
+          'subscription.suspended',
+          organizationId,
+          'subscription',
+          subscription.id,
+          { kitNumber: subscription.kitNumber }
+        );
       }
     }
 
-    const finalSubscription = updatedSubscription.status !== subscription.status 
-      ? updatedSubscription 
+    const finalSubscription = updatedSubscription.status !== subscription.status
+      ? updatedSubscription
       : subscription;
 
     if (finalSubscription.status === 'ACTIVE') {
@@ -108,7 +152,7 @@ export async function runDailyJob(): Promise<void> {
         isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
       ) {
         try {
-          const plan = await planRepository.getById(subscription.planId);
+          const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
           if (!plan) continue;
 
           const nextPeriod = businessService.createNextBillingPeriod({
@@ -117,8 +161,16 @@ export async function runDailyJob(): Promise<void> {
             plan,
           });
 
-          await billingPeriodRepository.create(nextPeriod);
+          const scopedNextPeriod = { ...nextPeriod, organizationId };
+          await billingPeriodRepository.create(scopedNextPeriod);
           generatedCount++;
+          await recordDomainEvent(
+            'billing_period.generated',
+            organizationId,
+            'billingPeriod',
+            scopedNextPeriod.id,
+            { subscriptionId: subscription.id }
+          );
         } catch (error) {
           console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
         }
@@ -128,13 +180,13 @@ export async function runDailyJob(): Promise<void> {
         const endDateNormalized = new Date(Date.UTC(currentPeriod.endDate.getUTCFullYear(), currentPeriod.endDate.getUTCMonth(), currentPeriod.endDate.getUTCDate()));
         const nowNormalized = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
-        const client = clients.find(c => c.id === subscription.clientId);
+        const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder');
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId);
             notificationCount++;
           } else if (daysUntilDue === 0) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning');
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId);
             notificationCount++;
           }
         }
@@ -142,7 +194,7 @@ export async function runDailyJob(): Promise<void> {
     }
   }
 
-  await schedulerConfigRepository.updateConfig({ lastRun: now });
+  await schedulerConfigRepository.updateConfig({ lastRun: now }, organizationId);
 
   if (overdueCount > 0 || suspendedCount > 0) {
     try {
@@ -151,27 +203,50 @@ export async function runDailyJob(): Promise<void> {
         suspendedCount > 0 ? `${suspendedCount} suscripción(es) suspendida(s)` : null,
       ].filter(Boolean);
 
-      await pushService.sendBroadcast({
+      await pushService.sendBroadcastToOrganization({
+        organizationId,
         title: 'Resumen diario',
         body: summaryParts.join(' · '),
         data: { url: '/dashboard' },
       });
-      console.log(`[Daily Job] Push de resumen enviado a los admins.`);
+      console.log(`[Daily Job] Push de resumen enviado a los admins de ${organizationId}.`);
     } catch (error) {
       console.error('[Daily Job] Error enviando push de resumen:', error);
     }
   }
 
   console.log(
-    `[Daily Job] Completado - Períodos vencidos: ${overdueCount}, Períodos generados: ${generatedCount}, Suscripciones suspendidas: ${suspendedCount}, Notificaciones enviadas: ${notificationCount}`
+    `[Daily Job] Completado (org ${organizationId}) - Períodos vencidos: ${overdueCount}, Períodos generados: ${generatedCount}, Suscripciones suspendidas: ${suspendedCount}, Notificaciones enviadas: ${notificationCount}`
   );
+
+  return { overdue: overdueCount, generated: generatedCount, suspended: suspendedCount, notifications: notificationCount };
+}
+
+export async function runDailyJob(): Promise<void> {
+  const organizations = await organizationRepository.list();
+  for (const organization of organizations) {
+    if (!organization.active) continue;
+    try {
+      await runDailyJobForOrganization(organization.id);
+    } catch (error) {
+      console.error(`[Daily Job] Error en organización ${organization.id}:`, error);
+    }
+  }
+}
+
+export async function runDailyJobForOrganizationIfEnabled(organizationId: string): Promise<void> {
+  const config = await schedulerConfigRepository.getConfig(organizationId);
+  if (config.enabled) {
+    await runDailyJobForOrganization(organizationId);
+  }
 }
 
 async function sendWhatsAppNotification(
   client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
   period: { endDate: Date },
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice'
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice',
+  organizationId: string
 ): Promise<void> {
   const templateMap: Record<string, string | undefined> = {
     'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
@@ -188,7 +263,7 @@ async function sendWhatsAppNotification(
 
   const endDateStr = period.endDate.toISOString().split('T')[0];
   const clientFullName = `${client.firstName} ${client.lastName}`;
-  
+
   let variables: Record<string, string>;
   if (type === 'suspended-notice') {
     variables = {
@@ -217,6 +292,7 @@ async function sendWhatsAppNotification(
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),
+      organizationId,
       clientId: client.id,
       phone: client.phone,
       direction: 'OUTBOUND',

@@ -1,0 +1,63 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isSuperAdmin() {
+      return signedIn() && request.auth.token.role == 'super-admin';
+    }
+    function sameOrg(orgId) {
+      return request.auth.token.organizationId != null &&
+             request.auth.token.organizationId == orgId;
+    }
+    function scopedReadWrite() {
+      return isSuperAdmin() ||
+             sameOrg(resource.data.organizationId) ||
+             sameOrg(request.resource.data.organizationId);
+    }
+
+    match /organizations/{orgId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /users/{userId} {
+      allow read: if isSuperAdmin() || sameOrg(resource.data.organizationId);
+      allow create: if isSuperAdmin() || sameOrg(request.resource.data.organizationId);
+      allow update: if isSuperAdmin() ||
+                     (sameOrg(resource.data.organizationId) && userId == request.auth.uid);
+      allow delete: if isSuperAdmin() || sameOrg(resource.data.organizationId);
+    }
+
+    match /clients/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /plans/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /subscriptions/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /billingPeriods/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /domainEvents/{id} {
+      allow read: if scopedReadWrite();
+      allow create: if isSuperAdmin() || sameOrg(request.resource.data.organizationId);
+    }
+    match /whatsappMessages/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /pushSubscriptions/{id} {
+      allow read, write: if scopedReadWrite();
+    }
+    match /schedulerConfig/{id} {
+      allow read, write: if isSuperAdmin() ||
+                         id == 'global' ||
+                         sameOrg(id);
+    }
+    match /refreshTokenSessions/{id} {
+      allow read, write: if isSuperAdmin() || resource.data.userId == request.auth.uid;
+    }
+  }
+}

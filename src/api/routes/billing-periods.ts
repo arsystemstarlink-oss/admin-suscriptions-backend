@@ -4,11 +4,13 @@ import {
   subscriptionRepository,
   planRepository,
   clientRepository,
+  domainEventRepository,
 } from '../../infrastructure/repositories';
 import { RegisterPaymentDto, UpdateBillingPeriodDto } from '../dto';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
-import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
+import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -22,8 +24,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const expiresBefore = req.query.expiresBefore as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
+    const organizationId = getEffectiveOrganizationId(req);
 
-    let periods = await billingPeriodRepository.list();
+    let periods = await billingPeriodRepository.listByOrganization(organizationId);
 
     if (subscriptionId) {
       periods = periods.filter((p) => p.subscriptionId === subscriptionId);
@@ -42,13 +45,13 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const enrichedPeriods = await Promise.all(
       periods.map(async (period) => {
-        const subscription = await subscriptionRepository.getById(period.subscriptionId);
+        const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
         let client = null;
         let plan = null;
 
         if (subscription) {
-          client = await clientRepository.getById(subscription.clientId);
-          plan = await planRepository.getById(subscription.planId);
+          client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
+          plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
         }
 
         return {
@@ -110,18 +113,19 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const period = await billingPeriodRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
     if (!period) {
       throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
     }
 
-    const subscription = await subscriptionRepository.getById(period.subscriptionId);
+    const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
     let client = null;
     let plan = null;
 
     if (subscription) {
-      client = await clientRepository.getById(subscription.clientId);
-      plan = await planRepository.getById(subscription.planId);
+      client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
+      plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
     }
 
     res.json({
@@ -146,7 +150,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateBillingPeriodDto = req.body;
-    const period = await billingPeriodRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!period) {
       throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
@@ -170,13 +175,13 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     await billingPeriodRepository.update(updatedPeriod);
 
-    const subscription = await subscriptionRepository.getById(updatedPeriod.subscriptionId);
+    const subscription = await subscriptionRepository.getByIdScoped(updatedPeriod.subscriptionId, organizationId);
     let client = null;
     let plan = null;
 
     if (subscription) {
-      client = await clientRepository.getById(subscription.clientId);
-      plan = await planRepository.getById(subscription.planId);
+      client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
+      plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
     }
 
     res.json({
@@ -201,7 +206,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: RegisterPaymentDto = req.body;
-    const period = await billingPeriodRepository.getById(req.params.id);
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
+    const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!period) {
       throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
@@ -227,12 +234,27 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
 
     await billingPeriodRepository.update(updatedPeriod);
 
-    const subscription = await subscriptionRepository.getById(period.subscriptionId);
+    try {
+      await domainEventRepository.create({
+        id: createId(),
+        type: 'billing_period.paid',
+        organizationId: period.organizationId,
+        actorUserId: auth.userId,
+        entity: 'billingPeriod',
+        entityId: updatedPeriod.id,
+        payload: { subscriptionId: period.subscriptionId, amount: dto.amount, paymentMethod: dto.paymentMethod },
+        createdAt: new Date(),
+      });
+    } catch (eventError) {
+      console.error('[DomainEvent] Error registrando billing_period.paid:', eventError);
+    }
+
+    const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
     let updatedSubscription = subscription;
     let currentPeriod: BillingPeriod | undefined;
 
     if (subscription) {
-      const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id);
+      const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
 
       updatedSubscription = businessService.evaluateSubscriptionStatus(
         subscription,
@@ -244,18 +266,19 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
       }
 
       if (subscription.status === 'SUSPENDED' && updatedSubscription.status === 'ACTIVE') {
-        const plan = await planRepository.getById(subscription.planId);
+        const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
         if (!plan) {
           throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
         }
 
-        currentPeriod = businessService.generateCurrentPeriod({
+        const generatedPeriod = businessService.generateCurrentPeriod({
           subscription: updatedSubscription,
           plan,
           now: new Date(),
         });
 
-        await billingPeriodRepository.create(currentPeriod);
+        await billingPeriodRepository.create(generatedPeriod);
+        currentPeriod = generatedPeriod;
       }
     }
 

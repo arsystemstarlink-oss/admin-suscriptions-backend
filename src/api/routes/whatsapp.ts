@@ -5,11 +5,14 @@ import { pushService } from '../../infrastructure/push-service';
 import { BusinessError, WhatsAppMessage } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
+import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.post('/send', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
     const { to, body, templateName, variables } = req.body;
 
     if (!to) {
@@ -38,11 +41,12 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
       messageSid = await whatsappService.sendMessage({ to, body });
     }
 
-    const clients = await clientRepository.list();
-    const client = clients.find(c => c.phone === to);
+    const clients = await clientRepository.listByOrganization(organizationId);
+    const client = clients.find((c) => c.phone === to);
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),
+      organizationId,
       clientId: client?.id,
       phone: to,
       direction: 'OUTBOUND',
@@ -90,10 +94,11 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const clients = await clientRepository.list();
-    const client = clients.find(c => c.phone === parsed.from);
+    const client = clients.find((c) => c.phone === parsed.from);
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),
+      organizationId: client?.organizationId,
       clientId: client?.id,
       phone: parsed.from,
       direction: 'INBOUND',
@@ -108,15 +113,24 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
     console.log('[WhatsApp] Mensaje inbound recibido de', parsed.from);
 
-    pushService.sendBroadcast({
-      title: 'Nuevo mensaje de WhatsApp',
-      body: client
-        ? `${client.firstName} ${client.lastName}`
-        : parsed.profileName || parsed.from,
-      data: { url: '/chats' },
-    }).catch((error) => {
-      console.error('[Push] Error notificando mensaje entrante:', error);
-    });
+    if (client?.organizationId) {
+      pushService.sendBroadcastToOrganization({
+        organizationId: client.organizationId,
+        title: 'Nuevo mensaje de WhatsApp',
+        body: `${client.firstName} ${client.lastName}`,
+        data: { url: '/chats' },
+      }).catch((error) => {
+        console.error('[Push] Error notificando mensaje entrante:', error);
+      });
+    } else {
+      pushService.sendBroadcast({
+        title: 'Nuevo mensaje de WhatsApp',
+        body: parsed.profileName || parsed.from,
+        data: { url: '/chats' },
+      }).catch((error) => {
+        console.error('[Push] Error notificando mensaje entrante:', error);
+      });
+    }
 
     res.status(200).json({
       success: true,
@@ -129,7 +143,8 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
 router.get('/conversations', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conversations = await whatsappMessageRepository.listConversations();
+    const organizationId = getEffectiveOrganizationId(req);
+    const conversations = await whatsappMessageRepository.listConversations(organizationId);
 
     conversations.sort((a, b) => b.lastMessage.createdAt.getTime() - a.lastMessage.createdAt.getTime());
 
@@ -145,7 +160,8 @@ router.get('/conversations', authenticateAdmin, async (req: Request, res: Respon
 router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phone } = req.params;
-    const messages = await whatsappMessageRepository.listByPhone(phone);
+    const organizationId = getEffectiveOrganizationId(req);
+    const messages = await whatsappMessageRepository.listByPhone(phone, organizationId);
 
     const sortedMessages = messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 

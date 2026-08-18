@@ -13,6 +13,7 @@ import dashboardRoutes from './routes/dashboard';
 import schedulerRoutes from './routes/scheduler';
 import whatsappRoutes from './routes/whatsapp';
 import pushRoutes from './routes/push';
+import organizationRoutes from './routes/organizations';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { startScheduler } from '../infrastructure/scheduler';
@@ -92,6 +93,7 @@ app.get('/', (req, res) => {
     endpoints: {
       auth: '/api/auth',
       admins: '/api/admins',
+      organizations: '/api/organizations',
       clients: '/api/clients',
       plans: '/api/plans',
       subscriptions: '/api/subscriptions',
@@ -117,6 +119,7 @@ app.use('/api/auth/refresh', refreshRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/admins', authenticateAdmin, adminRoutes);
+app.use('/api/organizations', authenticateAdmin, organizationRoutes);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
 app.use('/api/clients', authenticateAdmin, clientRoutes);
 app.use('/api/plans', authenticateAdmin, planRoutes);

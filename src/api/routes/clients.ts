@@ -7,12 +7,14 @@ import {
 import { CreateClientDto, UpdateClientDto } from '../dto';
 import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni } from '../../domain/business-rules';
+import { getEffectiveOrganizationId, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreateClientDto = req.body;
+    const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.firstName || !dto.lastName || !dto.phone) {
       throw new BusinessError('INVALID_DATA', 'Nombre, apellido y teléfono son obligatorios.');
@@ -24,14 +26,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       if (!isValidDni(dni)) {
         throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
       }
-      const existing = await clientRepository.findByDni(dni);
+      const existing = await clientRepository.findByDni(dni, organizationId);
       if (existing) {
-        throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad.');
+        throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad en esta organización.');
       }
     }
 
     const client = {
       id: createId(),
+      organizationId,
       firstName: dto.firstName,
       lastName: dto.lastName,
       phone: dto.phone,
@@ -57,8 +60,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const hasOverdue = req.query.hasOverdue as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
+    const organizationId = getEffectiveOrganizationId(req);
 
-    let clients = await clientRepository.list();
+    let clients = await clientRepository.listByOrganization(organizationId);
 
     if (search) {
       const searchLower = search.toLowerCase();
@@ -80,9 +84,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     if (shouldIncludeSubscriptions) {
       enrichedClients = await Promise.all(
         clients.map(async (client) => {
-          const subs = await subscriptionRepository.listByClientId(client.id);
+          const subs = await subscriptionRepository.listByClientId(client.id, organizationId);
           const allPeriods = await Promise.all(
-            subs.map((s) => billingPeriodRepository.listBySubscriptionId(s.id))
+            subs.map((s) => billingPeriodRepository.listBySubscriptionId(s.id, organizationId))
           );
 
           const overdueCount = allPeriods.flat().filter((p) => p.status === 'OVERDUE').length;
@@ -97,7 +101,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
           const currentPeriods = await Promise.all(
             subs.map(async (s) => {
-              const periods = await billingPeriodRepository.listBySubscriptionId(s.id);
+              const periods = await billingPeriodRepository.listBySubscriptionId(s.id, organizationId);
               return periods.sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0];
             })
           );
@@ -146,16 +150,18 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const client = await clientRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const client = await clientRepository.getByIdScoped(req.params.id, organizationId);
+
     if (!client) {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
     }
 
-    const subscriptions = await subscriptionRepository.listByClientId(req.params.id);
+    const subscriptions = await subscriptionRepository.listByClientId(req.params.id, organizationId);
     
     const subscriptionsWithDetails = await Promise.all(
       subscriptions.map(async (sub: any) => {
-        const periods = await billingPeriodRepository.listBySubscriptionId(sub.id);
+        const periods = await billingPeriodRepository.listBySubscriptionId(sub.id, organizationId);
         const sortedPeriods = periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
         const currentPeriod = sortedPeriods[0];
         const overdueCount = periods.filter((p: any) => p.status === 'OVERDUE').length;
@@ -191,7 +197,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateClientDto = req.body;
-    const existing = await clientRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await clientRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
@@ -211,9 +218,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         if (!isValidDni(normalized)) {
           throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
         }
-        const existingWithDni = await clientRepository.findByDni(normalized);
+        const existingWithDni = await clientRepository.findByDni(normalized, organizationId);
         if (existingWithDni && existingWithDni.id !== existing.id) {
-          throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad.');
+          throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad en esta organización.');
         }
         updated = { ...updated, dni: normalized };
       }
@@ -228,12 +235,14 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await clientRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await clientRepository.getByIdScoped(req.params.id, organizationId);
+
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
     }
 
-    const subscriptions = await subscriptionRepository.listByClientId(req.params.id);
+    const subscriptions = await subscriptionRepository.listByClientId(req.params.id, organizationId);
     const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
 
     if (activeSubscriptions.length > 0) {

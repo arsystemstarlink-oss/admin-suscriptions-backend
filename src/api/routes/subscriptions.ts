@@ -4,11 +4,14 @@ import {
   clientRepository,
   planRepository,
   billingPeriodRepository,
+  domainEventRepository,
 } from '../../infrastructure/repositories';
 import { CreateSubscriptionDto, UpdateSubscriptionDto } from '../dto';
 import { BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
-import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
+import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
+import { isSuperAdmin } from '../../domain/auth-context';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -16,19 +19,30 @@ const businessService = new SubscriptionBusinessService();
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreateSubscriptionDto = req.body;
+    const auth = getAuth(req);
+    const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.kitNumber || !dto.kitNumber.trim()) {
       throw new BusinessError('INVALID_DATA', 'El número de kit es obligatorio.');
     }
 
-    const client = await clientRepository.getById(dto.clientId);
+    const client = await clientRepository.getByIdScoped(dto.clientId, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
     if (!client) {
       throw new BusinessError('CLIENT_NOT_FOUND', 'Cliente no encontrado.');
     }
+    assertResourceInScope(client.organizationId, auth, organizationId);
 
-    const plan = await planRepository.getById(dto.planId);
+    const plan = await planRepository.getByIdScoped(dto.planId, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
     if (!plan) {
       throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+    }
+    assertResourceInScope(plan.organizationId, auth, organizationId);
+
+    if (client.organizationId !== plan.organizationId) {
+      throw new BusinessError(
+        'CROSS_TENANT_REFERENCE',
+        'El cliente y el plan deben pertenecer a la misma organización.'
+      );
     }
 
     let activationDate: Date | undefined;
@@ -63,6 +77,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     });
 
     const { subscription, billingPeriods, summary } = businessService.createSubscription({
+      organizationId,
       clientId: dto.clientId,
       plan,
       kitNumber: dto.kitNumber.toUpperCase(),
@@ -74,14 +89,32 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       historicalPayments,
     });
 
-    await subscriptionRepository.create(subscription);
-    for (const period of billingPeriods) {
+    const scopedSubscription = { ...subscription, organizationId };
+    const scopedPeriods = billingPeriods.map((period) => ({ ...period, organizationId }));
+
+    await subscriptionRepository.create(scopedSubscription);
+    for (const period of scopedPeriods) {
       await billingPeriodRepository.create(period);
     }
 
+    try {
+      await domainEventRepository.create({
+        id: createId(),
+        type: 'subscription.created',
+        organizationId,
+        actorUserId: auth.userId,
+        entity: 'subscription',
+        entityId: scopedSubscription.id,
+        payload: { kitNumber: scopedSubscription.kitNumber, planId: scopedSubscription.planId },
+        createdAt: new Date(),
+      });
+    } catch (eventError) {
+      console.error('[DomainEvent] Error registrando subscription.created:', eventError);
+    }
+
     res.status(201).json({
-      subscription,
-      billingPeriods,
+      subscription: scopedSubscription,
+      billingPeriods: scopedPeriods,
       summary,
     });
   } catch (err) {
@@ -91,6 +124,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
     const clientId = req.query.clientId as string;
     const status = req.query.status as string;
     const search = req.query.search as string;
@@ -98,9 +133,15 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
 
-    let subscriptions = await subscriptionRepository.list();
+    let subscriptions = await subscriptionRepository.listByOrganization(organizationId);
 
     if (clientId) {
+      if (!isSuperAdmin(auth)) {
+        const client = await clientRepository.getByIdScoped(clientId, auth.organizationId ?? undefined);
+        if (!client) {
+          throw new BusinessError('CLIENT_NOT_FOUND', 'Cliente no encontrado.');
+        }
+      }
       subscriptions = subscriptions.filter((s) => s.clientId === clientId);
     }
 
@@ -111,9 +152,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const enrichedSubscriptions = await Promise.all(
       subscriptions.map(async (sub) => {
         const [client, plan, periods] = await Promise.all([
-          clientRepository.getById(sub.clientId),
-          planRepository.getById(sub.planId),
-          billingPeriodRepository.listBySubscriptionId(sub.id),
+          clientRepository.getByIdScoped(sub.clientId, organizationId),
+          planRepository.getByIdScoped(sub.planId, organizationId),
+          billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
         ]);
 
         const currentPeriod = periods.sort(
@@ -178,15 +219,16 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const subscription = await subscriptionRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const subscription = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
     if (!subscription) {
       throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
     }
 
     const [client, plan, periods] = await Promise.all([
-      clientRepository.getById(subscription.clientId),
-      planRepository.getById(subscription.planId),
-      billingPeriodRepository.listBySubscriptionId(req.params.id),
+      clientRepository.getByIdScoped(subscription.clientId, organizationId),
+      planRepository.getByIdScoped(subscription.planId, organizationId),
+      billingPeriodRepository.listBySubscriptionId(req.params.id, organizationId),
     ]);
 
     const sortedPeriods = periods.sort(
@@ -224,7 +266,9 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateSubscriptionDto = req.body;
-    const existing = await subscriptionRepository.getById(req.params.id);
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
@@ -233,10 +277,11 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     let updated = { ...existing };
 
     if (dto.planId && dto.planId !== existing.planId) {
-      const newPlan = await planRepository.getById(dto.planId);
+      const newPlan = await planRepository.getByIdScoped(dto.planId, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
       if (!newPlan) {
         throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
       }
+      assertResourceInScope(newPlan.organizationId, auth, organizationId);
       updated = businessService.changeSubscriptionPlan(updated, newPlan);
     }
 
@@ -270,12 +315,13 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await subscriptionRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
     }
 
-    await billingPeriodRepository.deleteBySubscriptionId(req.params.id);
+    await billingPeriodRepository.deleteBySubscriptionId(req.params.id, organizationId);
     await subscriptionRepository.delete(req.params.id);
     res.status(204).send();
   } catch (err) {

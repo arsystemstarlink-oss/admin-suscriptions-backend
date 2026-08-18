@@ -12,6 +12,7 @@ describe('SubscriptionBusinessService', () => {
     
     testClient = {
       id: 'client_test_1',
+      organizationId: 'org_test_1',
       firstName: 'Cliente',
       lastName: 'Test',
       phone: '+1234567890',
@@ -22,6 +23,7 @@ describe('SubscriptionBusinessService', () => {
 
     testPlan = {
       id: 'plan_test_1',
+      organizationId: 'org_test_1',
       name: 'Plan Test',
       price: 50,
       description: 'Plan de prueba',
@@ -35,6 +37,7 @@ describe('SubscriptionBusinessService', () => {
       const registrationDate = new Date('2026-07-20T10:00:00Z');
       
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-001',
@@ -76,8 +79,9 @@ describe('SubscriptionBusinessService', () => {
 
       expect(() => {
         service.createSubscription({
-          clientId: testClient.id,
-          plan: inactivePlan,
+        organizationId: 'org_test_1',
+        clientId: testClient.id,
+        plan: inactivePlan,
           kitNumber: 'KIT-001',
           billingDay: 5,
           maxOverduePeriods: 2,
@@ -101,6 +105,7 @@ describe('SubscriptionBusinessService', () => {
 
     it('debería retornar billingPeriods y summary en la respuesta', () => {
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-001',
@@ -149,6 +154,7 @@ describe('SubscriptionBusinessService', () => {
       ];
 
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-002',
@@ -193,6 +199,7 @@ describe('SubscriptionBusinessService', () => {
       const activationDate = new Date(Date.UTC(2026, 4, 5));
 
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-003',
@@ -422,6 +429,7 @@ describe('SubscriptionBusinessService', () => {
       jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
 
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-004',
@@ -443,6 +451,7 @@ describe('SubscriptionBusinessService', () => {
       jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
 
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-005',
@@ -469,6 +478,7 @@ describe('SubscriptionBusinessService', () => {
       jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
 
       const result = service.createSubscription({
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         plan: testPlan,
         kitNumber: 'KIT-006',
@@ -492,6 +502,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería generar el siguiente período PENDING', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -504,6 +515,7 @@ describe('SubscriptionBusinessService', () => {
       const pastDate = new Date('2025-08-06');
       const currentPeriod: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: subscription.id,
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2025-07-05'),
@@ -534,6 +546,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar si el período actual no está PAID ni OVERDUE', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -545,6 +558,7 @@ describe('SubscriptionBusinessService', () => {
 
       const pendingPeriod: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: subscription.id,
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -566,6 +580,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería generar el siguiente período cuando el actual está OVERDUE y finalizado', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -580,6 +595,7 @@ describe('SubscriptionBusinessService', () => {
 
       const overduePeriod: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: subscription.id,
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2025-07-05'),
@@ -605,6 +621,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar si la suscripción está suspendida', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -616,6 +633,7 @@ describe('SubscriptionBusinessService', () => {
 
       const paidPeriod: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: subscription.id,
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -641,6 +659,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería generar el período actual PENDING desde hoy + billingDay', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -673,6 +692,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería generar el período actual cuando hoy es antes del billingDay', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -701,6 +721,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar generar período actual para una suscripción SUSPENDED', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -724,6 +745,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería marcar un período como PAID', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -749,6 +771,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar si el monto no coincide', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -771,6 +794,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar si el período ya está PAID', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -796,6 +820,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería actualizar todos los campos de un período PAID', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -831,6 +856,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería actualizar solo los campos proporcionados (actualización parcial)', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -857,6 +883,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar actualización de un período PENDING', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -877,6 +904,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar actualización de un período OVERDUE', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -897,6 +925,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar monto inválido (<= 0)', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -926,6 +955,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería rechazar método de pago vacío', () => {
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -949,6 +979,7 @@ describe('SubscriptionBusinessService', () => {
       const createdAt = new Date('2026-07-01');
       const period: BillingPeriod = {
         id: 'period_1',
+        organizationId: 'org_test_1',
         subscriptionId: 'sub_1',
         periodLabel: 'Julio - Agosto',
         startDate: new Date('2026-07-05'),
@@ -980,6 +1011,7 @@ describe('SubscriptionBusinessService', () => {
       const periods: BillingPeriod[] = [
         {
           id: 'period_1',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Junio - Julio',
           startDate: new Date('2026-06-05'),
@@ -990,6 +1022,7 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           id: 'period_2',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Julio - Agosto',
           startDate: new Date('2026-07-05'),
@@ -1011,6 +1044,7 @@ describe('SubscriptionBusinessService', () => {
       const periods: BillingPeriod[] = [
         {
           id: 'period_1',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Junio - Julio',
           startDate: new Date('2026-06-05'),
@@ -1021,6 +1055,7 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           id: 'period_2',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Julio - Agosto',
           startDate: new Date('2026-07-05'),
@@ -1047,6 +1082,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería suspender suscripción cuando se alcanza maxOverduePeriods', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -1059,6 +1095,7 @@ describe('SubscriptionBusinessService', () => {
       const periods: BillingPeriod[] = [
         {
           id: 'period_1',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Junio - Julio',
           startDate: new Date('2026-06-05'),
@@ -1069,6 +1106,7 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           id: 'period_2',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Julio - Agosto',
           startDate: new Date('2026-07-05'),
@@ -1086,6 +1124,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería mantener SUSPENDED cuando queda deuda parcial (regla estricta)', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -1098,6 +1137,7 @@ describe('SubscriptionBusinessService', () => {
       const periods: BillingPeriod[] = [
         {
           id: 'period_1',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Junio - Julio',
           startDate: new Date('2026-06-05'),
@@ -1109,6 +1149,7 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           id: 'period_2',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Julio - Agosto',
           startDate: new Date('2026-07-05'),
@@ -1126,6 +1167,7 @@ describe('SubscriptionBusinessService', () => {
     it('debería reactivar suscripción cuando se paga TODA la deuda (overdueCount === 0)', () => {
       const subscription: Subscription = {
         id: 'sub_1',
+        organizationId: 'org_test_1',
         clientId: testClient.id,
         planId: testPlan.id,
         kitNumber: 'KIT-001',
@@ -1138,6 +1180,7 @@ describe('SubscriptionBusinessService', () => {
       const periods: BillingPeriod[] = [
         {
           id: 'period_1',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Mayo - Junio',
           startDate: new Date('2026-05-05'),
@@ -1149,6 +1192,7 @@ describe('SubscriptionBusinessService', () => {
         },
         {
           id: 'period_2',
+        organizationId: 'org_test_1',
           subscriptionId: 'sub_1',
           periodLabel: 'Junio - Julio',
           startDate: new Date('2026-06-05'),

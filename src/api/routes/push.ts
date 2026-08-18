@@ -3,6 +3,8 @@ import { BusinessError } from '../../domain/entities';
 import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
 import { pushService, PushRegistrationInput } from '../../infrastructure/push-service';
 import { userRepository } from '../../infrastructure/repositories';
+import { getAuth } from '../middleware/tenant';
+import { isSuperAdmin } from '../../domain/auth-context';
 
 const router = Router();
 
@@ -28,8 +30,13 @@ router.post('/subscriptions', async (req: Request, res: Response, next: NextFunc
       );
     }
 
-    const adminId = (req as AuthenticatedRequest).user!.userId;
-    const subscription = await pushService.registerSubscription(adminId, {
+    const auth = getAuth(req);
+    if (!auth.organizationId) {
+      throw new BusinessError('TENANT_REQUIRED', 'El super-admin no puede registrar suscripciones push sin organización.');
+    }
+
+    const adminId = auth.userId;
+    const subscription = await pushService.registerSubscription(adminId, auth.organizationId, {
       endpoint,
       keys,
       userAgent,
@@ -50,7 +57,7 @@ router.post('/subscriptions', async (req: Request, res: Response, next: NextFunc
 
 router.get('/subscriptions', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = (req as AuthenticatedRequest).user!.userId;
+    const adminId = getAuth(req).userId;
     const subscriptions = await pushService.listByAdmin(adminId);
 
     res.json({
@@ -68,7 +75,7 @@ router.get('/subscriptions', async (req: Request, res: Response, next: NextFunct
 
 router.delete('/subscriptions/:endpoint', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = (req as AuthenticatedRequest).user!.userId;
+    const adminId = getAuth(req).userId;
     await pushService.deleteByEndpoint(adminId, req.params.endpoint);
 
     res.json({ message: 'Suscripción eliminada' });
@@ -79,7 +86,7 @@ router.delete('/subscriptions/:endpoint', async (req: Request, res: Response, ne
 
 router.post('/test', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const adminId = (req as AuthenticatedRequest).user!.userId;
+    const adminId = getAuth(req).userId;
     const sent = await pushService.sendTest(adminId);
 
     res.json({ message: 'Notificación enviada', sent });
@@ -90,6 +97,7 @@ router.post('/test', async (req: Request, res: Response, next: NextFunction) => 
 
 router.post('/send', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const auth = getAuth(req);
     const { adminIds, title, body, data } = req.body;
 
     if (!title || !body) {
@@ -100,7 +108,20 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     }
 
     let sent: number;
-    if (adminIds === undefined || adminIds === null) {
+    if (!isSuperAdmin(auth)) {
+      if (adminIds !== undefined && adminIds !== null) {
+        throw new BusinessError(
+          'FORBIDDEN',
+          'Un admin solo puede enviar notificaciones dentro de su organización.'
+        );
+      }
+      sent = await pushService.sendBroadcastToOrganization({
+        organizationId: auth.organizationId || '',
+        title,
+        body,
+        data,
+      });
+    } else if (adminIds === undefined || adminIds === null) {
       sent = await pushService.sendBroadcast({ title, body, data });
     } else {
       if (!Array.isArray(adminIds) || adminIds.some((id) => typeof id !== 'string')) {

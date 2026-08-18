@@ -3,12 +3,14 @@ import { planRepository, subscriptionRepository } from '../../infrastructure/rep
 import { CreatePlanDto, UpdatePlanDto } from '../dto';
 import { BusinessError } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
+import { getEffectiveOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreatePlanDto = req.body;
+    const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.name || dto.price === undefined || !dto.description) {
       throw new BusinessError('INVALID_DATA', 'Nombre, precio y descripción son obligatorios.');
@@ -20,6 +22,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const plan = {
       id: createId(),
+      organizationId,
       name: dto.name,
       price: dto.price,
       description: dto.description,
@@ -40,8 +43,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const active = req.query.active as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
+    const organizationId = getEffectiveOrganizationId(req);
 
-    let plans = await planRepository.list();
+    let plans = await planRepository.listByOrganization(organizationId);
 
     if (search) {
       const searchLower = search.toLowerCase();
@@ -76,7 +80,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const plan = await planRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const plan = await planRepository.getByIdScoped(req.params.id, organizationId);
     if (!plan) {
       throw new BusinessError('NOT_FOUND', 'Plan no encontrado.');
     }
@@ -89,7 +94,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdatePlanDto = req.body;
-    const existing = await planRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await planRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Plan no encontrado.');
@@ -113,13 +119,13 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await planRepository.getById(req.params.id);
+    const organizationId = getEffectiveOrganizationId(req);
+    const existing = await planRepository.getByIdScoped(req.params.id, organizationId);
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Plan no encontrado.');
     }
 
-    const allSubscriptions = await subscriptionRepository.list();
-    const linkedSubscriptions = allSubscriptions.filter((s) => s.planId === req.params.id);
+    const linkedSubscriptions = await subscriptionRepository.listByPlanId(req.params.id, organizationId);
 
     if (linkedSubscriptions.length > 0) {
       throw new BusinessError(

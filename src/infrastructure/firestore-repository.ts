@@ -78,6 +78,24 @@ export class FirestoreRepository<T extends Identifiable> {
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
+  async listByOrganization(organizationId?: string): Promise<T[]> {
+    if (!organizationId) {
+      return this.list();
+    }
+    return this.listByField('organizationId', organizationId);
+  }
+
+  async getByIdScoped(id: string, organizationId?: string): Promise<T | undefined> {
+    const entity = await this.getById(id);
+    if (!entity) {
+      return undefined;
+    }
+    if (organizationId && (entity as any).organizationId !== organizationId) {
+      return undefined;
+    }
+    return entity;
+  }
+
   async delete(id: string): Promise<void> {
     await this.db.collection(this.collectionName).doc(id).delete();
   }
@@ -91,12 +109,38 @@ export class FirestoreRepository<T extends Identifiable> {
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
+  async listByFields(fields: Array<[string, any]>): Promise<T[]> {
+    let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
+    fields.forEach(([field, value]) => {
+      query = query.where(field, '==', value);
+    });
+
+    const snapshot = await query.get();
+    return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+  }
+
   async deleteByField(field: string, value: any): Promise<number> {
     const snapshot = await this.db
       .collection(this.collectionName)
       .where(field, '==', value)
       .get();
 
+    const batch = this.db.batch();
+    snapshot.docs.forEach((doc) => {
+      batch.delete(doc.ref);
+    });
+
+    await batch.commit();
+    return snapshot.size;
+  }
+
+  async deleteByFields(fields: Array<[string, any]>): Promise<number> {
+    let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
+    fields.forEach(([field, value]) => {
+      query = query.where(field, '==', value);
+    });
+
+    const snapshot = await query.get();
     const batch = this.db.batch();
     snapshot.docs.forEach((doc) => {
       batch.delete(doc.ref);

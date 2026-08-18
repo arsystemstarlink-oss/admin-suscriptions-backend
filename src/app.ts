@@ -8,6 +8,7 @@ const subscriptionService = new SubscriptionBusinessService();
 
 const client: Client = {
   id: 'client_01',
+  organizationId: 'org_demo',
   firstName: 'Juan',
   lastName: 'Pérez',
   phone: '+5491123456789',
@@ -20,6 +21,7 @@ clientRepo.create(client);
 
 const plan: Plan = {
   id: 'plan_residencial',
+  organizationId: 'org_demo',
   name: 'Residencial',
   price: 35,
   description: 'Servicio residencial básico',
@@ -29,6 +31,7 @@ const plan: Plan = {
 planRepo.create(plan);
 
 const { subscription, billingPeriods } = subscriptionService.createSubscription({
+  organizationId: 'org_demo',
   clientId: client.id,
   plan,
   kitNumber: 'KIT-001',

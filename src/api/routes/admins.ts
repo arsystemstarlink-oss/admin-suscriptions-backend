@@ -2,11 +2,14 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   userRepository,
   refreshTokenSessionRepository,
+  organizationRepository,
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
-import { BusinessError, User } from '../../domain/entities';
-import { admin } from '../../infrastructure/firebase';
-import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
+import { BusinessError, User, UserRole } from '../../domain/entities';
+import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
+import { AuthenticatedRequest } from '../middleware/auth';
+import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
+import { isSuperAdmin } from '../../domain/auth-context';
 import {
   EMAIL_REGEX,
   normalizePhoneToE164,
@@ -16,13 +19,20 @@ import {
 
 const router = Router();
 
-router.get('/', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const search = req.query.search as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
 
-    let admins = await userRepository.list();
+    let admins: User[];
+    if (isSuperAdmin(auth) && !organizationId) {
+      admins = await userRepository.list();
+    } else {
+      admins = await userRepository.listByOrganization(organizationId || auth.organizationId || '');
+    }
 
     if (search) {
       const searchLower = search.toLowerCase();
@@ -53,10 +63,17 @@ router.get('/', authenticateAdmin, async (req: Request, res: Response, next: Nex
   }
 });
 
-router.get('/:id', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await userRepository.getById(req.params.id);
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
+    const user = await userRepository.getByIdScoped(req.params.id, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
+
     if (!user) {
+      throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
+    }
+
+    if (!isSuperAdmin(auth) && user.organizationId !== auth.organizationId) {
       throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
     }
 
@@ -66,15 +83,29 @@ router.get('/:id', authenticateAdmin, async (req: Request, res: Response, next: 
   }
 });
 
-router.put('/:id', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const targetId = req.params.id;
-    const actorId = (req as AuthenticatedRequest).user!.userId;
-    const { name, email, phone, newPassword } = req.body;
+    const actor = getAuth(req);
+    const actorId = actor.userId;
+    const { name, email, phone, newPassword, role, organizationId } = req.body;
 
     const user = await userRepository.getById(targetId);
     if (!user) {
       throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
+    }
+
+    if (!isSuperAdmin(actor)) {
+      if (user.organizationId !== actor.organizationId) {
+        throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
+      }
+      if (user.role === 'super-admin') {
+        throw new BusinessError('FORBIDDEN', 'No puedes modificar un super-admin.');
+      }
+    }
+
+    if (user.role === 'super-admin' && role !== undefined && role !== 'super-admin') {
+      throw new BusinessError('FORBIDDEN', 'No se puede degradar a un super-admin.');
     }
 
     const updates: Partial<User> = {};
@@ -116,8 +147,33 @@ router.put('/:id', authenticateAdmin, async (req: Request, res: Response, next: 
       passwordChanged = true;
     }
 
+    if (role !== undefined && isSuperAdmin(actor)) {
+      const nextRole: UserRole = role === 'super-admin' ? 'super-admin' : 'admin';
+      updates.role = nextRole;
+    }
+
+    if (organizationId !== undefined && isSuperAdmin(actor)) {
+      if (organizationId === null || organizationId === '') {
+        if (user.role === 'super-admin' || updates.role === 'super-admin') {
+          updates.organizationId = null;
+        } else {
+          throw new BusinessError('TENANT_REQUIRED', 'Un administrador requiere una organización.');
+        }
+      } else {
+        const org = await organizationRepository.getById(organizationId);
+        if (!org || !org.active) {
+          throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización indicada no existe o está inactiva.');
+        }
+        updates.organizationId = organizationId;
+      }
+    }
+
     if (Object.keys(updates).length === 0) {
       throw new BusinessError('INVALID_DATA', 'No hay campos para actualizar.');
+    }
+
+    if (updates.role === 'admin' && !updates.organizationId && user.organizationId === null) {
+      throw new BusinessError('TENANT_REQUIRED', 'Al asignar rol admin, debes indicar la organización (organizationId).');
     }
 
     const updatedUser: User = { ...user, ...updates };
@@ -134,7 +190,15 @@ router.put('/:id', authenticateAdmin, async (req: Request, res: Response, next: 
       console.warn('[Admins] No se pudo actualizar en Firebase Auth:', firebaseError.message);
     }
 
-    if (emailChanged || passwordChanged) {
+    if (updatedUser.role !== user.role || updatedUser.organizationId !== user.organizationId) {
+      await syncUserCustomClaims({
+        uid: updatedUser.id,
+        role: updatedUser.role,
+        organizationId: updatedUser.organizationId,
+      });
+    }
+
+    if (emailChanged || passwordChanged || updatedUser.role !== user.role || updatedUser.organizationId !== user.organizationId) {
       await refreshTokenSessionRepository.revokeAllForUser(targetId);
     }
 
@@ -142,7 +206,7 @@ router.put('/:id', authenticateAdmin, async (req: Request, res: Response, next: 
       admin: toUserDto(updatedUser),
     };
 
-    if ((emailChanged || passwordChanged) && targetId === actorId) {
+    if ((emailChanged || passwordChanged || updatedUser.role !== user.role || updatedUser.organizationId !== user.organizationId) && targetId === actorId) {
       responseBody.accessToken = authService.generateAccessToken(updatedUser);
       const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(updatedUser);
       await refreshTokenSessionRepository.create({
@@ -162,10 +226,11 @@ router.put('/:id', authenticateAdmin, async (req: Request, res: Response, next: 
   }
 });
 
-router.delete('/:id', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const targetId = req.params.id;
-    const actorId = (req as AuthenticatedRequest).user!.userId;
+    const actor = getAuth(req);
+    const actorId = actor.userId;
 
     if (targetId === actorId) {
       throw new BusinessError('CANNOT_DELETE_SELF', 'No puedes eliminar tu propio usuario.');
@@ -176,8 +241,24 @@ router.delete('/:id', authenticateAdmin, async (req: Request, res: Response, nex
       throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
     }
 
-    const allAdmins = await userRepository.list();
-    const adminCount = allAdmins.filter((u) => u.role === 'admin').length;
+    if (!isSuperAdmin(actor)) {
+      if (user.organizationId !== actor.organizationId) {
+        throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
+      }
+      if (user.role === 'super-admin') {
+        throw new BusinessError('FORBIDDEN', 'No puedes eliminar un super-admin.');
+      }
+    }
+
+    let adminCount: number;
+    if (isSuperAdmin(actor)) {
+      const allAdmins = await userRepository.list();
+      adminCount = allAdmins.filter((u) => u.role === 'admin').length;
+    } else {
+      const orgAdmins = await userRepository.listByOrganization(actor.organizationId || '');
+      adminCount = orgAdmins.filter((u) => u.role === 'admin').length;
+    }
+
     if (adminCount <= 1) {
       throw new BusinessError('LAST_ADMIN', 'No se puede eliminar el único administrador del sistema.');
     }

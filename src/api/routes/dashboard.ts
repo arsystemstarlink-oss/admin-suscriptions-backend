@@ -5,16 +5,18 @@ import {
   subscriptionRepository,
   billingPeriodRepository,
 } from '../../infrastructure/repositories';
+import { getEffectiveOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const organizationId = getEffectiveOrganizationId(req);
     const [clients, plans, subscriptions, periods] = await Promise.all([
-      clientRepository.list(),
-      planRepository.list(),
-      subscriptionRepository.list(),
-      billingPeriodRepository.list(),
+      clientRepository.listByOrganization(organizationId),
+      planRepository.listByOrganization(organizationId),
+      subscriptionRepository.listByOrganization(organizationId),
+      billingPeriodRepository.listByOrganization(organizationId),
     ]);
 
     const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
@@ -73,10 +75,11 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 
 router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const organizationId = getEffectiveOrganizationId(req);
     const [subscriptions, periods, clients] = await Promise.all([
-      subscriptionRepository.list(),
-      billingPeriodRepository.list(),
-      clientRepository.list(),
+      subscriptionRepository.listByOrganization(organizationId),
+      billingPeriodRepository.listByOrganization(organizationId),
+      clientRepository.listByOrganization(organizationId),
     ]);
 
     const now = new Date();

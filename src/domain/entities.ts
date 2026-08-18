@@ -1,6 +1,15 @@
-export type UserRole = 'admin';
+export type UserRole = 'super-admin' | 'admin';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED';
 export type BillingPeriodStatus = 'PENDING' | 'PAID' | 'OVERDUE';
+
+export interface Organization {
+  id: string;
+  name: string;
+  slug?: string;
+  active: boolean;
+  createdAt: Date;
+  createdBy?: string;
+}
 
 export interface User {
   id: string;
@@ -8,6 +17,7 @@ export interface User {
   email: string;
   password: string;
   role: UserRole;
+  organizationId: string | null;
   phone?: string;
   lastLoginAt?: Date;
   createdAt: Date;
@@ -26,6 +36,7 @@ export interface RefreshTokenSession {
 
 export interface Client {
   id: string;
+  organizationId: string;
   firstName: string;
   lastName: string;
   phone: string;
@@ -38,6 +49,7 @@ export interface Client {
 
 export interface Plan {
   id: string;
+  organizationId: string;
   name: string;
   price: number;
   description: string;
@@ -47,6 +59,7 @@ export interface Plan {
 
 export interface Subscription {
   id: string;
+  organizationId: string;
   clientId: string;
   planId: string;
   kitNumber: string;
@@ -60,6 +73,7 @@ export interface Subscription {
 
 export interface BillingPeriod {
   id: string;
+  organizationId: string;
   subscriptionId: string;
   periodLabel: string;
   startDate: Date;
@@ -85,6 +99,7 @@ export type MessageStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 
 export interface WhatsAppMessage {
   id: string;
+  organizationId?: string;
   clientId?: string;
   phone: string;
   direction: MessageDirection;
@@ -105,15 +120,9 @@ export interface WhatsAppConversation {
   messageCount: number;
 }
 
-export class BusinessError extends Error {
-  constructor(public code: string, message: string) {
-    super(message);
-    Object.setPrototypeOf(this, BusinessError.prototype);
-  }
-}
-
 export interface PushSubscription {
   id: string;
+  organizationId: string;
   adminId: string;
   endpoint: string;
   p256dh: string;
@@ -121,4 +130,32 @@ export interface PushSubscription {
   userAgent?: string;
   createdAt: Date;
   updatedAt: Date;
+}
+
+export type DomainEventType =
+  | 'client.created'
+  | 'subscription.created'
+  | 'subscription.suspended'
+  | 'subscription.reactivated'
+  | 'subscription.plan_changed'
+  | 'billing_period.overdue'
+  | 'billing_period.paid'
+  | 'billing_period.generated';
+
+export interface DomainEvent {
+  id: string;
+  type: DomainEventType;
+  organizationId: string;
+  actorUserId?: string;
+  entity: string;
+  entityId: string;
+  payload?: Record<string, unknown>;
+  createdAt: Date;
+}
+
+export class BusinessError extends Error {
+  constructor(public code: string, message: string) {
+    super(message);
+    Object.setPrototypeOf(this, BusinessError.prototype);
+  }
 }

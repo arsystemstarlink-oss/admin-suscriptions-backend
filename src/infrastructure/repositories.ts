@@ -1,15 +1,57 @@
 import { FirestoreRepository } from './firestore-repository';
 import { createId } from '../domain/business-rules';
-import { Client, Plan, Subscription, BillingPeriod, User, SchedulerConfig, WhatsAppMessage, WhatsAppConversation, RefreshTokenSession, PushSubscription } from '../domain/entities';
+import {
+  Client,
+  Plan,
+  Subscription,
+  BillingPeriod,
+  User,
+  SchedulerConfig,
+  WhatsAppMessage,
+  WhatsAppConversation,
+  RefreshTokenSession,
+  PushSubscription,
+  Organization,
+  DomainEvent,
+} from '../domain/entities';
+
+export class OrganizationFirestoreRepository extends FirestoreRepository<Organization> {
+  constructor() {
+    super('organizations');
+  }
+
+  async findBySlug(slug: string): Promise<Organization | undefined> {
+    const results = await this.listByField('slug', slug);
+    return results[0];
+  }
+
+  async listActive(): Promise<Organization[]> {
+    return this.listByField('active', true);
+  }
+}
 
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
     super('clients');
   }
 
-  async findByDni(dni: string): Promise<Client | undefined> {
-    const results = await this.listByField('dni', dni);
+  async findByDni(dni: string, organizationId?: string): Promise<Client | undefined> {
+    if (!organizationId) {
+      const results = await this.listByField('dni', dni);
+      return results[0];
+    }
+    const results = await this.listByFields([
+      ['organizationId', organizationId],
+      ['dni', dni],
+    ]);
     return results[0];
+  }
+
+  async listByOrganizationAndDni(organizationId: string, dni: string): Promise<Client[]> {
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['dni', dni],
+    ]);
   }
 }
 
@@ -24,8 +66,24 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     super('subscriptions');
   }
 
-  async listByClientId(clientId: string): Promise<Subscription[]> {
-    return this.listByField('clientId', clientId);
+  async listByClientId(clientId: string, organizationId?: string): Promise<Subscription[]> {
+    if (!organizationId) {
+      return this.listByField('clientId', clientId);
+    }
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['clientId', clientId],
+    ]);
+  }
+
+  async listByPlanId(planId: string, organizationId?: string): Promise<Subscription[]> {
+    if (!organizationId) {
+      return this.listByField('planId', planId);
+    }
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['planId', planId],
+    ]);
   }
 }
 
@@ -34,12 +92,24 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
     super('billingPeriods');
   }
 
-  async listBySubscriptionId(subscriptionId: string): Promise<BillingPeriod[]> {
-    return this.listByField('subscriptionId', subscriptionId);
+  async listBySubscriptionId(subscriptionId: string, organizationId?: string): Promise<BillingPeriod[]> {
+    if (!organizationId) {
+      return this.listByField('subscriptionId', subscriptionId);
+    }
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['subscriptionId', subscriptionId],
+    ]);
   }
 
-  async deleteBySubscriptionId(subscriptionId: string): Promise<number> {
-    return this.deleteByField('subscriptionId', subscriptionId);
+  async deleteBySubscriptionId(subscriptionId: string, organizationId?: string): Promise<number> {
+    if (!organizationId) {
+      return this.deleteByField('subscriptionId', subscriptionId);
+    }
+    return this.deleteByFields([
+      ['organizationId', organizationId],
+      ['subscriptionId', subscriptionId],
+    ]);
   }
 }
 
@@ -51,6 +121,10 @@ export class UserFirestoreRepository extends FirestoreRepository<User> {
   async findByEmail(email: string): Promise<User | undefined> {
     const results = await this.listByField('email', email);
     return results[0];
+  }
+
+  async listByOrganization(organizationId: string): Promise<User[]> {
+    return this.listByField('organizationId', organizationId);
   }
 }
 
@@ -81,17 +155,16 @@ export class RefreshTokenSessionFirestoreRepository extends FirestoreRepository<
 }
 
 export class SchedulerConfigFirestoreRepository extends FirestoreRepository<SchedulerConfig> {
-  private static readonly CONFIG_ID = 'daily-job';
-
   constructor() {
     super('schedulerConfig');
   }
 
-  async getConfig(): Promise<SchedulerConfig> {
-    const config = await this.getById(SchedulerConfigFirestoreRepository.CONFIG_ID);
+  async getConfig(organizationId?: string): Promise<SchedulerConfig> {
+    const configId = organizationId || 'global';
+    const config = await this.getById(configId);
     if (!config) {
       const defaultConfig: SchedulerConfig = {
-        id: SchedulerConfigFirestoreRepository.CONFIG_ID,
+        id: configId,
         enabled: true,
         cronSchedule: '0 0 * * *',
         updatedAt: new Date(),
@@ -102,8 +175,8 @@ export class SchedulerConfigFirestoreRepository extends FirestoreRepository<Sche
     return config;
   }
 
-  async updateConfig(updates: Partial<Pick<SchedulerConfig, 'enabled' | 'cronSchedule' | 'lastRun'>>): Promise<SchedulerConfig> {
-    const config = await this.getConfig();
+  async updateConfig(updates: Partial<Pick<SchedulerConfig, 'enabled' | 'cronSchedule' | 'lastRun'>>, organizationId?: string): Promise<SchedulerConfig> {
+    const config = await this.getConfig(organizationId);
     const updated: SchedulerConfig = {
       ...config,
       ...updates,
@@ -119,16 +192,28 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     super('whatsappMessages');
   }
 
-  async listByClientId(clientId: string): Promise<WhatsAppMessage[]> {
-    return this.listByField('clientId', clientId);
+  async listByClientId(clientId: string, organizationId?: string): Promise<WhatsAppMessage[]> {
+    if (!organizationId) {
+      return this.listByField('clientId', clientId);
+    }
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['clientId', clientId],
+    ]);
   }
 
-  async listByPhone(phone: string): Promise<WhatsAppMessage[]> {
-    return this.listByField('phone', phone);
+  async listByPhone(phone: string, organizationId?: string): Promise<WhatsAppMessage[]> {
+    if (!organizationId) {
+      return this.listByField('phone', phone);
+    }
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['phone', phone],
+    ]);
   }
 
-  async listConversations(): Promise<WhatsAppConversation[]> {
-    const messages = await this.list();
+  async listConversations(organizationId?: string): Promise<WhatsAppConversation[]> {
+    const messages = await this.listByOrganization(organizationId);
 
     const byPhone = new Map<string, WhatsAppConversation>();
     for (const message of messages) {
@@ -171,9 +256,13 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
     return this.listByField('adminId', adminId);
   }
 
+  async listByOrganization(organizationId: string): Promise<PushSubscription[]> {
+    return this.listByField('organizationId', organizationId);
+  }
+
   async upsertByEndpoint(
     endpoint: string,
-    data: { adminId: string; p256dh: string; auth: string; userAgent?: string }
+    data: { organizationId: string; adminId: string; p256dh: string; auth: string; userAgent?: string }
   ): Promise<PushSubscription> {
     const existing = await this.findByEndpoint(endpoint);
     const now = new Date();
@@ -181,6 +270,7 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
     if (existing) {
       const updated: PushSubscription = {
         ...existing,
+        organizationId: data.organizationId,
         adminId: data.adminId,
         p256dh: data.p256dh,
         auth: data.auth,
@@ -193,6 +283,7 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
 
     const created: PushSubscription = {
       id: createId(),
+      organizationId: data.organizationId,
       adminId: data.adminId,
       endpoint,
       p256dh: data.p256dh,
@@ -206,6 +297,13 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
   }
 }
 
+export class DomainEventFirestoreRepository extends FirestoreRepository<DomainEvent> {
+  constructor() {
+    super('domainEvents');
+  }
+}
+
+export const organizationRepository = new OrganizationFirestoreRepository();
 export const clientRepository = new ClientFirestoreRepository();
 export const planRepository = new PlanFirestoreRepository();
 export const subscriptionRepository = new SubscriptionFirestoreRepository();
@@ -215,3 +313,4 @@ export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRep
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
+export const domainEventRepository = new DomainEventFirestoreRepository();

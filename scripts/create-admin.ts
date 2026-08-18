@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { initializeFirebase, admin } from '../src/infrastructure/firebase';
+import { initializeFirebase, admin, syncUserCustomClaims } from '../src/infrastructure/firebase';
 import { userRepository } from '../src/infrastructure/repositories';
 import { authService } from '../src/domain/auth-service';
 import { User } from '../src/domain/entities';
@@ -18,13 +18,13 @@ async function createAdmin() {
     const email = args[1] || 'admin@example.com';
     const password = args[2];
     const phone = args[3];
+    const role = args.includes('--super-admin') ? 'super-admin' : 'admin';
+    const organizationId = args.find((a) => a.startsWith('--org='))?.split('=')[1] || 'org_default';
 
     if (!password) {
       console.error('❌ Error: Debes proporcionar una contraseña.');
       console.log('\n📝 Uso:');
-      console.log('   npm run create-admin "Nombre" email@example.com "tu-contraseña" "teléfono(opcional)"');
-      console.log('\n💡 Ejemplo:');
-      console.log('   npm run create-admin "Admin" admin@example.com "MiPassword123!" "+584123456789"');
+      console.log('   npm run create-admin "Nombre" email@example.com "tu-contraseña" "teléfono(opcional)" [--super-admin] [--org=org_default]');
       process.exit(1);
     }
 
@@ -53,7 +53,8 @@ async function createAdmin() {
       name,
       email,
       password: hashedPassword,
-      role: 'admin',
+      role: role === 'super-admin' ? 'super-admin' : 'admin',
+      organizationId: role === 'super-admin' ? null : organizationId,
       phone,
       createdAt: new Date(),
     };
@@ -77,6 +78,12 @@ async function createAdmin() {
       }
     }
 
+    await syncUserCustomClaims({
+      uid: adminUser.id,
+      role: adminUser.role,
+      organizationId: adminUser.organizationId,
+    });
+
     console.log('✅ Usuario administrador creado exitosamente:\n');
     console.log(`   ID: ${adminUser.id}`);
     console.log(`   Nombre: ${adminUser.name}`);
@@ -85,6 +92,9 @@ async function createAdmin() {
       console.log(`   Teléfono: ${adminUser.phone}`);
     }
     console.log(`   Rol: ${adminUser.role}`);
+    if (adminUser.organizationId) {
+      console.log(`   Organización: ${adminUser.organizationId}`);
+    }
     console.log(`   Creado: ${adminUser.createdAt.toISOString()}\n`);
 
     console.log('🔑 Generando tokens JWT para pruebas...\n');
