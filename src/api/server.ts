@@ -21,7 +21,7 @@ import { initializeFirebase } from '../infrastructure/firebase';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Detrás de un proxy inverso (Railway, Heroku, etc.) Express debe confiar en
 // el primer salto para leer X-Forwarded-For y que express-rate-limit pueda
