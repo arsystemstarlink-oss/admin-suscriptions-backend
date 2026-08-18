@@ -129,9 +129,25 @@ app.use('/api/push', pushRoutes);
 
 app.use(errorHandler);
 
-app.listen(PORT, async () => {
+const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
   await startScheduler();
 });
+
+function shutdown(signal: string): void {
+  console.log(`[Server] Recibida señal ${signal}. Cerrando servidor...`);
+  server.close(() => {
+    console.log('[Server] Servidor cerrado limpiamente.');
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    console.error('[Server] Cierre forzado por timeout.');
+    process.exit(1);
+  }, 10000).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 export default app;
