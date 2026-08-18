@@ -470,7 +470,6 @@ interface DebtorItem {
 | GET | /billing-periods/:id | Detalle de periodo |
 | PUT | /billing-periods/:id | Editar datos de pago |
 | POST | /billing-periods/:id/pay | Registrar pago |
-| POST | /billing-periods/generate-next/:subscriptionId | Generar siguiente periodo |
 
 **GET /billing-periods**
 ```typescript
@@ -501,8 +500,6 @@ interface DebtorItem {
   subscription: { id: string; status: SubscriptionStatus; previousStatus: SubscriptionStatus; reactivated: boolean };
 }
 ```
-
-**POST /billing-periods/generate-next/:subscriptionId** → Response 201 → `BillingPeriod`
 
 ---
 
@@ -761,7 +758,6 @@ Authorization: Bearer {accessToken}
 | paymentMethod (pagos historicos) | No INITIAL_PAYMENT |
 | POST /pay (amount) | Debe coincidir con amount del periodo |
 | PUT /billing-periods/:id | Solo periodos PAID |
-| generate-next | Periodo actual finalizado (PAID u OVERDUE) |
 | DELETE /subscriptions/:id | Elimina suscripcion y sus periodos de facturacion |
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
 | scheduler enabled | Si es false, el Daily Job no se ejecuta automaticamente |

@@ -276,39 +276,4 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
-router.post('/generate-next/:subscriptionId', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const subscription = await subscriptionRepository.getById(req.params.subscriptionId);
-    if (!subscription) {
-      throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
-    }
-
-    const plan = await planRepository.getById(subscription.planId);
-    if (!plan) {
-      throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
-    }
-
-    const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id);
-    const sortedPeriods = allPeriods.sort(
-      (a, b) => b.endDate.getTime() - a.endDate.getTime()
-    );
-
-    const currentPeriod = sortedPeriods[0];
-    if (!currentPeriod) {
-      throw new BusinessError('NO_PERIODS', 'No hay períodos registrados para esta suscripción.');
-    }
-
-    const nextPeriod = businessService.createNextBillingPeriod({
-      currentPeriod,
-      subscription,
-      plan,
-    });
-
-    await billingPeriodRepository.create(nextPeriod);
-    res.status(201).json(nextPeriod);
-  } catch (err) {
-    next(err);
-  }
-});
-
 export default router;
