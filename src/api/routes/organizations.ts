@@ -147,7 +147,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       name: name.trim().toUpperCase(),
       slug: normalizedSlug,
       active: active !== undefined ? Boolean(active) : true,
-      twilio: parseTwilioInput(twilio),
+      twilio: parseTwilioInput(twilio) ?? { enabled: false },
       createdAt: new Date(),
       createdBy: actor.userId,
     };
