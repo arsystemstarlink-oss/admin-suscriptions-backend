@@ -45,6 +45,25 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const offset = parseInt(req.query.offset as string) || 0;
     const organizationId = getEffectiveOrganizationId(req);
 
+    if (!search && active === undefined) {
+      const page = await planRepository.listPage({
+        organizationId,
+        limit,
+        offset,
+        orderBy: 'createdAt',
+        direction: 'asc',
+      });
+      return res.json({
+        plans: page.items,
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
+
     let plans = await planRepository.listByOrganization(organizationId);
 
     if (search) {

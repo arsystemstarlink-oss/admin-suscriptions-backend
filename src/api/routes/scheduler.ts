@@ -59,7 +59,13 @@ router.post('/run', async (req: Request, res: Response, next: NextFunction) => {
       if (!organization || !organization.active) {
         throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización indicada no existe o está inactiva.');
       }
-      await runDailyJobForOrganization(organizationId);
+      const result = await runDailyJobForOrganization(organizationId);
+      if (result.skipped) {
+        throw new BusinessError(
+          'JOB_ALREADY_RUNNING',
+          `El Daily Job ya está en ejecución para la organización ${organizationId}.`
+        );
+      }
       return res.json({ message: `Daily Job ejecutado correctamente para la organización ${organizationId}.` });
     }
 

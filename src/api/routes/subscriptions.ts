@@ -7,7 +7,7 @@ import {
   domainEventRepository,
 } from '../../infrastructure/repositories';
 import { CreateSubscriptionDto, UpdateSubscriptionDto } from '../dto';
-import { BusinessError } from '../../domain/entities';
+import { BusinessError, Subscription } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
@@ -15,6 +15,39 @@ import { isSuperAdmin } from '../../domain/auth-context';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
+
+async function enrichSubscriptions(subscriptions: Subscription[], organizationId: string | undefined): Promise<any[]> {
+  return Promise.all(
+    subscriptions.map(async (sub) => {
+      const [client, plan, periods] = await Promise.all([
+        clientRepository.getByIdScoped(sub.clientId, organizationId),
+        planRepository.getByIdScoped(sub.planId, organizationId),
+        billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
+      ]);
+
+      const currentPeriod = periods.sort(
+        (a, b) => b.startDate.getTime() - a.startDate.getTime()
+      )[0];
+
+      const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+      const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
+      const hasDebt = overduePeriods.length > 0;
+
+      return {
+        ...sub,
+        client: client
+          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
+          : null,
+        plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
+        currentPeriod,
+        totalPeriods: periods.length,
+        overduePeriods: overduePeriods.length,
+        pendingPeriods: pendingPeriods.length,
+        hasDebt,
+      };
+    })
+  );
+}
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -133,6 +166,26 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
 
+    if (!clientId && !status && !search && hasOverduePeriods === undefined) {
+      const page = await subscriptionRepository.listPage({
+        organizationId,
+        limit,
+        offset,
+        orderBy: 'createdAt',
+        direction: 'asc',
+      });
+      const enrichedSubscriptions = await enrichSubscriptions(page.items, organizationId);
+      return res.json({
+        subscriptions: enrichedSubscriptions,
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
+
     let subscriptions = await subscriptionRepository.listByOrganization(organizationId);
 
     if (clientId) {
@@ -149,36 +202,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       subscriptions = subscriptions.filter((s) => s.status === status);
     }
 
-    const enrichedSubscriptions = await Promise.all(
-      subscriptions.map(async (sub) => {
-        const [client, plan, periods] = await Promise.all([
-          clientRepository.getByIdScoped(sub.clientId, organizationId),
-          planRepository.getByIdScoped(sub.planId, organizationId),
-          billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
-        ]);
-
-        const currentPeriod = periods.sort(
-          (a, b) => b.startDate.getTime() - a.startDate.getTime()
-        )[0];
-
-        const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
-        const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
-        const hasDebt = overduePeriods.length > 0;
-
-        return {
-          ...sub,
-          client: client
-            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
-            : null,
-          plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-          currentPeriod,
-          totalPeriods: periods.length,
-          overduePeriods: overduePeriods.length,
-          pendingPeriods: pendingPeriods.length,
-          hasDebt,
-        };
-      })
-    );
+    const enrichedSubscriptions = await enrichSubscriptions(subscriptions, organizationId);
 
     let filteredSubscriptions = enrichedSubscriptions;
 

@@ -11,6 +11,49 @@ import { getEffectiveOrganizationId, requireOrganizationId, resolveCreateOrganiz
 
 const router = Router();
 
+async function enrichClients(
+  clients: Client[],
+  organizationId: string | undefined,
+  includeSubscriptions: boolean
+): Promise<any[]> {
+  return Promise.all(
+    clients.map(async (client) => {
+      const subs = await subscriptionRepository.listByClientId(client.id, organizationId);
+      const allPeriods = await Promise.all(
+        subs.map((s) => billingPeriodRepository.listBySubscriptionId(s.id, organizationId))
+      );
+
+      const overdueCount = allPeriods.flat().filter((p) => p.status === 'OVERDUE').length;
+      const hasDebt = overdueCount > 0;
+      const activeSubs = subs.filter((s) => s.status === 'ACTIVE');
+      const suspendedSubs = subs.filter((s) => s.status === 'SUSPENDED');
+
+      let subscriptionStatusValue = 'NONE';
+      if (activeSubs.length > 0 && suspendedSubs.length > 0) subscriptionStatusValue = 'MIXED';
+      else if (activeSubs.length > 0) subscriptionStatusValue = 'ACTIVE';
+      else if (suspendedSubs.length > 0) subscriptionStatusValue = 'SUSPENDED';
+
+      const currentPeriods = await Promise.all(
+        subs.map(async (s) => {
+          const periods = await billingPeriodRepository.listBySubscriptionId(s.id, organizationId);
+          return periods.sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0];
+        })
+      );
+
+      return {
+        ...client,
+        subscriptionStatus: subscriptionStatusValue,
+        hasDebt,
+        overdueCount,
+        totalSubscriptions: subs.length,
+        subscriptions: includeSubscriptions
+          ? subs.map((s, i) => ({ ...s, currentPeriod: currentPeriods[i] }))
+          : undefined,
+      };
+    })
+  );
+}
+
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreateClientDto = req.body;
@@ -79,45 +122,33 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const shouldIncludeSubscriptions = include === 'subscriptions' || subscriptionStatus || hasOverdue;
 
+    const canUseServerSidePage = !search && !subscriptionStatus && hasOverdue === undefined;
+    if (canUseServerSidePage) {
+      const page = await clientRepository.listPage({
+        organizationId,
+        limit,
+        offset,
+        orderBy: 'createdAt',
+        direction: 'asc',
+      });
+      const paginatedClients = shouldIncludeSubscriptions
+        ? await enrichClients(page.items, organizationId, include === 'subscriptions')
+        : page.items;
+      return res.json({
+        clients: paginatedClients,
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
+
     let enrichedClients: any[];
 
     if (shouldIncludeSubscriptions) {
-      enrichedClients = await Promise.all(
-        clients.map(async (client) => {
-          const subs = await subscriptionRepository.listByClientId(client.id, organizationId);
-          const allPeriods = await Promise.all(
-            subs.map((s) => billingPeriodRepository.listBySubscriptionId(s.id, organizationId))
-          );
-
-          const overdueCount = allPeriods.flat().filter((p) => p.status === 'OVERDUE').length;
-          const hasDebt = overdueCount > 0;
-          const activeSubs = subs.filter((s) => s.status === 'ACTIVE');
-          const suspendedSubs = subs.filter((s) => s.status === 'SUSPENDED');
-
-          let subscriptionStatusValue = 'NONE';
-          if (activeSubs.length > 0 && suspendedSubs.length > 0) subscriptionStatusValue = 'MIXED';
-          else if (activeSubs.length > 0) subscriptionStatusValue = 'ACTIVE';
-          else if (suspendedSubs.length > 0) subscriptionStatusValue = 'SUSPENDED';
-
-          const currentPeriods = await Promise.all(
-            subs.map(async (s) => {
-              const periods = await billingPeriodRepository.listBySubscriptionId(s.id, organizationId);
-              return periods.sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0];
-            })
-          );
-
-          return {
-            ...client,
-            subscriptionStatus: subscriptionStatusValue,
-            hasDebt,
-            overdueCount,
-            totalSubscriptions: subs.length,
-            subscriptions: include === 'subscriptions'
-              ? subs.map((s, i) => ({ ...s, currentPeriod: currentPeriods[i] }))
-              : undefined,
-          };
-        })
-      );
+      enrichedClients = await enrichClients(clients, organizationId, include === 'subscriptions');
     } else {
       enrichedClients = clients;
     }

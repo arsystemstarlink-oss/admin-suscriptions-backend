@@ -1,4 +1,5 @@
 import cron, { ScheduledTask } from 'node-cron';
+import { randomUUID } from 'crypto';
 import {
   billingPeriodRepository,
   subscriptionRepository,
@@ -8,6 +9,7 @@ import {
   whatsappMessageRepository,
   organizationRepository,
   domainEventRepository,
+  jobLockRepository,
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
@@ -17,6 +19,16 @@ import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entiti
 
 const businessService = new SubscriptionBusinessService();
 const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
+const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
+const INSTANCE_ID = randomUUID();
+
+export interface DailyJobResult {
+  overdue: number;
+  generated: number;
+  suspended: number;
+  notifications: number;
+  skipped?: boolean;
+}
 
 let currentTask: ScheduledTask | null = null;
 
@@ -54,12 +66,21 @@ async function recordDomainEvent(
   }
 }
 
-export async function runDailyJobForOrganization(organizationId: string): Promise<{
-  overdue: number;
-  generated: number;
-  suspended: number;
-  notifications: number;
-}> {
+export async function runDailyJobForOrganization(organizationId: string): Promise<DailyJobResult> {
+  const lockAcquired = await jobLockRepository.acquire(organizationId, INSTANCE_ID, JOB_LOCK_TTL_MS);
+  if (!lockAcquired) {
+    console.log(`[Daily Job] Organización ${organizationId} ya está en ejecución (lock activo). Skipping.`);
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, skipped: true };
+  }
+
+  try {
+    return await runDailyJobForOrganizationUnlocked(organizationId);
+  } finally {
+    await jobLockRepository.release(organizationId, INSTANCE_ID);
+  }
+}
+
+async function runDailyJobForOrganizationUnlocked(organizationId: string): Promise<Omit<DailyJobResult, 'skipped'>> {
   const now = new Date();
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 

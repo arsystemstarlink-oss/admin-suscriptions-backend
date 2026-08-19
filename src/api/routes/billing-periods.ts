@@ -15,6 +15,36 @@ import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 const router = Router();
 const businessService = new SubscriptionBusinessService();
 
+async function enrichPeriods(periods: BillingPeriod[], organizationId: string | undefined): Promise<any[]> {
+  return Promise.all(
+    periods.map(async (period) => {
+      const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
+      let client = null;
+      let plan = null;
+
+      if (subscription) {
+        client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
+        plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
+      }
+
+      return {
+        ...period,
+        subscription: subscription
+          ? {
+              id: subscription.id,
+              kitNumber: subscription.kitNumber,
+              status: subscription.status,
+            }
+          : null,
+        client: client
+          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
+          : null,
+        plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
+      };
+    })
+  );
+}
+
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const subscriptionId = req.query.subscriptionId as string;
@@ -25,6 +55,26 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
     const organizationId = getEffectiveOrganizationId(req);
+
+    if (!subscriptionId && !status && !expiresBefore && !clientId && !search) {
+      const page = await billingPeriodRepository.listPage({
+        organizationId,
+        limit,
+        offset,
+        orderBy: 'startDate',
+        direction: 'desc',
+      });
+      const enrichedPeriods = await enrichPeriods(page.items, organizationId);
+      return res.json({
+        periods: enrichedPeriods,
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
 
     let periods = await billingPeriodRepository.listByOrganization(organizationId);
 
@@ -43,33 +93,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       }
     }
 
-    const enrichedPeriods = await Promise.all(
-      periods.map(async (period) => {
-        const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
-        let client = null;
-        let plan = null;
-
-        if (subscription) {
-          client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
-          plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
-        }
-
-        return {
-          ...period,
-          subscription: subscription
-            ? {
-                id: subscription.id,
-                kitNumber: subscription.kitNumber,
-                status: subscription.status,
-              }
-            : null,
-          client: client
-            ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
-            : null,
-          plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-        };
-      })
-    );
+    const enrichedPeriods = await enrichPeriods(periods, organizationId);
 
     let filteredPeriods = enrichedPeriods;
 

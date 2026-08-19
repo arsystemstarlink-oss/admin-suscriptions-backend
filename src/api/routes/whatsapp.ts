@@ -10,7 +10,7 @@ import {
   organizationRepository,
 } from '../../infrastructure/repositories';
 import { pushService } from '../../infrastructure/push-service';
-import { BusinessError, WhatsAppMessage, Organization } from '../../domain/entities';
+import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
 import { getAuth, requireOrganizationId, getEffectiveOrganizationId } from '../middleware/tenant';
@@ -39,6 +39,10 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
     const organization = await organizationRepository.getById(organizationId);
     if (!organization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
+    }
+
+    if (!organization.active) {
+      throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
     }
 
     const credentials = resolveTwilioCredentials(organization);
@@ -108,6 +112,10 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const organization = await resolveOrganizationFromWebhook(parsed.to);
+
+    if (organization && !organization.active) {
+      throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
+    }
 
     const isProduction = process.env.NODE_ENV === 'production';
     const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';
@@ -221,15 +229,80 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
   }
 });
 
-router.get('/status/:sid', async (req: Request, res: Response, next: NextFunction) => {
+function mapTwilioStatus(rawStatus: string): MessageStatus | undefined {
+  switch (String(rawStatus).toLowerCase()) {
+    case 'queued':
+    case 'sent':
+      return 'SENT';
+    case 'delivered':
+      return 'DELIVERED';
+    case 'read':
+      return 'READ';
+    case 'undelivered':
+    case 'failed':
+      return 'FAILED';
+    default:
+      return undefined;
+  }
+}
+
+async function handleStatusCallback(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    res.status(200).json({
-      success: true,
-      message: 'Endpoint de status (Twilio webhooks).',
-    });
+    const source: any = req.method === 'GET' ? req.query : req.body;
+    const rawStatus = String(source.MessageStatus || '');
+    const messageSid = req.params.sid || String(source.MessageSid || '');
+
+    if (!messageSid) {
+      throw new BusinessError('INVALID_DATA', 'MessageSid es requerido.');
+    }
+
+    const message = await whatsappMessageRepository.findByMessageSid(messageSid);
+    const organizationId = message?.organizationId;
+    const organization = organizationId
+      ? await organizationRepository.getById(organizationId)
+      : undefined;
+
+    const isProduction = process.env.NODE_ENV === 'production';
+    const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';
+
+    if (isProduction || !validationDisabled) {
+      const credentials = resolveTwilioCredentials(organization ?? null);
+      const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}${req.originalUrl}`;
+      const isValid = whatsappService.validateWebhook(
+        req.headers,
+        req.body,
+        webhookUrl,
+        credentials?.authToken
+      );
+
+      if (!isValid) {
+        throw new BusinessError('INVALID_WEBHOOK', 'Firma de Twilio inválida.');
+      }
+    }
+
+    if (!message) {
+      throw new BusinessError('NOT_FOUND', 'Mensaje no encontrado.');
+    }
+
+    const status = mapTwilioStatus(rawStatus);
+    if (!status) {
+      throw new BusinessError('INVALID_DATA', `Estado de mensaje desconocido: ${rawStatus}`);
+    }
+
+    const errorMessage =
+      String(source.ErrorMessage || source.ErrorCode || '').trim().slice(0, 500) || undefined;
+
+    await whatsappMessageRepository.updateStatusByMessageSid(messageSid, status, errorMessage);
+
+    res.status(200).json({ success: true });
   } catch (err) {
     next(err);
   }
-});
+}
+
+router.get('/status/:sid', handleStatusCallback);
+router.post('/status/:sid', handleStatusCallback);
+router.get('/status', handleStatusCallback);
+router.post('/status', handleStatusCallback);
 
 export default router;

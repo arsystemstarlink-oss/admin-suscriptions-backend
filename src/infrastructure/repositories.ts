@@ -1,4 +1,5 @@
 import { FirestoreRepository } from './firestore-repository';
+import { getFirestore } from './firebase';
 import { createId } from '../domain/business-rules';
 import {
   Client,
@@ -9,6 +10,7 @@ import {
   SchedulerConfig,
   WhatsAppMessage,
   WhatsAppConversation,
+  MessageStatus,
   RefreshTokenSession,
   PushSubscription,
   Organization,
@@ -217,6 +219,26 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     ]);
   }
 
+  async findByMessageSid(messageSid: string): Promise<WhatsAppMessage | undefined> {
+    const results = await this.listByField('messageSid', messageSid);
+    return results[0];
+  }
+
+  async updateStatusByMessageSid(
+    messageSid: string,
+    status: MessageStatus,
+    errorMessage?: string
+  ): Promise<void> {
+    const results = await this.listByField('messageSid', messageSid);
+    for (const message of results) {
+      await this.update({
+        ...message,
+        status,
+        ...(errorMessage ? { errorMessage } : {}),
+      });
+    }
+  }
+
   async listConversations(organizationId?: string): Promise<WhatsAppConversation[]> {
     const messages = await this.listByOrganization(organizationId);
 
@@ -308,6 +330,46 @@ export class DomainEventFirestoreRepository extends FirestoreRepository<DomainEv
   }
 }
 
+export class JobLockFirestoreRepository {
+  private collectionName = 'jobLocks';
+
+  private get db() {
+    return getFirestore();
+  }
+
+  async acquire(organizationId: string, instanceId: string, ttlMs: number): Promise<boolean> {
+    const lockRef = this.db.collection(this.collectionName).doc(organizationId);
+    const now = Date.now();
+
+    try {
+      await this.db.runTransaction(async (tx) => {
+        const doc = await tx.get(lockRef);
+        if (doc.exists) {
+          const data = doc.data() as { expiresAt?: number } | undefined;
+          if (data?.expiresAt && data.expiresAt > now) {
+            throw new Error('JOB_LOCKED');
+          }
+        }
+        tx.set(lockRef, { instanceId, lockedAt: now, expiresAt: now + ttlMs });
+      });
+      return true;
+    } catch (error) {
+      if ((error as Error).message !== 'JOB_LOCKED') {
+        console.warn(`[JobLock] Error adquiriendo lock para ${organizationId}:`, error);
+      }
+      return false;
+    }
+  }
+
+  async release(organizationId: string, instanceId: string): Promise<void> {
+    const lockRef = this.db.collection(this.collectionName).doc(organizationId);
+    const doc = await lockRef.get();
+    if (doc.exists && doc.data()?.instanceId === instanceId) {
+      await lockRef.delete();
+    }
+  }
+}
+
 export const organizationRepository = new OrganizationFirestoreRepository();
 export const clientRepository = new ClientFirestoreRepository();
 export const planRepository = new PlanFirestoreRepository();
@@ -319,3 +381,4 @@ export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository(
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
 export const domainEventRepository = new DomainEventFirestoreRepository();
+export const jobLockRepository = new JobLockFirestoreRepository();

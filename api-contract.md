@@ -875,6 +875,7 @@ Authorization: Bearer {accessToken}
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
 | scheduler enabled | Si es false (global o por org), el Daily Job no se ejecuta automaticamente para esa org |
 | POST /scheduler/run | Ejecuta el job manualmente sin importar enabled (por org) |
+| Daily Job idempotente | Lock transaccional por org en `jobLocks/{orgId}` (TTL 15 min); si otra instancia esta ejecutando la org, se omite (409 `JOB_ALREADY_RUNNING` en el run manual) |
 | dni | Opcional; SOLO "V-" o "J-" + 7-9 digitos numericos con guion (ej: V-2769383); unico |
 | PUT /clients/:id dni | null o "" elimina la cedula |
 | Suscripcion SUSPENDED | overdueCount >= maxOverduePeriods |

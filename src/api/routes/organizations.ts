@@ -122,6 +122,24 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
 
+    if (!search) {
+      const page = await organizationRepository.listPage({
+        limit,
+        offset,
+        orderBy: 'createdAt',
+        direction: 'asc',
+      });
+      return res.json({
+        organizations: page.items.map(toOrganizationDto),
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
+
     let organizations = await organizationRepository.list();
 
     if (search) {

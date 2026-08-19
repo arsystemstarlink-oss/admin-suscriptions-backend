@@ -52,9 +52,10 @@ service cloud.firestore {
       allow read, write: if scopedReadWrite();
     }
     match /schedulerConfig/{id} {
-      allow read, write: if isSuperAdmin() ||
-                         id == 'global' ||
-                         sameOrg(id);
+      allow read, write: if isSuperAdmin() || sameOrg(id);
+    }
+    match /jobLocks/{id} {
+      allow read, write: if isSuperAdmin();
     }
     match /refreshTokenSessions/{id} {
       allow read, write: if isSuperAdmin() || resource.data.userId == request.auth.uid;

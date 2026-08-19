@@ -1,6 +1,22 @@
 import { getFirestore } from './firebase';
 import { Identifiable } from '../domain/in-memory-repository';
 
+export interface ListPageParams {
+  organizationId?: string;
+  orderBy?: string;
+  direction?: 'asc' | 'desc';
+  limit: number;
+  offset: number;
+}
+
+export interface ListPageResult<T> {
+  items: T[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export class FirestoreRepository<T extends Identifiable> {
   protected collectionName: string;
 
@@ -83,6 +99,36 @@ export class FirestoreRepository<T extends Identifiable> {
       return this.list();
     }
     return this.listByField('organizationId', organizationId);
+  }
+
+  async listPage(params: ListPageParams): Promise<ListPageResult<T>> {
+    let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
+    let countQuery: FirebaseFirestore.Query = this.db.collection(this.collectionName);
+
+    if (params.organizationId) {
+      query = query.where('organizationId', '==', params.organizationId);
+      countQuery = countQuery.where('organizationId', '==', params.organizationId);
+    }
+
+    const orderByField = params.orderBy || 'createdAt';
+    const direction: FirebaseFirestore.OrderByDirection = params.direction === 'asc' ? 'asc' : 'desc';
+    query = query.orderBy(orderByField, direction).offset(params.offset).limit(params.limit);
+
+    const [snapshot, countSnapshot] = await Promise.all([
+      query.get(),
+      countQuery.count().get(),
+    ]);
+
+    const items = snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+    const total = countSnapshot.data().count;
+
+    return {
+      items,
+      total,
+      limit: params.limit,
+      offset: params.offset,
+      hasMore: params.offset + items.length < total,
+    };
   }
 
   async getByIdScoped(id: string, organizationId?: string): Promise<T | undefined> {

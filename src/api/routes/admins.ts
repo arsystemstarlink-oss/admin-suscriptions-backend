@@ -27,6 +27,25 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const auth = getAuth(req);
     const organizationId = getEffectiveOrganizationId(req);
 
+    if (!search) {
+      const page = await userRepository.listPage({
+        organizationId,
+        limit,
+        offset,
+        orderBy: 'createdAt',
+        direction: 'asc',
+      });
+      return res.json({
+        admins: page.items.map(toUserDto),
+        pagination: {
+          total: page.total,
+          limit,
+          offset,
+          hasMore: page.hasMore,
+        },
+      });
+    }
+
     let admins: User[];
     if (isSuperAdmin(auth) && !organizationId) {
       admins = await userRepository.list();

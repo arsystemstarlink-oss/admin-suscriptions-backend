@@ -199,6 +199,15 @@ POST /communications/webhook
 - Requiere `BASE_URL` coincidente con la URL configurada en Twilio Console
 - En development se puede desactivar con `TWILIO_WEBHOOK_VALIDATION=false`
 
+**Status callback (Twilio):**
+```
+POST /communications/status
+```
+- Publico (sin JWT admin); envia `MessageStatus` y `MessageSid` en el body
+- Actualiza el estado del mensaje (`SENT`, `DELIVERED`, `READ`, `FAILED`) y guarda `errorMessage`
+- Configurar en Twilio Console: StatusCallback URL = `{BASE_URL}/communications/status` (metodo POST)
+- Valida firma con el `authToken` de la organizacion a la que pertenece el mensaje
+
 ---
 
 ## Notas Importantes

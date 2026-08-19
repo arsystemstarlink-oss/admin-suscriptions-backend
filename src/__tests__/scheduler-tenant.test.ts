@@ -31,6 +31,10 @@ jest.mock('../infrastructure/repositories', () => ({
   domainEventRepository: {
     create: jest.fn(),
   },
+  jobLockRepository: {
+    acquire: jest.fn(),
+    release: jest.fn(),
+  },
 }));
 
 jest.mock('../infrastructure/whatsapp-service', () => ({
@@ -57,6 +61,7 @@ import {
   schedulerConfigRepository,
   clientRepository,
   organizationRepository,
+  jobLockRepository,
 } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
 
@@ -66,6 +71,7 @@ const mockedPlans = planRepository as jest.Mocked<typeof planRepository>;
 const mockedSchedulerConfig = schedulerConfigRepository as jest.Mocked<typeof schedulerConfigRepository>;
 const mockedClients = clientRepository as jest.Mocked<typeof clientRepository>;
 const mockedOrganizations = organizationRepository as jest.Mocked<typeof organizationRepository>;
+const mockedJobLock = jobLockRepository as jest.Mocked<typeof jobLockRepository>;
 const mockedPush = pushService as jest.Mocked<typeof pushService>;
 
 function makePlan(orgId: string, id = `plan_${orgId}`): Plan {
@@ -122,6 +128,8 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     jest.clearAllMocks();
     jest.useFakeTimers();
     jest.setSystemTime(new Date(Date.UTC(2026, 6, 10)));
+    mockedJobLock.acquire.mockResolvedValue(true);
+    mockedJobLock.release.mockResolvedValue();
   });
 
   afterEach(() => {
@@ -242,5 +250,19 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(mockedBillingPeriods.listByOrganization).toHaveBeenCalledWith('org_A');
     expect(mockedSubscriptions.listByOrganization).toHaveBeenCalledWith('org_A');
     expect(mockedBillingPeriods.listByOrganization).not.toHaveBeenCalledWith('org_B');
+  });
+
+  it('omite la ejecución cuando el lock de la organización está activo', async () => {
+    mockedJobLock.acquire.mockResolvedValue(false);
+    mockedBillingPeriods.listByOrganization.mockResolvedValue([]);
+    mockedSubscriptions.listByOrganization.mockResolvedValue([]);
+
+    const result = await runDailyJobForOrganization('org_A');
+
+    expect(result.skipped).toBe(true);
+    expect(result.overdue).toBe(0);
+    expect(mockedBillingPeriods.listByOrganization).not.toHaveBeenCalled();
+    expect(mockedSchedulerConfig.updateConfig).not.toHaveBeenCalled();
+    expect(mockedJobLock.release).not.toHaveBeenCalled();
   });
 });
