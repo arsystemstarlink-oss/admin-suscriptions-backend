@@ -229,6 +229,30 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
   }
 });
 
+router.delete('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { phone } = req.params;
+    const organizationId = requireOrganizationId(req);
+
+    const normalizedPhone = normalizePhoneNumber(phone);
+    const existing = await whatsappMessageRepository.listByPhone(normalizedPhone, organizationId);
+
+    if (existing.length === 0) {
+      throw new BusinessError('NOT_FOUND', 'No se encontró un chat de WhatsApp para ese número.');
+    }
+
+    const deleted = await whatsappMessageRepository.deleteByPhone(normalizedPhone, organizationId);
+
+    res.json({
+      success: true,
+      deleted,
+      message: 'Chat de WhatsApp eliminado correctamente.',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function mapTwilioStatus(rawStatus: string): MessageStatus | undefined {
   switch (String(rawStatus).toLowerCase()) {
     case 'queued':

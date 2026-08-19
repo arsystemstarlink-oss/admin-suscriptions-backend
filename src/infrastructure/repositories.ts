@@ -219,6 +219,16 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     ]);
   }
 
+  async deleteByPhone(phone: string, organizationId?: string): Promise<number> {
+    if (!organizationId) {
+      return this.deleteByField('phone', phone);
+    }
+    return this.deleteByFields([
+      ['organizationId', organizationId],
+      ['phone', phone],
+    ]);
+  }
+
   async findByMessageSid(messageSid: string): Promise<WhatsAppMessage | undefined> {
     const results = await this.listByField('messageSid', messageSid);
     return results[0];

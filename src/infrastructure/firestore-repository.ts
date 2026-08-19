@@ -171,12 +171,7 @@ export class FirestoreRepository<T extends Identifiable> {
       .where(field, '==', value)
       .get();
 
-    const batch = this.db.batch();
-    snapshot.docs.forEach((doc) => {
-      batch.delete(doc.ref);
-    });
-
-    await batch.commit();
+    await this.deleteSnapshotInChunks(snapshot);
     return snapshot.size;
   }
 
@@ -187,12 +182,22 @@ export class FirestoreRepository<T extends Identifiable> {
     });
 
     const snapshot = await query.get();
-    const batch = this.db.batch();
-    snapshot.docs.forEach((doc) => {
-      batch.delete(doc.ref);
-    });
 
-    await batch.commit();
+    await this.deleteSnapshotInChunks(snapshot);
     return snapshot.size;
+  }
+
+  private async deleteSnapshotInChunks(snapshot: FirebaseFirestore.QuerySnapshot): Promise<void> {
+    const MAX_BATCH_WRITES = 400;
+    const docs = snapshot.docs;
+
+    for (let i = 0; i < docs.length; i += MAX_BATCH_WRITES) {
+      const chunk = docs.slice(i, i + MAX_BATCH_WRITES);
+      const batch = this.db.batch();
+      chunk.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+    }
   }
 }

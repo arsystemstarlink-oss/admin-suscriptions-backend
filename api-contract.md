@@ -667,6 +667,7 @@ interface DebtorItem {
 | POST | /api/whatsapp/send | Bearer admin | Enviar mensaje (texto o template) |
 | GET | /api/whatsapp/conversations | Bearer admin | Conversaciones agrupadas por teléfono (incluye números sin cliente) |
 | GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
+| DELETE | /api/whatsapp/messages/:phone | Bearer admin | Eliminar todo el chat del teléfono (requiere `?organizationId=` si el rol no la tiene) |
 | POST | /communications/webhook | Firma Twilio | Webhook para recibir mensajes de Twilio |
 
 **POST /api/whatsapp/send** (requiere `Authorization: Bearer {accessToken}`)
