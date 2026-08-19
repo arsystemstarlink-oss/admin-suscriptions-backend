@@ -3,18 +3,87 @@ import {
   organizationRepository,
   userRepository,
 } from '../../infrastructure/repositories';
-import { BusinessError, Organization } from '../../domain/entities';
+import {
+  BusinessError,
+  Organization,
+  OrganizationTwilioConfig,
+} from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { requireSuperAdmin } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
+import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
 
 const router = Router();
 
 router.use(requireSuperAdmin);
 
+function parseTwilioInput(
+  input: unknown,
+  existing?: OrganizationTwilioConfig
+): OrganizationTwilioConfig | undefined {
+  if (input === undefined) return existing;
+  if (input === null) return undefined;
+
+  const body = input as Record<string, unknown>;
+  const merged: OrganizationTwilioConfig = { ...(existing || {}) };
+
+  if (body.accountSid !== undefined) {
+    const value = String(body.accountSid || '').trim();
+    merged.accountSid = value || undefined;
+  }
+
+  if (body.phoneNumber !== undefined) {
+    const value = normalizePhoneNumber(String(body.phoneNumber || ''));
+    merged.phoneNumber = value || undefined;
+  }
+
+  if (body.enabled !== undefined) {
+    merged.enabled = Boolean(body.enabled);
+  }
+
+  if (body.authToken) {
+    merged.authToken = String(body.authToken).trim();
+  } else if (body.authToken === null) {
+    merged.authToken = undefined;
+  }
+
+  if (
+    !merged.accountSid &&
+    !merged.authToken &&
+    !merged.phoneNumber &&
+    merged.enabled === undefined
+  ) {
+    return undefined;
+  }
+
+  return merged;
+}
+
+function toOrganizationDto(organization: Organization) {
+  const { twilio, ...rest } = organization;
+
+  return {
+    ...rest,
+    twilioConfigured: Boolean(
+      twilio?.accountSid &&
+        twilio?.authToken &&
+        twilio?.phoneNumber &&
+        twilio.enabled !== false
+    ),
+    twilio: twilio
+      ? {
+          accountSid: twilio.accountSid,
+          phoneNumber: twilio.phoneNumber,
+          enabled: twilio.enabled !== false,
+          authTokenSet: Boolean(twilio.authToken),
+        }
+      : undefined,
+  };
+}
+
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, slug, active } = req.body;
+    const { name, slug, active, twilio } = req.body;
 
     if (!name || !name.trim()) {
       throw new BusinessError('INVALID_DATA', 'El nombre de la organización es obligatorio.');
@@ -35,12 +104,13 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       name: name.trim(),
       slug: normalizedSlug,
       active: active !== undefined ? Boolean(active) : true,
+      twilio: parseTwilioInput(twilio),
       createdAt: new Date(),
       createdBy: actor.userId,
     };
 
     await organizationRepository.create(organization);
-    res.status(201).json(organization);
+    res.status(201).json(toOrganizationDto(organization));
   } catch (err) {
     next(err);
   }
@@ -69,7 +139,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const paginated = organizations.slice(offset, offset + limit);
 
     res.json({
-      organizations: paginated,
+      organizations: paginated.map(toOrganizationDto),
       pagination: {
         total,
         limit,
@@ -92,7 +162,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     const users = await userRepository.listByOrganization(organization.id);
 
     res.json({
-      organization,
+      organization: toOrganizationDto(organization),
       users: users.map((u) => ({
         id: u.id,
         name: u.name,
@@ -108,7 +178,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, slug, active } = req.body;
+    const { name, slug, active, twilio } = req.body;
     const existing = await organizationRepository.getById(req.params.id);
 
     if (!existing) {
@@ -132,10 +202,11 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       name: name !== undefined && name.trim() ? name.trim() : existing.name,
       slug: normalizedSlug,
       active: active !== undefined ? Boolean(active) : existing.active,
+      twilio: parseTwilioInput(twilio, existing.twilio),
     };
 
     await organizationRepository.update(updated);
-    res.json(updated);
+    res.json(toOrganizationDto(updated));
   } catch (err) {
     next(err);
   }

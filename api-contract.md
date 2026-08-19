@@ -358,9 +358,15 @@ interface DebtorItem {
 **POST /organizations**
 ```typescript
 // Request
-{ name: string; slug?: string; active?: boolean }
+{
+  name: string;
+  slug?: string;
+  active?: boolean;
+  twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean }
+}
 // slug se normaliza a minúsculas con guiones (ej: "Org A" -> "org-a"). Único si se usa.
-// Response 201 → Organization
+// twilio.phoneNumber se normaliza sin prefijo "whatsapp:" (formato E.164, ej: +584223552626).
+// Response 201 → Organization (DTO: ver nota de masking abajo)
 // Errors: 400 INVALID_DATA (nombre obligatorio, slug duplicado)
 ```
 
@@ -382,8 +388,32 @@ interface DebtorItem {
 **PUT /organizations/:id**
 ```typescript
 // Request (partial)
-{ name?: string; slug?: string; active?: boolean }
-// Response 200 → Organization
+{
+  name?: string;
+  slug?: string;
+  active?: boolean;
+  twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean } | null
+}
+// twilio se combina con el existente:
+// - authToken vacío/ausente => conserva el actual; string => lo reemplaza; null => lo borra.
+// - accountSid/phoneNumber con string vacío => borran el campo.
+// - twilio: null => elimina toda la configuración Twilio de la organización.
+// Response 200 → Organization (DTO)
+```
+
+**Organization DTO (responses GET/POST/PUT):**
+```typescript
+{
+  id: string; name: string; slug?: string; active: boolean;
+  createdAt: string; createdBy?: string;
+  twilioConfigured: boolean; // true si accountSid+authToken+phoneNumber presentes y enabled !== false
+  twilio?: {
+    accountSid?: string;
+    phoneNumber?: string;
+    enabled: boolean;
+    authTokenSet: boolean; // el authToken NUNCA se retorna
+  }
+}
 ```
 
 **DELETE /organizations/:id**
@@ -862,6 +892,17 @@ Authorization: Bearer {accessToken}
 Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`
 
 Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
+
+Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias ni existe configuración global en el servidor.
+
+## WhatsApp por Organización (Twilio multi-tenant)
+
+- Cada organización puede tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`.
+- Resolución de credenciales: si la organización tiene config completa y `enabled !== false`, se usa; si no, fallback a `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` del servidor.
+- `POST /whatsapp/send` usa las credenciales de la organización efectiva. Requiere contexto de organización (`TENANT_REQUIRED` si un super-admin no indica `?organizationId=`).
+- Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Fallback histórico: match por teléfono del cliente.
+- El `authToken` nunca se retorna en la API (solo `authTokenSet: boolean`).
+- Los templates (`TWILIO_TEMPLATE_*`) siguen siendo variables de entorno globales; para cuentas Twilio propias por org, los templates deben existir en esa cuenta.
 
 ## Multi-Tenant: Reglas de Alcance por Endpoint
 

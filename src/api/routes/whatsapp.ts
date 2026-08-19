@@ -1,18 +1,26 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { whatsappService } from '../../infrastructure/whatsapp-service';
-import { whatsappMessageRepository, clientRepository } from '../../infrastructure/repositories';
+import {
+  whatsappService,
+  resolveTwilioCredentials,
+  normalizePhoneNumber,
+} from '../../infrastructure/whatsapp-service';
+import {
+  whatsappMessageRepository,
+  clientRepository,
+  organizationRepository,
+} from '../../infrastructure/repositories';
 import { pushService } from '../../infrastructure/push-service';
-import { BusinessError, WhatsAppMessage } from '../../domain/entities';
+import { BusinessError, WhatsAppMessage, Organization } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
-import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
+import { getAuth, requireOrganizationId, getEffectiveOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.post('/send', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const { to, body, templateName, variables } = req.body;
 
     if (!to) {
@@ -28,17 +36,29 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
       throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
     }
 
+    const organization = await organizationRepository.getById(organizationId);
+    if (!organization) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
+    }
+
+    const credentials = resolveTwilioCredentials(organization);
+    if (!credentials) {
+      throw new BusinessError(
+        'WHATSAPP_NOT_CONFIGURED',
+        'WhatsApp (Twilio) no está configurado para esta organización.'
+      );
+    }
+
     let messageSid: string;
     let messageBody = body || '';
 
     if (templateName) {
-      messageSid = await whatsappService.sendTemplate({
-        to,
-        templateName,
-        variables,
-      });
+      messageSid = await whatsappService.sendTemplate(
+        { to, templateName, variables },
+        organization
+      );
     } else {
-      messageSid = await whatsappService.sendMessage({ to, body });
+      messageSid = await whatsappService.sendMessage({ to, body }, organization);
     }
 
     const clients = await clientRepository.listByOrganization(organizationId);
@@ -69,17 +89,37 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
   }
 });
 
+async function resolveOrganizationFromWebhook(parsedTo: string): Promise<Organization | undefined> {
+  if (!parsedTo) return undefined;
+  try {
+    return await organizationRepository.findByTwilioPhoneNumber(normalizePhoneNumber(parsedTo));
+  } catch (error) {
+    console.error('[WhatsApp] Error resolviendo organización del webhook:', error);
+    return undefined;
+  }
+}
+
 router.post('/webhook', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const parsed = whatsappService.parseIncomingMessage(req.body);
+
+    if (!parsed.from || !parsed.messageSid) {
+      throw new BusinessError('INVALID_DATA', 'Payload de webhook incompleto.');
+    }
+
+    const organization = await resolveOrganizationFromWebhook(parsed.to);
+
     const isProduction = process.env.NODE_ENV === 'production';
     const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';
 
     if (isProduction || !validationDisabled) {
+      const credentials = resolveTwilioCredentials(organization ?? null);
       const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/communications/webhook`;
       const isValid = whatsappService.validateWebhook(
         req.headers,
         req.body,
-        webhookUrl
+        webhookUrl,
+        credentials?.authToken
       );
 
       if (!isValid) {
@@ -87,18 +127,21 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       }
     }
 
-    const parsed = whatsappService.parseIncomingMessage(req.body);
+    let organizationId: string | undefined = organization?.id;
+    let client;
 
-    if (!parsed.from || !parsed.messageSid) {
-      throw new BusinessError('INVALID_DATA', 'Payload de webhook incompleto.');
+    if (organizationId) {
+      const clients = await clientRepository.listByOrganization(organizationId);
+      client = clients.find((c) => c.phone === parsed.from);
+    } else {
+      const clients = await clientRepository.list();
+      client = clients.find((c) => c.phone === parsed.from);
+      organizationId = client?.organizationId;
     }
-
-    const clients = await clientRepository.list();
-    const client = clients.find((c) => c.phone === parsed.from);
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),
-      organizationId: client?.organizationId,
+      organizationId,
       clientId: client?.id,
       phone: parsed.from,
       direction: 'INBOUND',
@@ -111,13 +154,17 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
     await whatsappMessageRepository.create(whatsappMsg);
 
-    console.log('[WhatsApp] Mensaje inbound recibido de', parsed.from);
+    console.log(
+      '[WhatsApp] Mensaje inbound recibido de',
+      parsed.from,
+      organizationId ? `(org ${organizationId})` : '(sin organización)'
+    );
 
-    if (client?.organizationId) {
+    if (organizationId) {
       pushService.sendBroadcastToOrganization({
-        organizationId: client.organizationId,
+        organizationId,
         title: 'Nuevo mensaje de WhatsApp',
-        body: `${client.firstName} ${client.lastName}`,
+        body: client ? `${client.firstName} ${client.lastName}` : parsed.profileName || parsed.from,
         data: { url: '/chats' },
       }).catch((error) => {
         console.error('[Push] Error notificando mensaje entrante:', error);

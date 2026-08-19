@@ -13,7 +13,7 @@ import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService } from './whatsapp-service';
 import { pushService } from './push-service';
-import { WhatsAppMessage, DomainEventType } from '../domain/entities';
+import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
 const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
@@ -63,6 +63,7 @@ export async function runDailyJobForOrganization(organizationId: string): Promis
   const now = new Date();
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
+  const organization = await organizationRepository.getById(organizationId);
   const allPeriods = await billingPeriodRepository.listByOrganization(organizationId);
   const subscriptions = await subscriptionRepository.listByOrganization(organizationId);
   const clients = await clientRepository.listByOrganization(organizationId);
@@ -129,7 +130,7 @@ export async function runDailyJobForOrganization(organizationId: string): Promis
 
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId);
+          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
           notificationCount++;
         }
 
@@ -183,10 +184,10 @@ export async function runDailyJobForOrganization(organizationId: string): Promis
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId);
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
             notificationCount++;
           } else if (daysUntilDue === 0) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId);
+            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
             notificationCount++;
           }
         }
@@ -246,7 +247,8 @@ async function sendWhatsAppNotification(
   subscription: { kitNumber: string },
   period: { endDate: Date },
   type: 'reminder' | 'suspension-warning' | 'suspended-notice',
-  organizationId: string
+  organizationId: string,
+  organization?: Organization
 ): Promise<void> {
   const templateMap: Record<string, string | undefined> = {
     'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
@@ -288,7 +290,7 @@ async function sendWhatsAppNotification(
       to: client.phone,
       templateName,
       variables,
-    });
+    }, organization);
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),

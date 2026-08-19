@@ -2,11 +2,19 @@ export type UserRole = 'super-admin' | 'admin';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED';
 export type BillingPeriodStatus = 'PENDING' | 'PAID' | 'OVERDUE';
 
+export interface OrganizationTwilioConfig {
+  accountSid?: string;
+  authToken?: string;
+  phoneNumber?: string;
+  enabled?: boolean;
+}
+
 export interface Organization {
   id: string;
   name: string;
   slug?: string;
   active: boolean;
+  twilio?: OrganizationTwilioConfig;
   createdAt: Date;
   createdBy?: string;
 }

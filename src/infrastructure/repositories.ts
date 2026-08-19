@@ -25,6 +25,11 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     return results[0];
   }
 
+  async findByTwilioPhoneNumber(phoneNumber: string): Promise<Organization | undefined> {
+    const results = await this.listByField('twilio.phoneNumber', phoneNumber);
+    return results.find((org) => org.twilio?.phoneNumber === phoneNumber);
+  }
+
   async listActive(): Promise<Organization[]> {
     return this.listByField('active', true);
   }
