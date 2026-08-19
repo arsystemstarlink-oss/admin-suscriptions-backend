@@ -151,8 +151,8 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
-          notificationCount++;
+          const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
+          if (sent) notificationCount++;
         }
 
         await recordDomainEvent(
@@ -205,11 +205,11 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
-            notificationCount++;
+            const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
+            if (sent) notificationCount++;
           } else if (daysUntilDue === 0) {
-            await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
-            notificationCount++;
+            const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
+            if (sent) notificationCount++;
           }
         }
       }
@@ -272,7 +272,7 @@ async function sendWhatsAppNotification(
   type: 'reminder' | 'suspension-warning' | 'suspended-notice',
   organizationId: string,
   organization?: Organization
-): Promise<void> {
+): Promise<boolean> {
   const templateMap: Record<string, string | undefined> = {
     'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
     'suspension-warning': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V,
@@ -283,14 +283,14 @@ async function sendWhatsAppNotification(
 
   if (!templateName) {
     console.log(`[WhatsApp] Template no configurado para ${type}. Skipping.`);
-    return;
+    return false;
   }
 
   if (!resolveTwilioCredentials(organization)) {
     console.log(
       `[WhatsApp] Organización ${organizationId} sin credenciales Twilio propias. Skipping ${type}.`
     );
-    return;
+    return false;
   }
 
   const endDateStr = period.endDate.toISOString().split('T')[0];
@@ -337,8 +337,10 @@ async function sendWhatsAppNotification(
 
     await whatsappMessageRepository.create(whatsappMsg);
     console.log(`[WhatsApp] Notificación ${type} enviada a ${clientFullName} (${client.phone})`);
+    return true;
   } catch (error) {
     console.error(`[WhatsApp] Error enviando notificación ${type} a ${clientFullName}:`, error);
+    return false;
   }
 }
 
