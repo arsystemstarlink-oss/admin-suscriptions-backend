@@ -16,19 +16,6 @@ function makeOrg(twilio?: Organization['twilio']): Organization {
 }
 
 describe('resolveTwilioCredentials', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-    delete process.env.TWILIO_ACCOUNT_SID;
-    delete process.env.TWILIO_AUTH_TOKEN;
-    delete process.env.TWILIO_FROM_NUMBER;
-  });
-
-  afterAll(() => {
-    process.env = originalEnv;
-  });
-
   it('usa las credenciales de la organización cuando están completas', () => {
     const org = makeOrg({
       accountSid: 'AC_org',
@@ -53,10 +40,7 @@ describe('resolveTwilioCredentials', () => {
     expect(resolveTwilioCredentials(org)?.phoneNumber).toBe('+584111111111');
   });
 
-  it('ignora la configuración de la organización cuando está desactivada', () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC_env';
-    process.env.TWILIO_AUTH_TOKEN = 'token_env';
-
+  it('devuelve null cuando la configuración de la organización está desactivada', () => {
     const org = makeOrg({
       accountSid: 'AC_org',
       authToken: 'token_org',
@@ -64,31 +48,17 @@ describe('resolveTwilioCredentials', () => {
       enabled: false,
     });
 
-    expect(resolveTwilioCredentials(org)?.accountSid).toBe('AC_env');
+    expect(resolveTwilioCredentials(org)).toBeNull();
   });
 
-  it('ignora la configuración incompleta de la organización y usa env', () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC_env';
-    process.env.TWILIO_AUTH_TOKEN = 'token_env';
-
+  it('devuelve null cuando la configuración de la organización está incompleta', () => {
     const org = makeOrg({ accountSid: 'AC_org' });
 
-    expect(resolveTwilioCredentials(org)?.accountSid).toBe('AC_env');
+    expect(resolveTwilioCredentials(org)).toBeNull();
   });
 
-  it('hace fallback a variables de entorno sin organización', () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC_env';
-    process.env.TWILIO_AUTH_TOKEN = 'token_env';
-    process.env.TWILIO_FROM_NUMBER = '+584222222222';
-
-    expect(resolveTwilioCredentials(undefined)).toEqual({
-      accountSid: 'AC_env',
-      authToken: 'token_env',
-      phoneNumber: '+584222222222',
-    });
-  });
-
-  it('devuelve null cuando no hay credenciales en ningún lado', () => {
+  it('devuelve null sin organización o sin configuración Twilio', () => {
+    expect(resolveTwilioCredentials(undefined)).toBeNull();
     expect(resolveTwilioCredentials(null)).toBeNull();
     expect(resolveTwilioCredentials(makeOrg(undefined))).toBeNull();
   });

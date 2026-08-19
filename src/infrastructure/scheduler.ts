@@ -11,7 +11,7 @@ import {
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
-import { whatsappService } from './whatsapp-service';
+import { whatsappService, resolveTwilioCredentials } from './whatsapp-service';
 import { pushService } from './push-service';
 import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entities';
 
@@ -228,7 +228,7 @@ export async function runDailyJob(): Promise<void> {
   for (const organization of organizations) {
     if (!organization.active) continue;
     try {
-      await runDailyJobForOrganization(organization.id);
+      await runDailyJobForOrganizationIfEnabled(organization.id);
     } catch (error) {
       console.error(`[Daily Job] Error en organización ${organization.id}:`, error);
     }
@@ -239,6 +239,8 @@ export async function runDailyJobForOrganizationIfEnabled(organizationId: string
   const config = await schedulerConfigRepository.getConfig(organizationId);
   if (config.enabled) {
     await runDailyJobForOrganization(organizationId);
+  } else {
+    console.log(`[Daily Job] Organización ${organizationId} desactivada en su configuración. Skipping.`);
   }
 }
 
@@ -260,6 +262,13 @@ async function sendWhatsAppNotification(
 
   if (!templateName) {
     console.log(`[WhatsApp] Template no configurado para ${type}. Skipping.`);
+    return;
+  }
+
+  if (!resolveTwilioCredentials(organization)) {
+    console.log(
+      `[WhatsApp] Organización ${organizationId} sin credenciales Twilio propias. Skipping ${type}.`
+    );
     return;
   }
 

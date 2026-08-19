@@ -873,8 +873,8 @@ Authorization: Bearer {accessToken}
 | PUT /billing-periods/:id | Solo periodos PAID |
 | DELETE /subscriptions/:id | Elimina suscripcion y sus periodos de facturacion |
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
-| scheduler enabled | Si es false, el Daily Job no se ejecuta automaticamente |
-| POST /scheduler/run | Ejecuta el job manualmente sin importar enabled |
+| scheduler enabled | Si es false (global o por org), el Daily Job no se ejecuta automaticamente para esa org |
+| POST /scheduler/run | Ejecuta el job manualmente sin importar enabled (por org) |
 | dni | Opcional; SOLO "V-" o "J-" + 7-9 digitos numericos con guion (ej: V-2769383); unico |
 | PUT /clients/:id dni | null o "" elimina la cedula |
 | Suscripcion SUSPENDED | overdueCount >= maxOverduePeriods |
@@ -893,14 +893,14 @@ Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` 
 
 Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
 
-Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias ni existe configuración global en el servidor.
+Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias completas (`accountSid`, `authToken`, `phoneNumber` y `enabled !== false`).
 
 ## WhatsApp por Organización (Twilio multi-tenant)
 
-- Cada organización puede tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`.
-- Resolución de credenciales: si la organización tiene config completa y `enabled !== false`, se usa; si no, fallback a `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` del servidor.
+- Cada organización debe tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`. No existe configuración Twilio global de servidor.
+- Resolución de credenciales: solo se usan las credenciales de la organización; si la config está incompleta o `enabled === false`, no hay credenciales (`WHATSAPP_NOT_CONFIGURED`).
 - `POST /whatsapp/send` usa las credenciales de la organización efectiva. Requiere contexto de organización (`TENANT_REQUIRED` si un super-admin no indica `?organizationId=`).
-- Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Fallback histórico: match por teléfono del cliente.
+- Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Si la org no se resuelve, no hay credenciales para validar y el webhook se rechaza. Fallback histórico: match por teléfono del cliente (solo con validación desactivada en development).
 - El `authToken` nunca se retorna en la API (solo `authTokenSet: boolean`).
 - Los templates (`TWILIO_TEMPLATE_*`) siguen siendo variables de entorno globales; para cuentas Twilio propias por org, los templates deben existir en esa cuenta.
 
@@ -911,7 +911,7 @@ Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene 
 | GET/POST/PUT/DELETE /clients, /plans, /subscriptions, /billing-periods | Solo su organización. `?organizationId` y `body.organizationId` son **ignorados** | Todas, o filtradas con `?organizationId=org_X`. Al crear, debe indicar `organizationId` (body o query) |
 | GET /dashboard/summary, /alerts | Solo su organización | Todas o filtradas |
 | GET/PUT /scheduler/config | Su organización | `?organizationId=org_X` o configuración global sin filtro |
-| POST /scheduler/run | Su organización | `?organizationId=org_X` o todas sin filtro |
+| POST /scheduler/run | Su organización (ignora enabled) | `?organizationId=org_X` o todas sin filtro (respeta enabled por org en el run global) |
 | GET/PUT/DELETE /admins | Solo admins de su organización | Todos o filtrados |
 | POST /auth/register | Crea admin en su organización | Crea admin (con org) o super-admin |
 | POST /subscriptions | Valida que `clientId` y `planId` pertenezcan a su organización (`CROSS_TENANT_REFERENCE` si no) | Igual validación contra la org indicada |

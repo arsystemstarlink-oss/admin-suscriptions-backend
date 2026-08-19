@@ -1,5 +1,5 @@
-import { runDailyJobForOrganization } from '../infrastructure/scheduler';
-import { Plan, Subscription, BillingPeriod } from '../domain/entities';
+import { runDailyJobForOrganization, runDailyJob } from '../infrastructure/scheduler';
+import { Plan, Subscription, BillingPeriod, Organization } from '../domain/entities';
 
 jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
@@ -16,6 +16,7 @@ jest.mock('../infrastructure/repositories', () => ({
   },
   schedulerConfigRepository: {
     updateConfig: jest.fn(),
+    getConfig: jest.fn(),
   },
   clientRepository: {
     listByOrganization: jest.fn(),
@@ -36,6 +37,11 @@ jest.mock('../infrastructure/whatsapp-service', () => ({
   whatsappService: {
     sendTemplate: jest.fn(),
   },
+  resolveTwilioCredentials: jest.fn(() => ({
+    accountSid: 'AC_test',
+    authToken: 'token_test',
+    phoneNumber: '+584111111111',
+  })),
 }));
 
 jest.mock('../infrastructure/push-service', () => ({
@@ -50,6 +56,7 @@ import {
   planRepository,
   schedulerConfigRepository,
   clientRepository,
+  organizationRepository,
 } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
 
@@ -58,6 +65,7 @@ const mockedSubscriptions = subscriptionRepository as jest.Mocked<typeof subscri
 const mockedPlans = planRepository as jest.Mocked<typeof planRepository>;
 const mockedSchedulerConfig = schedulerConfigRepository as jest.Mocked<typeof schedulerConfigRepository>;
 const mockedClients = clientRepository as jest.Mocked<typeof clientRepository>;
+const mockedOrganizations = organizationRepository as jest.Mocked<typeof organizationRepository>;
 const mockedPush = pushService as jest.Mocked<typeof pushService>;
 
 function makePlan(orgId: string, id = `plan_${orgId}`): Plan {
@@ -96,6 +104,15 @@ function makePeriod(orgId: string, subscriptionId: string, id = `period_${orgId}
     endDate: new Date(Date.UTC(2026, 6, 5)),
     amount: 50,
     status: 'PENDING',
+    createdAt: new Date(),
+  };
+}
+
+function makeOrg(orgId: string, active = true): Organization {
+  return {
+    id: orgId,
+    name: `Org ${orgId}`,
+    active,
     createdAt: new Date(),
   };
 }
@@ -203,5 +220,27 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(updates).toHaveLength(1);
     expect(updates[0].id).toBe('p1');
     expect(updates[0].status).toBe('OVERDUE');
+  });
+
+  it('el run global debería omitir las organizaciones con enabled=false en su config', async () => {
+    mockedOrganizations.list.mockResolvedValue([makeOrg('org_A'), makeOrg('org_B')]);
+    mockedSchedulerConfig.getConfig.mockImplementation(async (organizationId?: string) => ({
+      id: organizationId || 'global',
+      enabled: organizationId !== 'org_B',
+      cronSchedule: '0 0 * * *',
+      updatedAt: new Date(),
+    }));
+    mockedBillingPeriods.listByOrganization.mockResolvedValue([]);
+    mockedSubscriptions.listByOrganization.mockResolvedValue([]);
+    mockedClients.listByOrganization.mockResolvedValue([]);
+    mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: 'x', enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+
+    await runDailyJob();
+
+    expect(mockedBillingPeriods.listByOrganization).toHaveBeenCalledTimes(1);
+    expect(mockedBillingPeriods.listByOrganization).toHaveBeenCalledWith('org_A');
+    expect(mockedSubscriptions.listByOrganization).toHaveBeenCalledWith('org_A');
+    expect(mockedBillingPeriods.listByOrganization).not.toHaveBeenCalledWith('org_B');
   });
 });

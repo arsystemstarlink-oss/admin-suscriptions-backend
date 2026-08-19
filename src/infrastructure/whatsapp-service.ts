@@ -44,15 +44,7 @@ export function resolveTwilioCredentials(
     };
   }
 
-  const accountSid = process.env.TWILIO_ACCOUNT_SID;
-  const authToken = process.env.TWILIO_AUTH_TOKEN;
-  if (!accountSid || !authToken) return null;
-
-  return {
-    accountSid,
-    authToken,
-    phoneNumber: normalizePhoneNumber(process.env.TWILIO_FROM_NUMBER || '+584223552626'),
-  };
+  return null;
 }
 
 export class WhatsAppService {
@@ -120,13 +112,12 @@ export class WhatsAppService {
   }
 
   validateWebhook(headers: any, body: any, url: string, authToken?: string): boolean {
-    const token = authToken || process.env.TWILIO_AUTH_TOKEN;
-    if (!token) return false;
+    if (!authToken) return false;
 
     const twilioSignature = headers['x-twilio-signature'];
     if (!twilioSignature) return false;
 
-    return twilio.validateRequest(token, twilioSignature, url, body);
+    return twilio.validateRequest(authToken, twilioSignature, url, body);
   }
 }
 

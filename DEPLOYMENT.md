@@ -42,10 +42,9 @@ SETUP_KEY=
 # URL pública del backend (usada para validar firmas de webhooks de Twilio)
 BASE_URL=https://tu-api.example.com
 
-# Twilio
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_FROM_NUMBER=
+# Twilio (WhatsApp) — credenciales POR ORGANIZACIÓN
+# No hay credenciales Twilio globales de servidor: cada organización
+# configura accountSid, authToken y phoneNumber vía PUT /api/organizations/:id.
 # En development se puede desactivar con false.
 # En production la validación de firma del webhook es siempre obligatoria.
 TWILIO_WEBHOOK_VALIDATION=true
@@ -283,6 +282,7 @@ Las reglas usan custom claims (`request.auth.token.role`, `request.auth.token.or
 - [ ] CORS_ORIGIN apunta solo al dominio del frontend
 - [ ] BASE_URL es la URL pública HTTPS del backend (webhooks Twilio)
 - [ ] TWILIO_WEBHOOK_VALIDATION no está en false en production
+- [ ] Cada organización tiene sus credenciales Twilio configuradas (`organizations/{id}.twilio`) y los templates existen en su cuenta
 - [ ] HTTPS configurado en producción (reverse proxy / load balancer)
 - [ ] Logs no contienen información sensible
 - [ ] Dependencias actualizadas (`npm audit`)
@@ -332,9 +332,10 @@ El `JWT_SECRET` en producción es el valor de ejemplo:
 3. Redesplegar. No se acepta el valor de ejemplo a propósito; sin esto, el login falla.
 
 ### Webhook de Twilio rechazado (`INVALID_WEBHOOK`)
-1. Verificar `TWILIO_AUTH_TOKEN`
-2. Verificar que `BASE_URL` coincide exactamente con la URL configurada en Twilio Console
-3. En development, solo si es necesario: `TWILIO_WEBHOOK_VALIDATION=false`
+1. Verificar que la organización tiene `twilio.authToken` configurado y `enabled !== false` (PUT `/api/organizations/:id`)
+2. Verificar que el número de Twilio de la organización (`twilio.phoneNumber`) coincide con el número destino (`To`) del webhook
+3. Verificar que `BASE_URL` coincide exactamente con la URL configurada en Twilio Console
+4. En development, solo si es necesario: `TWILIO_WEBHOOK_VALIDATION=false`
 
 ### Errores de Firebase
 1. Verificar que `FIREBASE_CREDENTIALS_PATH` apunta al archivo correcto

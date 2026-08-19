@@ -590,7 +590,7 @@ Alcance por rol
 
 Daily Job
 
-El cron global ejecuta runDailyJobForOrganization(orgId) por cada organización activa, escaneando solo sus datos y enviando notificaciones (WhatsApp/Push) dentro de la org. La configuración del scheduler es por organización (schedulerConfig/{orgId}) además de la global.
+El cron global ejecuta runDailyJobForOrganization(orgId) por cada organización activa, escaneando solo sus datos y enviando notificaciones (WhatsApp/Push) dentro de la org. La configuración del scheduler es por organización (schedulerConfig/{orgId}) además de la global: el cron global respeta el `enabled` de cada org (si una org está desactivada, se omite). El run manual por org (`POST /scheduler/run`) ejecuta sin importar `enabled`.
 
 Migración
 
