@@ -3,13 +3,14 @@ import { planRepository, subscriptionRepository } from '../../infrastructure/rep
 import { CreatePlanDto, UpdatePlanDto } from '../dto';
 import { BusinessError } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
-import { getEffectiveOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreatePlanDto = req.body;
+    const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.name || dto.price === undefined || !dto.description) {
@@ -28,6 +29,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       description: dto.description,
       active: dto.active !== undefined ? dto.active : true,
       createdAt: new Date(),
+      createdByUserId: auth.userId,
+      createdByRole: auth.role,
     };
 
     await planRepository.create(plan);

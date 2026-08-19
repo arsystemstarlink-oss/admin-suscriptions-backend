@@ -122,7 +122,12 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       historicalPayments,
     });
 
-    const scopedSubscription = { ...subscription, organizationId };
+    const scopedSubscription = {
+      ...subscription,
+      organizationId,
+      createdByUserId: auth.userId,
+      createdByRole: auth.role,
+    };
     const scopedPeriods = billingPeriods.map((period) => ({ ...period, organizationId }));
 
     await subscriptionRepository.create(scopedSubscription);

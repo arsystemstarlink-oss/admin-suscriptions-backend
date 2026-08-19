@@ -267,6 +267,8 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
       if (user.role === 'super-admin') {
         throw new BusinessError('FORBIDDEN', 'No puedes eliminar un super-admin.');
       }
+    } else if (user.role === 'super-admin') {
+      throw new BusinessError('FORBIDDEN', 'No puedes eliminar otro super-admin.');
     }
 
     let adminCount: number;

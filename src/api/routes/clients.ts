@@ -7,7 +7,7 @@ import {
 import { CreateClientDto, UpdateClientDto } from '../dto';
 import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni } from '../../domain/business-rules';
-import { getEffectiveOrganizationId, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { getAuth, getEffectiveOrganizationId, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
@@ -57,6 +57,7 @@ async function enrichClients(
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreateClientDto = req.body;
+    const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.firstName || !dto.lastName || !dto.phone) {
@@ -86,6 +87,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       address: dto.address,
       notes: dto.notes,
       createdAt: new Date(),
+      createdByUserId: auth.userId,
+      createdByRole: auth.role,
     };
 
     await clientRepository.create(client);

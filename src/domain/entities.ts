@@ -53,6 +53,8 @@ export interface Client {
   address?: string;
   notes?: string;
   createdAt: Date;
+  createdByUserId?: string;
+  createdByRole?: UserRole;
 }
 
 export interface Plan {
@@ -63,6 +65,8 @@ export interface Plan {
   description: string;
   active: boolean;
   createdAt: Date;
+  createdByUserId?: string;
+  createdByRole?: UserRole;
 }
 
 export interface Subscription {
@@ -77,6 +81,8 @@ export interface Subscription {
   maxOverduePeriods: number;
   activationDate?: Date;
   createdAt: Date;
+  createdByUserId?: string;
+  createdByRole?: UserRole;
 }
 
 export interface BillingPeriod {

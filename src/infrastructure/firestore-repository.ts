@@ -29,18 +29,26 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   protected serialize(entity: T): any {
-    const serialized: any = { ...entity };
-    
-    Object.keys(serialized).forEach((key) => {
-      const value = serialized[key];
-      if (value === undefined) {
-        delete serialized[key];
-      } else if (value instanceof Date) {
-        serialized[key] = value;
+    const stripUndefined = (value: any): any => {
+      if (value instanceof Date) {
+        return value;
       }
-    });
+      if (Array.isArray(value)) {
+        return value.map(stripUndefined);
+      }
+      if (value && typeof value === 'object') {
+        const cleaned: any = {};
+        Object.keys(value).forEach((key) => {
+          if (value[key] !== undefined) {
+            cleaned[key] = stripUndefined(value[key]);
+          }
+        });
+        return cleaned;
+      }
+      return value;
+    };
 
-    return serialized;
+    return stripUndefined(entity);
   }
 
   protected deserialize(data: any): T {

@@ -1,5 +1,5 @@
 import { FirestoreRepository } from './firestore-repository';
-import { getFirestore } from './firebase';
+import { getFirestore, admin } from './firebase';
 import { createId } from '../domain/business-rules';
 import {
   Client,
@@ -14,6 +14,7 @@ import {
   RefreshTokenSession,
   PushSubscription,
   Organization,
+  OrganizationTwilioConfig,
   DomainEvent,
 } from '../domain/entities';
 
@@ -34,6 +35,37 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
 
   async listActive(): Promise<Organization[]> {
     return this.listByField('active', true);
+  }
+
+  async updateOrganization(organization: Organization): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(organization.id);
+    const existing = await docRef.get();
+
+    if (!existing.exists) {
+      throw new Error(`Entity with id ${organization.id} does not exist.`);
+    }
+
+    const data = this.serialize(organization);
+    const updates: Record<string, any> = { ...data };
+    delete updates.twilio;
+
+    if (organization.twilio) {
+      const fields: (keyof OrganizationTwilioConfig)[] = [
+        'accountSid',
+        'authToken',
+        'phoneNumber',
+        'enabled',
+      ];
+      for (const field of fields) {
+        const value = organization.twilio[field];
+        updates[`twilio.${field}`] =
+          value === undefined ? admin.firestore.FieldValue.delete() : value;
+      }
+    } else {
+      updates.twilio = admin.firestore.FieldValue.delete();
+    }
+
+    await docRef.update(updates);
   }
 }
 
