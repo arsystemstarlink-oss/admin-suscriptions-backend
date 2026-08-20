@@ -13,7 +13,7 @@ import {
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
-import { whatsappService, resolveTwilioCredentials } from './whatsapp-service';
+import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
 import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entities';
 
@@ -22,11 +22,20 @@ const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
 const INSTANCE_ID = randomUUID();
 
+export interface NotificationFailure {
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  clientName: string;
+  phone: string;
+  errorCode?: number;
+  errorMessage: string;
+}
+
 export interface DailyJobResult {
   overdue: number;
   generated: number;
   suspended: number;
   notifications: number;
+  errors: NotificationFailure[];
   skipped?: boolean;
 }
 
@@ -70,7 +79,7 @@ export async function runDailyJobForOrganization(organizationId: string): Promis
   const lockAcquired = await jobLockRepository.acquire(organizationId, INSTANCE_ID, JOB_LOCK_TTL_MS);
   if (!lockAcquired) {
     console.log(`[Daily Job] Organización ${organizationId} ya está en ejecución (lock activo). Skipping.`);
-    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, skipped: true };
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [], skipped: true };
   }
 
   try {
@@ -93,6 +102,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   let generatedCount = 0;
   let suspendedCount = 0;
   let notificationCount = 0;
+  const notificationErrors: NotificationFailure[] = [];
 
   const suspendedSubscriptionIds = new Set(
     subscriptions.filter((s) => s.status === 'SUSPENDED').map((s) => s.id)
@@ -151,8 +161,12 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
-          if (sent) notificationCount++;
+          const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
+          if (result.sent) {
+            notificationCount++;
+          } else {
+            notificationErrors.push(result.error);
+          }
         }
 
         await recordDomainEvent(
@@ -205,11 +219,19 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
-            const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
-            if (sent) notificationCount++;
+            const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
+            if (result.sent) {
+              notificationCount++;
+            } else {
+              notificationErrors.push(result.error);
+            }
           } else if (daysUntilDue === 0) {
-            const sent = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
-            if (sent) notificationCount++;
+            const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
+            if (result.sent) {
+              notificationCount++;
+            } else {
+              notificationErrors.push(result.error);
+            }
           }
         }
       }
@@ -237,11 +259,18 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     }
   }
 
+  if (notificationErrors.length > 0) {
+    console.error(
+      `[Daily Job] ${notificationErrors.length} notificación(es) fallaron (org ${organizationId}):`,
+      notificationErrors
+    );
+  }
+
   console.log(
     `[Daily Job] Completado (org ${organizationId}) - Períodos vencidos: ${overdueCount}, Períodos generados: ${generatedCount}, Suscripciones suspendidas: ${suspendedCount}, Notificaciones enviadas: ${notificationCount}`
   );
 
-  return { overdue: overdueCount, generated: generatedCount, suspended: suspendedCount, notifications: notificationCount };
+  return { overdue: overdueCount, generated: generatedCount, suspended: suspendedCount, notifications: notificationCount, errors: notificationErrors };
 }
 
 export async function runDailyJob(): Promise<void> {
@@ -272,7 +301,20 @@ async function sendWhatsAppNotification(
   type: 'reminder' | 'suspension-warning' | 'suspended-notice',
   organizationId: string,
   organization?: Organization
-): Promise<boolean> {
+): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
+  const clientFullName = `${client.firstName} ${client.lastName}`;
+
+  const failure = (errorMessage: string, errorCode?: number): { sent: false; error: NotificationFailure } => ({
+    sent: false,
+    error: {
+      type,
+      clientName: clientFullName,
+      phone: client.phone,
+      errorCode,
+      errorMessage,
+    },
+  });
+
   const templateMap: Record<string, string | undefined> = {
     'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
     'suspension-warning': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V,
@@ -282,19 +324,14 @@ async function sendWhatsAppNotification(
   const templateName = templateMap[type];
 
   if (!templateName) {
-    console.log(`[WhatsApp] Template no configurado para ${type}. Skipping.`);
-    return false;
+    return failure(`Template no configurado para la notificación ${type} (revisa las variables de entorno TWILIO_TEMPLATE_*).`);
   }
 
   if (!resolveTwilioCredentials(organization)) {
-    console.log(
-      `[WhatsApp] Organización ${organizationId} sin credenciales Twilio propias. Skipping ${type}.`
-    );
-    return false;
+    return failure('La organización no tiene credenciales de Twilio configuradas o están deshabilitadas.');
   }
 
   const endDateStr = period.endDate.toISOString().split('T')[0];
-  const clientFullName = `${client.firstName} ${client.lastName}`;
 
   let variables: Record<string, string>;
   if (type === 'suspended-notice') {
@@ -337,10 +374,14 @@ async function sendWhatsAppNotification(
 
     await whatsappMessageRepository.create(whatsappMsg);
     console.log(`[WhatsApp] Notificación ${type} enviada a ${clientFullName} (${client.phone})`);
-    return true;
+    return { sent: true };
   } catch (error) {
     console.error(`[WhatsApp] Error enviando notificación ${type} a ${clientFullName}:`, error);
-    return false;
+    const twilioError = extractTwilioError(error);
+    if (twilioError) {
+      return failure(`${twilioError.message}${twilioError.moreInfo ? ` (${twilioError.moreInfo})` : ''}`, twilioError.code);
+    }
+    return failure(error instanceof Error ? error.message : String(error));
   }
 }
 

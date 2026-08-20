@@ -111,6 +111,8 @@ TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V=HX...
 TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 ```
 
+> Nota: los templates son globales. Las credenciales Twilio (accountSid, authToken, phoneNumber) son POR ORGANIZACIÓN en `organizations/{id}.twilio`; cada content SID debe existir en la cuenta Twilio de la organización.
+
 ### Enviar Template Manualmente
 
 **Endpoint:** `POST /api/whatsapp/send`  

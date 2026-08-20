@@ -66,7 +66,11 @@ router.post('/run', async (req: Request, res: Response, next: NextFunction) => {
           `El Daily Job ya está en ejecución para la organización ${organizationId}.`
         );
       }
-      return res.json({ message: `Daily Job ejecutado correctamente para la organización ${organizationId}.` });
+      return res.json({
+        success: true,
+        message: `Daily Job ejecutado correctamente para la organización ${organizationId}.`,
+        result,
+      });
     }
 
     if (isSuperAdmin(auth)) {

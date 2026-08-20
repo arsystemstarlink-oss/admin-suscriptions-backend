@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { BusinessError } from '../../domain/entities';
+import { extractTwilioError } from '../../infrastructure/whatsapp-service';
 
 const STATUS_BY_CODE: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -25,6 +26,7 @@ const STATUS_BY_CODE: Record<string, number> = {
   TENANT_REQUIRED: 403,
   ORGANIZATION_NOT_FOUND: 404,
   ORGANIZATION_INACTIVE: 403,
+  TWILIO_ERROR: 502,
 };
 
 export function errorHandler(
@@ -39,6 +41,20 @@ export function errorHandler(
       error: {
         code: err.code,
         message: err.message,
+      },
+    });
+    return;
+  }
+
+  const twilioError = extractTwilioError(err);
+  if (twilioError) {
+    console.error('Twilio error:', twilioError);
+    res.status(STATUS_BY_CODE.TWILIO_ERROR).json({
+      error: {
+        code: 'TWILIO_ERROR',
+        message: twilioError.message,
+        twilioCode: twilioError.code,
+        moreInfo: twilioError.moreInfo,
       },
     });
     return;

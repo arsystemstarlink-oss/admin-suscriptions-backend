@@ -47,6 +47,38 @@ export function resolveTwilioCredentials(
   return null;
 }
 
+export interface TwilioErrorInfo {
+  code: number;
+  message: string;
+  moreInfo?: string;
+  status?: number;
+}
+
+export function extractTwilioError(error: unknown): TwilioErrorInfo | null {
+  if (!error || typeof error !== 'object') return null;
+
+  const candidate = error as Record<string, unknown>;
+  const code = candidate.code;
+  const message = candidate.message;
+
+  if (typeof code !== 'number' || typeof message !== 'string') return null;
+
+  return {
+    code,
+    message,
+    moreInfo: typeof candidate.moreInfo === 'string' ? candidate.moreInfo : undefined,
+    status: typeof candidate.status === 'number' ? candidate.status : undefined,
+  };
+}
+
+export function formatTwilioError(error: unknown): string {
+  const twilioError = extractTwilioError(error);
+  if (twilioError) {
+    return `Twilio error ${twilioError.code}: ${twilioError.message}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 export class WhatsAppService {
   private clients = new Map<string, twilio.Twilio>();
 

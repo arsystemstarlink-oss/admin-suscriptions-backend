@@ -655,7 +655,30 @@ interface DebtorItem {
 ```typescript
 // Ejecuta el Daily Job inmediatamente (independiente del estado enabled)
 // Response 200
-{ message: string }
+{
+  success: true,
+  message: string,
+  result: {
+    overdue: number;       // períodos marcados vencidos
+    generated: number;     // períodos de cobro generados
+    suspended: number;     // suscripciones suspendidas
+    notifications: number; // notificaciones WhatsApp enviadas OK
+    errors: NotificationFailure[]; // errores al enviar notificaciones (vacío si todo OK)
+  }
+}
+
+// NotificationFailure
+{
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  clientName: string;
+  phone: string;
+  errorCode?: number;    // código de error de Twilio (ej: 63017, 21211)
+  errorMessage: string;  // mensaje legible del error
+}
+
+// Errores posibles
+// 409 { code: 'JOB_ALREADY_RUNNING' } → el job ya estaba en ejecución
+// 502 { code: 'TWILIO_ERROR', twilioCode, moreInfo } → error de Twilio
 ```
 
 ---
@@ -904,7 +927,7 @@ Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene 
 - `POST /whatsapp/send` usa las credenciales de la organización efectiva. Requiere contexto de organización (`TENANT_REQUIRED` si un super-admin no indica `?organizationId=`).
 - Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Si la org no se resuelve, no hay credenciales para validar y el webhook se rechaza. Fallback histórico: match por teléfono del cliente (solo con validación desactivada en development).
 - El `authToken` nunca se retorna en la API (solo `authTokenSet: boolean`).
-- Los templates (`TWILIO_TEMPLATE_*`) siguen siendo variables de entorno globales; para cuentas Twilio propias por org, los templates deben existir en esa cuenta.
+- Los templates (`TWILIO_TEMPLATE_*`) son variables de entorno globales; para cuentas Twilio propias por org, los templates deben existir en esa cuenta.
 
 ## Multi-Tenant: Reglas de Alcance por Endpoint
 
