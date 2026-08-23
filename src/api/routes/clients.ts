@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { 
   clientRepository,
   subscriptionRepository,
-  billingPeriodRepository 
+  billingPeriodRepository,
+  planRepository,
 } from '../../infrastructure/repositories';
 import { CreateClientDto, UpdateClientDto } from '../dto';
 import { BusinessError, Client } from '../../domain/entities';
@@ -195,22 +196,29 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     
     const subscriptionsWithDetails = await Promise.all(
       subscriptions.map(async (sub: any) => {
-        const periods = await billingPeriodRepository.listBySubscriptionId(sub.id, organizationId);
+        const [plan, periods] = await Promise.all([
+          planRepository.getByIdScoped(sub.planId, organizationId),
+          billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
+        ]);
         const sortedPeriods = periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
         const currentPeriod = sortedPeriods[0];
-        const overdueCount = periods.filter((p: any) => p.status === 'OVERDUE').length;
+        const overduePeriods = periods.filter((p: any) => p.status === 'OVERDUE');
+        const pendingPeriods = periods.filter((p: any) => p.status === 'PENDING');
+        const overdueCount = overduePeriods.length;
 
         return {
           ...sub,
+          plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
           currentPeriod,
           totalPeriods: periods.length,
-          overdueCount,
+          overduePeriods: overdueCount,
+          pendingPeriods: pendingPeriods.length,
           hasDebt: overdueCount > 0,
         };
       })
     );
 
-    const totalOverdue = subscriptionsWithDetails.reduce((sum, s) => sum + s.overdueCount, 0);
+    const totalOverdue = subscriptionsWithDetails.reduce((sum, s) => sum + s.overduePeriods, 0);
 
     res.json({
       client,
