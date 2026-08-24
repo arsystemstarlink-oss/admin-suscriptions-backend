@@ -29,8 +29,13 @@ jest.mock('../infrastructure/repositories', () => ({
     list: jest.fn(),
     getById: jest.fn(),
   },
-  domainEventRepository: {
+   domainEventRepository: {
     create: jest.fn(),
+  },
+  schedulerLogRepository: {
+    create: jest.fn(),
+    listByOrganization: jest.fn(),
+    listPage: jest.fn(),
   },
   jobLockRepository: {
     acquire: jest.fn(),

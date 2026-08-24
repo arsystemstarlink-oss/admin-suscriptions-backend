@@ -634,8 +634,9 @@ interface DebtorItem {
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
 | GET | /scheduler/config | Obtener configuración del scheduler |
-| PUT | /scheduler/config | Actualizar configuración |
+| PUT | /scheduler/config | Actualizar configuración (reprograma el cron en caliente) |
 | POST | /scheduler/run | Ejecutar Daily Job manualmente |
+| GET | /scheduler/logs | Histórico de ejecuciones (por org) |
 
 **GET /scheduler/config**
 ```typescript
@@ -649,6 +650,34 @@ interface DebtorItem {
 // cronSchedule debe ser una expresión cron válida (ej: "0 0 * * *" para medianoche diario)
 // Response 200 → SchedulerConfig
 // Reprograma el scheduler automáticamente
+```
+
+**GET /scheduler/logs**
+```typescript
+// Query: ?limit=50
+// Response 200
+{
+  logs: SchedulerLog[];
+  total: number;
+  limit: number;
+}
+
+// SchedulerLog
+{
+  id: string;
+  organizationId: string;
+  triggeredBy: 'scheduled' | 'manual';
+  startedAt: string;
+  finishedAt: string;
+  durationMs: number;
+  status: 'success' | 'error' | 'skipped';
+  overdue: number;
+  generated: number;
+  suspended: number;
+  notifications: number;
+  notificationErrors: number;
+  error?: string;
+}
 ```
 
 **POST /scheduler/run**
@@ -897,7 +926,7 @@ Authorization: Bearer {accessToken}
 | PUT /billing-periods/:id | Solo periodos PAID |
 | DELETE /subscriptions/:id | Elimina suscripcion y sus periodos de facturacion |
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
-| scheduler enabled | Si es false (global o por org), el Daily Job no se ejecuta automaticamente para esa org |
+| scheduler enabled | Si es false por org, el cron automático no se programa para esa org; el Daily Job se ejecuta por la programación `cronSchedule` de cada org |
 | POST /scheduler/run | Ejecuta el job manualmente sin importar enabled (por org) |
 | Daily Job idempotente | Lock transaccional por org en `jobLocks/{orgId}` (TTL 15 min); si otra instancia esta ejecutando la org, se omite (409 `JOB_ALREADY_RUNNING` en el run manual) |
 | dni | Opcional; SOLO "V-" o "J-" + 7-9 digitos numericos con guion (ej: V-2769383); unico |

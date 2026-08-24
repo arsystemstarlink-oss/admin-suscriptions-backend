@@ -1,9 +1,11 @@
+import cron from 'node-cron';
 import { randomUUID } from 'crypto';
 import {
   billingPeriodRepository,
   subscriptionRepository,
   planRepository,
   schedulerConfigRepository,
+  schedulerLogRepository,
   clientRepository,
   whatsappMessageRepository,
   organizationRepository,
@@ -14,12 +16,15 @@ import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
-import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entities';
+import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
 const INSTANCE_ID = randomUUID();
 const NOTIFICATION_INTERVAL_MS = Number(process.env.TWILIO_NOTIFICATIONS_INTERVAL_MS || 1500);
+
+const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
+const scheduledTasks = new Map<string, cron.ScheduledTask>();
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,17 +81,81 @@ async function recordDomainEvent(
   }
 }
 
-export async function runDailyJobForOrganization(organizationId: string): Promise<DailyJobResult> {
+export async function runDailyJobForOrganization(
+  organizationId: string,
+  triggeredBy: 'scheduled' | 'manual' = 'manual'
+): Promise<DailyJobResult> {
   const lockAcquired = await jobLockRepository.acquire(organizationId, INSTANCE_ID, JOB_LOCK_TTL_MS);
   if (!lockAcquired) {
     console.log(`[Daily Job] Organización ${organizationId} ya está en ejecución (lock activo). Skipping.`);
+    await recordSchedulerLog({
+      organizationId,
+      triggeredBy,
+      startedAt: new Date(),
+      finishedAt: new Date(),
+      durationMs: 0,
+      status: 'skipped',
+      result: undefined,
+    });
     return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [], skipped: true };
   }
 
+  const startedAt = new Date();
+  let result: Omit<DailyJobResult, 'skipped'> | undefined;
+  let error: string | undefined;
   try {
-    return await runDailyJobForOrganizationUnlocked(organizationId);
+    result = await runDailyJobForOrganizationUnlocked(organizationId);
+    return { ...result, skipped: false };
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    throw err;
   } finally {
+    const finishedAt = new Date();
+    await recordSchedulerLog({
+      organizationId,
+      triggeredBy,
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt.getTime() - startedAt.getTime(),
+      status: error ? 'error' : 'success',
+      result,
+      error,
+    });
     await jobLockRepository.release(organizationId, INSTANCE_ID);
+  }
+}
+
+interface SchedulerLogInput {
+  organizationId: string;
+  triggeredBy: 'scheduled' | 'manual';
+  startedAt: Date;
+  finishedAt: Date;
+  durationMs: number;
+  status: 'success' | 'error' | 'skipped';
+  result: Omit<DailyJobResult, 'skipped'> | undefined;
+  error?: string;
+}
+
+async function recordSchedulerLog(input: SchedulerLogInput): Promise<void> {
+  const log: SchedulerLog = {
+    id: createId(),
+    organizationId: input.organizationId,
+    triggeredBy: input.triggeredBy,
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    durationMs: input.durationMs,
+    status: input.status,
+    overdue: input.result?.overdue ?? 0,
+    generated: input.result?.generated ?? 0,
+    suspended: input.result?.suspended ?? 0,
+    notifications: input.result?.notifications ?? 0,
+    notificationErrors: input.result?.errors?.length ?? 0,
+    error: input.error,
+  };
+  try {
+    await schedulerLogRepository.create(log);
+  } catch (logError) {
+    console.error(`[SchedulerLog] Error registrando log para org ${input.organizationId}:`, logError);
   }
 }
 
@@ -303,6 +372,74 @@ export async function runDailyJobForOrganizationIfEnabled(organizationId: string
   } else {
     console.log(`[Daily Job] Organización ${organizationId} desactivada en su configuración. Skipping.`);
   }
+}
+
+export async function scheduleOrganization(organizationId: string): Promise<boolean> {
+  const existing = scheduledTasks.get(organizationId);
+  if (existing) {
+    existing.stop();
+    scheduledTasks.delete(organizationId);
+  }
+
+  const config = await schedulerConfigRepository.getConfig(organizationId);
+
+  if (!config.enabled) {
+    console.log(`[Scheduler] Organización ${organizationId} con enabled=false. No se programa cron.`);
+    return false;
+  }
+
+  if (!cron.validate(config.cronSchedule)) {
+    console.error(`[Scheduler] Expresión cron inválida para org ${organizationId} ("${config.cronSchedule}"). No se programa.`);
+    return false;
+  }
+
+  const task = cron.schedule(
+    config.cronSchedule,
+    () => {
+      console.log(`[Scheduler] Tick programado para org ${organizationId}.`);
+      void runDailyJobForOrganization(organizationId, 'scheduled').catch((err) => {
+        console.error(`[Scheduler] Error en ejecución automática para org ${organizationId}:`, err);
+      });
+    },
+    { timezone: SCHEDULER_TIMEZONE, scheduled: true }
+  );
+
+  scheduledTasks.set(organizationId, task);
+  console.log(`[Scheduler] Cron programado para org ${organizationId}: "${config.cronSchedule}" (timezone: ${SCHEDULER_TIMEZONE}).`);
+  return true;
+}
+
+export async function rescheduleAllOrganizations(): Promise<void> {
+  const organizations = await organizationRepository.list();
+  for (const organization of organizations) {
+    const alreadyScheduled = scheduledTasks.has(organization.id);
+    if (!organization.active) {
+      if (alreadyScheduled) {
+        const existing = scheduledTasks.get(organization.id);
+        if (existing) {
+          existing.stop();
+        }
+        scheduledTasks.delete(organization.id);
+        console.log(`[Scheduler] Organización ${organization.id} inactiva. Cron detenido.`);
+      }
+      continue;
+    }
+    await scheduleOrganization(organization.id);
+  }
+}
+
+export async function startScheduler(): Promise<void> {
+  console.log(`[Scheduler] Iniciando scheduler por organización (timezone: ${SCHEDULER_TIMEZONE}).`);
+  await rescheduleAllOrganizations();
+  console.log(`[Scheduler] Crons activos: ${scheduledTasks.size}.`);
+}
+
+export function stopScheduler(): void {
+  for (const [organizationId, task] of scheduledTasks) {
+    task.stop();
+    console.log(`[Scheduler] Cron detenido para org ${organizationId}.`);
+  }
+  scheduledTasks.clear();
 }
 
 async function sendWhatsAppNotification(

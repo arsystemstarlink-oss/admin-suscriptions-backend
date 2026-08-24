@@ -17,6 +17,7 @@ import organizationRoutes from './routes/organizations';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { initializeFirebase } from '../infrastructure/firebase';
+import { startScheduler, stopScheduler } from '../infrastructure/scheduler';
 import { requestIdMiddleware } from './middleware/request-id';
 
 dotenv.config();
@@ -135,10 +136,16 @@ app.use(errorHandler);
 
 const server = app.listen(PORT, '0.0.0.0', async () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
+  try {
+    await startScheduler();
+  } catch (error) {
+    console.error('[Scheduler] Error iniciando el scheduler:', error);
+  }
 });
 
 function shutdown(signal: string): void {
   console.log(`[Server] Recibida señal ${signal}. Cerrando servidor...`);
+  stopScheduler();
   server.close(() => {
     console.log('[Server] Servidor cerrado limpiamente.');
     process.exit(0);

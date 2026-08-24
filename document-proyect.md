@@ -590,7 +590,9 @@ Alcance por rol
 
 Daily Job
 
-El cron global ejecuta runDailyJobForOrganization(orgId) por cada organización activa, escaneando solo sus datos y enviando notificaciones (WhatsApp/Push) dentro de la org. La configuración del scheduler es por organización (schedulerConfig/{orgId}) además de la global: el cron global respeta el `enabled` de cada org (si una org está desactivada, se omite). El run manual por org (`POST /scheduler/run`) ejecuta sin importar `enabled`.
+El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infrastructure/scheduler.ts`) se lista cada organización activa y se registra un `cron.schedule` **individual** con la expresión `cronSchedule` propia de cada org (`schedulerConfig/{orgId}`) y el timezone de `SCHEDULER_TIMEZONE`. Cada tick ejecuta `runDailyJobForOrganization(orgId)` de forma aislada, escaneando solo los datos de esa org y enviando notificaciones (WhatsApp/Push) dentro de la org. Se respeta el `enabled` de cada org: si una org está desactivada (`enabled=false`) o su expresión cron es inválida, no se programa cron para ella. Los cambios en `PUT /scheduler/config` reprograman el cron de la org en caliente (sin reiniciar). El run manual (`POST /scheduler/run`) ejecuta por org sin importar `enabled`. La configuración global (`schedulerConfig/global`) y la variable `CRON_SCHEDULE` ya no impulsan la ejecución automática; el schedule efectivo es el de cada org.
+
+Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`.
 
 Migración
 

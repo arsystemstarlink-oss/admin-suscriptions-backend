@@ -8,6 +8,7 @@ import {
   BillingPeriod,
   User,
   SchedulerConfig,
+  SchedulerLog,
   WhatsAppMessage,
   WhatsAppConversation,
   MessageStatus,
@@ -226,6 +227,26 @@ export class SchedulerConfigFirestoreRepository extends FirestoreRepository<Sche
   }
 }
 
+export class SchedulerLogFirestoreRepository extends FirestoreRepository<SchedulerLog> {
+  constructor() {
+    super('schedulerLogs');
+  }
+
+  async listByOrganization(organizationId: string, limit = 50): Promise<SchedulerLog[]> {
+    const snapshot = await this.db
+      .collection(this.collectionName)
+      .where('organizationId', '==', organizationId)
+      .orderBy('startedAt', 'desc')
+      .limit(limit)
+      .get();
+    return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+  }
+
+  async createLog(log: SchedulerLog): Promise<void> {
+    await this.create(log);
+  }
+}
+
 export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<WhatsAppMessage> {
   constructor() {
     super('whatsappMessages');
@@ -420,6 +441,7 @@ export const billingPeriodRepository = new BillingPeriodFirestoreRepository();
 export const userRepository = new UserFirestoreRepository();
 export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRepository();
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
+export const schedulerLogRepository = new SchedulerLogFirestoreRepository();
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
 export const domainEventRepository = new DomainEventFirestoreRepository();

@@ -1,6 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { schedulerConfigRepository, organizationRepository } from '../../infrastructure/repositories';
-import { runDailyJob, runDailyJobForOrganization } from '../../infrastructure/scheduler';
+import { schedulerConfigRepository, schedulerLogRepository, organizationRepository } from '../../infrastructure/repositories';
+import { runDailyJob, runDailyJobForOrganization, scheduleOrganization, rescheduleAllOrganizations } from '../../infrastructure/scheduler';
 import { BusinessError } from '../../domain/entities';
 import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
@@ -38,6 +38,16 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
 
     const config = await schedulerConfigRepository.updateConfig(updates, organizationId);
 
+    try {
+      if (organizationId) {
+        await scheduleOrganization(organizationId);
+      } else {
+        await rescheduleAllOrganizations();
+      }
+    } catch (scheduleErr) {
+      console.error(`[Scheduler] Error al reprogramar cron tras actualizar config:`, scheduleErr);
+    }
+
     res.json({ ...config, organizationId: organizationId || null });
   } catch (err) {
     next(err);
@@ -74,6 +84,29 @@ router.post('/run', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     throw new BusinessError('TENANT_REQUIRED', 'No se pudo determinar la organización para ejecutar el Daily Job.');
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/logs', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const organizationId = getEffectiveOrganizationId(req);
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    if (organizationId) {
+      const logs = await schedulerLogRepository.listByOrganization(organizationId, limit);
+      return res.json({ logs, total: logs.length, limit });
+    }
+
+    const page = await schedulerLogRepository.listPage({
+      limit,
+      offset: 0,
+      orderBy: 'startedAt',
+      direction: 'desc',
+      requireTotal: true,
+    });
+    res.json({ logs: page.items, total: page.total, limit });
   } catch (err) {
     next(err);
   }

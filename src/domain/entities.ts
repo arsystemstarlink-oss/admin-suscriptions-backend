@@ -108,6 +108,22 @@ export interface SchedulerConfig {
   updatedAt: Date;
 }
 
+export interface SchedulerLog {
+  id: string;
+  organizationId: string;
+  triggeredBy: 'scheduled' | 'manual';
+  startedAt: Date;
+  finishedAt: Date;
+  durationMs: number;
+  status: 'success' | 'error' | 'skipped';
+  overdue: number;
+  generated: number;
+  suspended: number;
+  notifications: number;
+  notificationErrors: number;
+  error?: string;
+}
+
 export type MessageDirection = 'INBOUND' | 'OUTBOUND';
 export type MessageStatus = 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
 

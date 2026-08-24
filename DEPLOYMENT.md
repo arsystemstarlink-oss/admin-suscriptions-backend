@@ -171,9 +171,11 @@ curl http://localhost:3000/api/clients \
 **Respuesta esperada:** lista paginada de clientes (vacía al inicio)
 
 ### 4. Verificar scheduler
-Revisar logs para confirmar que el scheduler está activo:
+Revisar logs para confirmar que el scheduler está activo y programado por organización:
 ```
-[Scheduler] Daily Job programado con cron: 0 0 * * *
+[Scheduler] Iniciando scheduler por organización (timezone: America/Caracas).
+[Scheduler] Cron programado para org org_X: "0 0 * * *" (timezone: America/Caracas).
+[Scheduler] Crons activos: 3.
 ```
 
 ## Configuración de Firewall
@@ -239,7 +241,8 @@ El sistema usa Firebase Firestore para persistencia de datos. Los datos se manti
 - `refreshTokenSessions` - Sesiones de refresh token (rotación/revocación)
 - `whatsappMessages` - Historial de mensajes WhatsApp (scoped por `organizationId`)
 - `pushSubscriptions` - Suscripciones web push (scoped por `organizationId`)
-- `schedulerConfig` - Configuración del cron (por org: `schedulerConfig/{orgId}`; `global` para el schedule)
+- `schedulerConfig` - Configuración del cron POR ORGANIZACIÓN (`schedulerConfig/{orgId}`). El schedule automático se programa individualmente por org con su propio `cronSchedule` y `enabled`. La config `global` (`schedulerConfig/global`) y la var `CRON_SCHEDULE` no impulsan la ejecución automática.
+- `schedulerLogs` - Histórico de ejecuciones del scheduler (por org): timing, status, detalle del resultado. `GET /scheduler/logs`.
 - `domainEvents` - Auditoría de eventos de dominio (scoped por `organizationId`)
 
 ### Reglas de Firestore
@@ -303,9 +306,11 @@ CORS_ORIGIN=https://tu-frontend.example.com
 ## Troubleshooting
 
 ### El scheduler no se ejecuta
-1. Verificar que `CRON_SCHEDULE` está configurado correctamente
-2. Revisar logs del servidor
-3. Verificar que el servidor no se reinició antes de la ejecución programada
+1. Verificar que la organización está `active` y que su `schedulerConfig/{orgId}` tiene `enabled=true` y una `cronSchedule` válida
+2. Revisar logs del servidor: buscar `[Scheduler] Cron programado para org {id}` (si no aparece, la org está deshabilitada/inactiva o el cron es inválido)
+3. Verificar que `SCHEDULER_TIMEZONE` está configurado si se quiere horario local (`America/Caracas` por defecto)
+4. Verificar que el servidor no se reinició antes de la ejecución programada (los crons se programan al startup)
+5. Consultar `GET /scheduler/logs` para corroborar ejecuciones efectivas
 
 ### Errores de autenticación JWT
 1. Verificar que el token no haya expirado (15 minutos para access token)
