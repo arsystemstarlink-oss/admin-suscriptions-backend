@@ -12,12 +12,18 @@ const router = Router();
 router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = getEffectiveOrganizationId(req);
-    const [clients, plans, subscriptions, periods] = await Promise.all([
-      clientRepository.listByOrganization(organizationId),
-      planRepository.listByOrganization(organizationId),
-      subscriptionRepository.listByOrganization(organizationId),
-      billingPeriodRepository.listByOrganization(organizationId),
+    const DASHBOARD_ITEM_LIMIT = 500;
+    const [clientsPage, plansPage, subscriptionsPage, periodsPage] = await Promise.all([
+      clientRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
+      planRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
+      subscriptionRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
+      billingPeriodRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'startDate', direction: 'desc', requireTotal: true }),
     ]);
+
+    const clients = clientsPage.items;
+    const plans = plansPage.items;
+    const subscriptions = subscriptionsPage.items;
+    const periods = periodsPage.items;
 
     const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
     const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
@@ -42,19 +48,19 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 
     res.json({
       clients: {
-        total: clients.length,
+        total: clientsPage.total,
       },
       plans: {
-        total: plans.length,
+        total: plansPage.total,
         active: plans.filter((p) => p.active).length,
       },
       subscriptions: {
-        total: subscriptions.length,
+        total: subscriptionsPage.total,
         active: activeSubscriptions.length,
         suspended: suspendedSubscriptions.length,
       },
       billingPeriods: {
-        total: periods.length,
+        total: periodsPage.total,
         paid: paidPeriods.length,
         pending: pendingPeriods.length,
         overdue: overduePeriods.length,
@@ -76,11 +82,16 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = getEffectiveOrganizationId(req);
-    const [subscriptions, periods, clients] = await Promise.all([
-      subscriptionRepository.listByOrganization(organizationId),
-      billingPeriodRepository.listByOrganization(organizationId),
-      clientRepository.listByOrganization(organizationId),
+    const DASHBOARD_ITEM_LIMIT = 500;
+    const [subscriptionsPage, periodsPage, clientsPage] = await Promise.all([
+      subscriptionRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
+      billingPeriodRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'startDate', direction: 'desc', requireTotal: true }),
+      clientRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
     ]);
+
+    const subscriptions = subscriptionsPage.items;
+    const periods = periodsPage.items;
+    const clients = clientsPage.items;
 
     const now = new Date();
     const in7Days = new Date(now);

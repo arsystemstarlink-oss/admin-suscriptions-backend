@@ -17,29 +17,47 @@ async function enrichClients(
   organizationId: string | undefined,
   includeSubscriptions: boolean
 ): Promise<any[]> {
+  const allSubs = organizationId
+    ? await subscriptionRepository.listByOrganization(organizationId)
+    : [];
+  const allPeriods = organizationId
+    ? await billingPeriodRepository.listByOrganization(organizationId)
+    : [];
+
+  const subsByClientId = new Map<string, any[]>();
+  for (const sub of allSubs) {
+    const list = subsByClientId.get(sub.clientId) || [];
+    list.push(sub);
+    subsByClientId.set(sub.clientId, list);
+  }
+
+  const periodsBySubscriptionId = new Map<string, any[]>();
+  for (const period of allPeriods) {
+    const list = periodsBySubscriptionId.get(period.subscriptionId) || [];
+    list.push(period);
+    periodsBySubscriptionId.set(period.subscriptionId, list);
+  }
+
   return Promise.all(
     clients.map(async (client) => {
-      const subs = await subscriptionRepository.listByClientId(client.id, organizationId);
-      const allPeriods = await Promise.all(
-        subs.map((s) => billingPeriodRepository.listBySubscriptionId(s.id, organizationId))
-      );
+      const subs = subsByClientId.get(client.id) || [];
+      const allSubPeriods = subs.flatMap((s) => periodsBySubscriptionId.get(s.id) || []);
 
-      const overdueCount = allPeriods.flat().filter((p) => p.status === 'OVERDUE').length;
+      const overdueCount = allSubPeriods.filter((p: any) => p.status === 'OVERDUE').length;
       const hasDebt = overdueCount > 0;
-      const activeSubs = subs.filter((s) => s.status === 'ACTIVE');
-      const suspendedSubs = subs.filter((s) => s.status === 'SUSPENDED');
+      const activeSubs = subs.filter((s: any) => s.status === 'ACTIVE');
+      const suspendedSubs = subs.filter((s: any) => s.status === 'SUSPENDED');
 
       let subscriptionStatusValue = 'NONE';
       if (activeSubs.length > 0 && suspendedSubs.length > 0) subscriptionStatusValue = 'MIXED';
       else if (activeSubs.length > 0) subscriptionStatusValue = 'ACTIVE';
       else if (suspendedSubs.length > 0) subscriptionStatusValue = 'SUSPENDED';
 
-      const currentPeriods = await Promise.all(
-        subs.map(async (s) => {
-          const periods = await billingPeriodRepository.listBySubscriptionId(s.id, organizationId);
-          return periods.sort((a, b) => b.startDate.getTime() - a.startDate.getTime())[0];
-        })
-      );
+      const currentPeriods = subs.map((s: any) => {
+        const periods = (periodsBySubscriptionId.get(s.id) || []).slice();
+        periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
+        return periods[0];
+      });
 
       return {
         ...client,
@@ -48,7 +66,7 @@ async function enrichClients(
         overdueCount,
         totalSubscriptions: subs.length,
         subscriptions: includeSubscriptions
-          ? subs.map((s, i) => ({ ...s, currentPeriod: currentPeriods[i] }))
+          ? subs.map((s: any, i: number) => ({ ...s, currentPeriod: currentPeriods[i] }))
           : undefined,
       };
     })
@@ -109,7 +127,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const offset = parseInt(req.query.offset as string) || 0;
     const organizationId = getEffectiveOrganizationId(req);
 
-    let clients = await clientRepository.listByOrganization(organizationId);
+    let clients = await clientRepository.listByField('organizationId', organizationId, 500);
 
     if (search) {
       const searchLower = search.toLowerCase();
@@ -134,6 +152,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         offset,
         orderBy: 'createdAt',
         direction: 'asc',
+        requireTotal: true,
       });
       const paginatedClients = shouldIncludeSubscriptions
         ? await enrichClients(page.items, organizationId, include === 'subscriptions')

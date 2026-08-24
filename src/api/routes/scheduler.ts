@@ -1,8 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { schedulerConfigRepository, organizationRepository } from '../../infrastructure/repositories';
-import { runDailyJob, reschedule, runDailyJobForOrganization } from '../../infrastructure/scheduler';
+import { runDailyJob, runDailyJobForOrganization } from '../../infrastructure/scheduler';
 import { BusinessError } from '../../domain/entities';
-import cron from 'node-cron';
 import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 
@@ -28,7 +27,7 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     if (cronSchedule !== undefined) {
-      if (typeof cronSchedule !== 'string' || !cron.validate(cronSchedule)) {
+      if (typeof cronSchedule !== 'string' || !/^(\*|([0-9]|([1-5][0-9]))|\*\/[0-9]+)( (\*|([0-9]|([1-5][0-9]))|\*\/[0-9]+)){4}$/.test(cronSchedule)) {
         throw new BusinessError('INVALID_CRON', 'El campo "cronSchedule" debe ser una expresión cron válida.');
       }
     }
@@ -38,10 +37,6 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     if (cronSchedule !== undefined) updates.cronSchedule = cronSchedule;
 
     const config = await schedulerConfigRepository.updateConfig(updates, organizationId);
-
-    if (!organizationId) {
-      await reschedule();
-    }
 
     res.json({ ...config, organizationId: organizationId || null });
   } catch (err) {

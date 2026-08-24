@@ -12,6 +12,7 @@ jest.mock('../infrastructure/repositories', () => ({
     update: jest.fn(),
   },
   planRepository: {
+    listByOrganization: jest.fn(),
     getByIdScoped: jest.fn(),
   },
   schedulerConfigRepository: {
@@ -143,7 +144,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     mockedBillingPeriods.listByOrganization.mockResolvedValue([periodA]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
-    mockedPlans.getByIdScoped.mockResolvedValue(makePlan(orgA));
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
     mockedClients.listByOrganization.mockResolvedValue([]);
     mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: orgA, enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
     mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
@@ -188,7 +189,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     mockedSubscriptions.listByOrganization
       .mockResolvedValueOnce([subA])
       .mockResolvedValueOnce([subB]);
-    mockedPlans.getByIdScoped.mockResolvedValue(makePlan('org_A'));
+    mockedPlans.listByOrganization.mockImplementation((orgId: string) => [makePlan(orgId)]);
     mockedClients.listByOrganization.mockResolvedValue([]);
     mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: 'x', enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
     mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
@@ -217,7 +218,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     mockedBillingPeriods.listByOrganization.mockResolvedValue([pendingOverdue, pendingFuture]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
-    mockedPlans.getByIdScoped.mockResolvedValue(makePlan('org_A'));
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan('org_A')]);
     mockedClients.listByOrganization.mockResolvedValue([]);
     mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: 'org_A', enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
     mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
@@ -241,6 +242,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     mockedBillingPeriods.listByOrganization.mockResolvedValue([]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([]);
     mockedClients.listByOrganization.mockResolvedValue([]);
+    mockedPlans.listByOrganization.mockResolvedValue([]);
     mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: 'x', enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
     mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
 

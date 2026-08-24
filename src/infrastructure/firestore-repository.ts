@@ -1,5 +1,6 @@
 import { getFirestore } from './firebase';
 import { Identifiable } from '../domain/in-memory-repository';
+import { getRequestContext } from '../api/middleware/request-id';
 
 export interface ListPageParams {
   organizationId?: string;
@@ -7,11 +8,12 @@ export interface ListPageParams {
   direction?: 'asc' | 'desc';
   limit: number;
   offset: number;
+  requireTotal?: boolean;
 }
 
 export interface ListPageResult<T> {
   items: T[];
-  total: number;
+  total?: number;
   limit: number;
   offset: number;
   hasMore: boolean;
@@ -26,6 +28,12 @@ export class FirestoreRepository<T extends Identifiable> {
 
   protected get db() {
     return getFirestore();
+  }
+
+  private logOperation(operation: string, documentId?: string): void {
+    const ctx = getRequestContext();
+    if (!ctx) return;
+    console.log(`[${ctx.requestId}] ${operation} ${this.collectionName}${documentId ? `/${documentId}` : ''}`);
   }
 
   protected serialize(entity: T): any {
@@ -65,28 +73,19 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async create(entity: T): Promise<void> {
+    this.logOperation('WRITE', entity.id);
     const docRef = this.db.collection(this.collectionName).doc(entity.id);
-    const existing = await docRef.get();
-
-    if (existing.exists) {
-      throw new Error(`Entity with id ${entity.id} already exists.`);
-    }
-
     await docRef.set(this.serialize(entity));
   }
 
   async update(entity: T): Promise<void> {
+    this.logOperation('WRITE', entity.id);
     const docRef = this.db.collection(this.collectionName).doc(entity.id);
-    const existing = await docRef.get();
-
-    if (!existing.exists) {
-      throw new Error(`Entity with id ${entity.id} does not exist.`);
-    }
-
     await docRef.update(this.serialize(entity));
   }
 
   async getById(id: string): Promise<T | undefined> {
+    this.logOperation('READ', id);
     const docRef = this.db.collection(this.collectionName).doc(id);
     const doc = await docRef.get();
 
@@ -98,6 +97,7 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async list(): Promise<T[]> {
+    this.logOperation('LIST');
     const snapshot = await this.db.collection(this.collectionName).get();
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
@@ -110,32 +110,38 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async listPage(params: ListPageParams): Promise<ListPageResult<T>> {
+    this.logOperation('QUERY');
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
-    let countQuery: FirebaseFirestore.Query = this.db.collection(this.collectionName);
 
     if (params.organizationId) {
       query = query.where('organizationId', '==', params.organizationId);
-      countQuery = countQuery.where('organizationId', '==', params.organizationId);
     }
 
     const orderByField = params.orderBy || 'createdAt';
     const direction: FirebaseFirestore.OrderByDirection = params.direction === 'asc' ? 'asc' : 'desc';
     query = query.orderBy(orderByField, direction).offset(params.offset).limit(params.limit);
 
-    const [snapshot, countSnapshot] = await Promise.all([
-      query.get(),
-      countQuery.count().get(),
-    ]);
-
+    const snapshot = await query.get();
     const items = snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
-    const total = countSnapshot.data().count;
+
+    let total: number | undefined;
+    let hasMore = false;
+
+    if (params.requireTotal) {
+      this.logOperation('COUNT');
+      const countSnapshot = await this.db.collection(this.collectionName).count().get();
+      total = countSnapshot.data().count;
+      hasMore = params.offset + items.length < total;
+    } else {
+      hasMore = items.length >= params.limit;
+    }
 
     return {
       items,
       total,
       limit: params.limit,
       offset: params.offset,
-      hasMore: params.offset + items.length < total,
+      hasMore,
     };
   }
 
@@ -151,23 +157,30 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async delete(id: string): Promise<void> {
+    this.logOperation('DELETE', id);
     await this.db.collection(this.collectionName).doc(id).delete();
   }
 
-  async listByField(field: string, value: any): Promise<T[]> {
-    const snapshot = await this.db
-      .collection(this.collectionName)
-      .where(field, '==', value)
-      .get();
-
+  async listByField(field: string, value: any, limit?: number): Promise<T[]> {
+    this.logOperation('QUERY');
+    let query: FirebaseFirestore.Query = this.db.collection(this.collectionName).where(field, '==', value);
+    if (limit) {
+      query = query.limit(limit);
+    }
+    const snapshot = await query.get();
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
-  async listByFields(fields: Array<[string, any]>): Promise<T[]> {
+  async listByFields(fields: Array<[string, any]>, limit?: number): Promise<T[]> {
+    this.logOperation('QUERY');
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
     fields.forEach(([field, value]) => {
       query = query.where(field, '==', value);
     });
+
+    if (limit) {
+      query = query.limit(limit);
+    }
 
     const snapshot = await query.get();
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));

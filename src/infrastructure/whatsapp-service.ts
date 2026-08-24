@@ -1,4 +1,5 @@
 import twilio from 'twilio';
+import type { MessageListInstanceCreateOptions } from 'twilio/lib/rest/api/v2010/account/message';
 import { Organization } from '../domain/entities';
 
 export interface WhatsAppTemplateMessage {
@@ -79,16 +80,61 @@ export function formatTwilioError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const RATE_LIMIT_CODES = new Set<number>([8, 21613, 21614, 21612, 429, 408]);
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 2000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isRetryableTwilioError(error: unknown): boolean {
+  const info = extractTwilioError(error);
+  if (!info) return false;
+  if (RATE_LIMIT_CODES.has(info.code)) return true;
+  const msg = info.message.toLowerCase();
+  return msg.includes('rate limit') || msg.includes('quota exceeded') || msg.includes('resource_exhausted');
+}
+
 export class WhatsAppService {
   private clients = new Map<string, twilio.Twilio>();
 
   private getClient(credentials: TwilioCredentials): twilio.Twilio {
     let client = this.clients.get(credentials.accountSid);
     if (!client) {
-      client = twilio(credentials.accountSid, credentials.authToken);
+      client = twilio(credentials.accountSid, credentials.authToken, {
+        maxRetries: MAX_RETRIES,
+        maxRetryDelay: 30000,
+        timeout: 30000,
+      });
       this.clients.set(credentials.accountSid, client);
     }
     return client;
+  }
+
+  private async createMessageWithRetry(
+    params: MessageListInstanceCreateOptions,
+    credentials: TwilioCredentials
+  ): Promise<string> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const sentMessage = await this.getClient(credentials).messages.create(params);
+        return sentMessage.sid;
+      } catch (err) {
+        lastError = err;
+        if (attempt === MAX_RETRIES || !isRetryableTwilioError(err)) {
+          throw err;
+        }
+        const backoff = BASE_DELAY_MS * Math.pow(2, attempt);
+        console.warn(
+          `[Twilio] Rate limit detectado, reintentando (attempt ${attempt + 1}/${MAX_RETRIES + 1}) tras ${backoff}ms:`,
+          (err as Record<string, unknown>)?.message
+        );
+        await delay(backoff);
+      }
+    }
+    throw lastError;
   }
 
   async sendMessage(
@@ -100,13 +146,14 @@ export class WhatsAppService {
       throw new Error('Credenciales de Twilio no configuradas para esta organización.');
     }
 
-    const sentMessage = await this.getClient(credentials).messages.create({
-      from: `whatsapp:${credentials.phoneNumber}`,
-      to: `whatsapp:${message.to}`,
-      body: message.body,
-    });
-
-    return sentMessage.sid;
+    return this.createMessageWithRetry(
+      {
+        from: `whatsapp:${credentials.phoneNumber}`,
+        to: `whatsapp:${message.to}`,
+        body: message.body,
+      },
+      credentials
+    );
   }
 
   async sendTemplate(
@@ -127,9 +174,7 @@ export class WhatsAppService {
       contentVariables: JSON.stringify(contentVariables),
     };
 
-    const sentMessage = await this.getClient(credentials).messages.create(payload);
-
-    return sentMessage.sid;
+    return this.createMessageWithRetry(payload, credentials);
   }
 
   parseIncomingMessage(body: any): WhatsAppReceivedMessage {

@@ -166,12 +166,13 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const offset = parseInt(req.query.offset as string) || 0;
 
     if (!search) {
-      const page = await organizationRepository.listPage({
-        limit,
-        offset,
-        orderBy: 'createdAt',
-        direction: 'asc',
-      });
+        const page = await organizationRepository.listPage({
+          limit,
+          offset,
+          orderBy: 'createdAt',
+          direction: 'asc',
+          requireTotal: true,
+        });
       return res.json({
         organizations: page.items.map(toOrganizationDto),
         pagination: {

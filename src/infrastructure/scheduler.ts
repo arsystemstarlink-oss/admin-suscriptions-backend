@@ -1,4 +1,3 @@
-import cron, { ScheduledTask } from 'node-cron';
 import { randomUUID } from 'crypto';
 import {
   billingPeriodRepository,
@@ -18,9 +17,25 @@ import { pushService } from './push-service';
 import { WhatsAppMessage, DomainEventType, Organization } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
-const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
 const INSTANCE_ID = randomUUID();
+const NOTIFICATION_INTERVAL_MS = Number(process.env.TWILIO_NOTIFICATIONS_INTERVAL_MS || 1500);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const notificationRateLimiter = new Map<string, number>();
+
+async function throttleByAccount(accountSid: string): Promise<void> {
+  const last = notificationRateLimiter.get(accountSid) ?? 0;
+  const elapsed = Date.now() - last;
+  const wait = NOTIFICATION_INTERVAL_MS - elapsed;
+  if (wait > 0) {
+    await delay(wait);
+  }
+  notificationRateLimiter.set(accountSid, Date.now());
+}
 
 export interface NotificationFailure {
   type: 'reminder' | 'suspension-warning' | 'suspended-notice';
@@ -37,20 +52,6 @@ export interface DailyJobResult {
   notifications: number;
   errors: NotificationFailure[];
   skipped?: boolean;
-}
-
-let currentTask: ScheduledTask | null = null;
-
-function getNextRun(cronExpression: string, timezone: string): Date {
-  const TimeMatcher = require('node-cron/src/time-matcher');
-  const matcher = new TimeMatcher(cronExpression, timezone);
-  const start = Math.ceil(Date.now() / 1000) * 1000;
-  const maxMs = 7 * 24 * 60 * 60 * 1000;
-  for (let t = start; t < start + maxMs; t += 1000) {
-    const candidate = new Date(t);
-    if (matcher.match(candidate)) return candidate;
-  }
-  return new Date(start);
 }
 
 async function recordDomainEvent(
@@ -97,6 +98,15 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   const allPeriods = await billingPeriodRepository.listByOrganization(organizationId);
   const subscriptions = await subscriptionRepository.listByOrganization(organizationId);
   const clients = await clientRepository.listByOrganization(organizationId);
+  const allPlans = await planRepository.listByOrganization(organizationId);
+
+  const plansById = new Map(allPlans.map((plan) => [plan.id, plan]));
+  const periodsBySubscriptionId = new Map<string, typeof allPeriods>();
+  for (const period of allPeriods) {
+    const list = periodsBySubscriptionId.get(period.subscriptionId) || [];
+    list.push(period);
+    periodsBySubscriptionId.set(period.subscriptionId, list);
+  }
 
   let overdueCount = 0;
   let generatedCount = 0;
@@ -111,8 +121,9 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   const activationPeriodIds = new Set<string>();
   for (const sub of subscriptions) {
     if (!sub.activationDate) continue;
-    for (const p of allPeriods) {
-      if (p.subscriptionId === sub.id && areSameDay(p.startDate, sub.activationDate)) {
+    const subPeriods = periodsBySubscriptionId.get(sub.id) || [];
+    for (const p of subPeriods) {
+      if (areSameDay(p.startDate, sub.activationDate)) {
         activationPeriodIds.add(p.id);
       }
     }
@@ -161,7 +172,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
+          const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
           if (result.sent) {
             notificationCount++;
           } else {
@@ -184,12 +195,12 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       : subscription;
 
     if (finalSubscription.status === 'ACTIVE') {
-      if (
-        isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
-      ) {
-        try {
-          const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
-          if (!plan) continue;
+        if (
+          isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
+        ) {
+          try {
+            const plan = plansById.get(subscription.planId);
+            if (!plan) continue;
 
           const nextPeriod = businessService.createNextBillingPeriod({
             currentPeriod,
@@ -219,14 +230,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (daysUntilDue === 3) {
-            const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder', organizationId, organization);
+            const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'reminder', organizationId, organization);
             if (result.sent) {
               notificationCount++;
             } else {
               notificationErrors.push(result.error);
             }
           } else if (daysUntilDue === 0) {
-            const result = await sendWhatsAppNotification(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
+            const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
             if (result.sent) {
               notificationCount++;
             } else {
@@ -385,47 +396,21 @@ async function sendWhatsAppNotification(
   }
 }
 
-function stopCurrentTask(): void {
-  if (currentTask) {
-    currentTask.stop();
-    currentTask = null;
-    console.log('[Scheduler] Tarea anterior detenida.');
-  }
-}
+async function sendNotificationWithThrottle(
+  client: { id: string; firstName: string; lastName: string; phone: string },
+  subscription: { kitNumber: string },
+  period: { endDate: Date },
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice',
+  organizationId: string,
+  organization?: Organization
+): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
+  const accountSid = organization?.twilio?.accountSid
+    ? organization.twilio.accountSid.trim()
+    : undefined;
 
-export async function scheduleFromConfig(): Promise<void> {
-  stopCurrentTask();
-
-  const config = await schedulerConfigRepository.getConfig();
-
-  if (!config.enabled) {
-    console.log('[Scheduler] Daily Job desactivado por configuración.');
-    return;
+  if (accountSid) {
+    await throttleByAccount(accountSid);
   }
 
-  if (!cron.validate(config.cronSchedule)) {
-    console.error(`[Scheduler] Cron inválido: ${config.cronSchedule}. Usando valor por defecto.`);
-    config.cronSchedule = '0 0 * * *';
-  }
-
-  currentTask = cron.schedule(config.cronSchedule, async () => {
-    try {
-      await runDailyJob();
-    } catch (error) {
-      console.error('[Scheduler] Error en Daily Job:', error);
-    }
-  }, { timezone: SCHEDULER_TIMEZONE });
-
-  console.log(
-    `[Scheduler] Daily Job programado con cron: ${config.cronSchedule} (enabled: ${config.enabled}) ` +
-    `en zona horaria: ${SCHEDULER_TIMEZONE}. Próxima ejecución: ${getNextRun(config.cronSchedule, SCHEDULER_TIMEZONE).toString()}`
-  );
-}
-
-export async function reschedule(): Promise<void> {
-  await scheduleFromConfig();
-}
-
-export async function startScheduler(): Promise<void> {
-  await scheduleFromConfig();
+  return sendWhatsAppNotification(client, subscription, period, type, organizationId, organization);
 }

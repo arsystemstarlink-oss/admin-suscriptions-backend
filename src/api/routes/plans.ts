@@ -49,13 +49,14 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const organizationId = getEffectiveOrganizationId(req);
 
     if (!search && active === undefined) {
-      const page = await planRepository.listPage({
-        organizationId,
-        limit,
-        offset,
-        orderBy: 'createdAt',
-        direction: 'asc',
-      });
+        const page = await planRepository.listPage({
+          organizationId,
+          limit,
+          offset,
+          orderBy: 'createdAt',
+          direction: 'asc',
+          requireTotal: true,
+        });
       return res.json({
         plans: page.items,
         pagination: {

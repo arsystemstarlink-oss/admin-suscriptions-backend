@@ -16,15 +16,40 @@ const router = Router();
 const businessService = new SubscriptionBusinessService();
 
 async function enrichPeriods(periods: BillingPeriod[], organizationId: string | undefined): Promise<any[]> {
+  const allSubs = organizationId
+    ? await subscriptionRepository.listByOrganization(organizationId)
+    : [];
+  const allClients = organizationId
+    ? await clientRepository.listByOrganization(organizationId)
+    : [];
+  const allPlans = organizationId
+    ? await planRepository.listByOrganization(organizationId)
+    : [];
+
+  const subsById = new Map<string, any>();
+  for (const sub of allSubs) {
+    subsById.set(sub.id, sub);
+  }
+
+  const clientsById = new Map<string, any>();
+  for (const client of allClients) {
+    clientsById.set(client.id, client);
+  }
+
+  const plansById = new Map<string, any>();
+  for (const plan of allPlans) {
+    plansById.set(plan.id, plan);
+  }
+
   return Promise.all(
     periods.map(async (period) => {
-      const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
+      const subscription = subsById.get(period.subscriptionId) || null;
       let client = null;
       let plan = null;
 
       if (subscription) {
-        client = await clientRepository.getByIdScoped(subscription.clientId, organizationId);
-        plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
+        client = clientsById.get(subscription.clientId) || null;
+        plan = plansById.get(subscription.planId) || null;
       }
 
       return {
@@ -63,6 +88,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         offset,
         orderBy: 'startDate',
         direction: 'desc',
+        requireTotal: true,
       });
       const enrichedPeriods = await enrichPeriods(page.items, organizationId);
       return res.json({
@@ -76,7 +102,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    let periods = await billingPeriodRepository.listByOrganization(organizationId);
+    let periods = await billingPeriodRepository.listByField('organizationId', organizationId, 500);
 
     if (subscriptionId) {
       periods = periods.filter((p) => p.subscriptionId === subscriptionId);

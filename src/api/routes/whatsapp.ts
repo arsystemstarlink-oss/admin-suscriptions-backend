@@ -139,11 +139,10 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     let client;
 
     if (organizationId) {
-      const clients = await clientRepository.listByOrganization(organizationId);
+      const clients = await clientRepository.listByField('organizationId', organizationId, 200);
       client = clients.find((c) => c.phone === parsed.from);
     } else {
-      const clients = await clientRepository.list();
-      client = clients.find((c) => c.phone === parsed.from);
+      client = await clientRepository.listByField('phone', parsed.from, 1).then((results) => results[0]);
       organizationId = client?.organizationId;
     }
 

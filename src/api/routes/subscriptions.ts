@@ -17,13 +17,38 @@ const router = Router();
 const businessService = new SubscriptionBusinessService();
 
 async function enrichSubscriptions(subscriptions: Subscription[], organizationId: string | undefined): Promise<any[]> {
+  const allClients = organizationId
+    ? await clientRepository.listByOrganization(organizationId)
+    : [];
+  const allPlans = organizationId
+    ? await planRepository.listByOrganization(organizationId)
+    : [];
+  const allPeriods = organizationId
+    ? await billingPeriodRepository.listByOrganization(organizationId)
+    : [];
+
+  const clientsById = new Map<string, any>();
+  for (const client of allClients) {
+    clientsById.set(client.id, client);
+  }
+
+  const plansById = new Map<string, any>();
+  for (const plan of allPlans) {
+    plansById.set(plan.id, plan);
+  }
+
+  const periodsBySubscriptionId = new Map<string, any[]>();
+  for (const period of allPeriods) {
+    const list = periodsBySubscriptionId.get(period.subscriptionId) || [];
+    list.push(period);
+    periodsBySubscriptionId.set(period.subscriptionId, list);
+  }
+
   return Promise.all(
     subscriptions.map(async (sub) => {
-      const [client, plan, periods] = await Promise.all([
-        clientRepository.getByIdScoped(sub.clientId, organizationId),
-        planRepository.getByIdScoped(sub.planId, organizationId),
-        billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
-      ]);
+      const client = clientsById.get(sub.clientId) || null;
+      const plan = plansById.get(sub.planId) || null;
+      const periods = (periodsBySubscriptionId.get(sub.id) || []).slice();
 
       const currentPeriod = periods.sort(
         (a, b) => b.startDate.getTime() - a.startDate.getTime()
@@ -178,6 +203,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
         offset,
         orderBy: 'createdAt',
         direction: 'asc',
+        requireTotal: true,
       });
       const enrichedSubscriptions = await enrichSubscriptions(page.items, organizationId);
       return res.json({
@@ -191,7 +217,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    let subscriptions = await subscriptionRepository.listByOrganization(organizationId);
+    let subscriptions = await subscriptionRepository.listByField('organizationId', organizationId, 500);
 
     if (clientId) {
       if (!isSuperAdmin(auth)) {
