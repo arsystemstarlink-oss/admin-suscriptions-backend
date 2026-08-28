@@ -5,7 +5,8 @@ import { User, UserRole } from '../domain/entities';
 import { AuthContext } from './auth-context';
 
 const ACCESS_TOKEN_EXPIRES = '15m';
-const REFRESH_TOKEN_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000;
+const SESSION_REFRESH_TOKEN_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000;
+const REMEMBERED_REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000;
 const SALT_ROUNDS = 10;
 const MIN_JWT_SECRET_LENGTH = 32;
 
@@ -91,9 +92,16 @@ export class AuthService {
     return jwt.sign(payload, getJwtSecret(), { expiresIn: ACCESS_TOKEN_EXPIRES });
   }
 
-  generateRefreshToken(user: User): GeneratedRefreshToken {
+  generateRefreshToken(
+    user: User,
+    options?: { rememberMe?: boolean },
+  ): GeneratedRefreshToken {
     const jti = `rt_${crypto.randomBytes(16).toString('hex')}`;
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS);
+    const rememberMe = options?.rememberMe !== false;
+    const expiresMs = rememberMe
+      ? REMEMBERED_REFRESH_TOKEN_EXPIRES_MS
+      : SESSION_REFRESH_TOKEN_EXPIRES_MS;
+    const expiresAt = new Date(Date.now() + expiresMs);
 
     const payload: TokenPayload = {
       sub: user.id,
@@ -105,7 +113,9 @@ export class AuthService {
       jti,
     };
 
-    const token = jwt.sign(payload, getJwtSecret(), { expiresIn: '7d' });
+    const token = jwt.sign(payload, getJwtSecret(), {
+      expiresIn: Math.floor(expiresMs / 1000),
+    });
 
     return { token, jti, expiresAt };
   }

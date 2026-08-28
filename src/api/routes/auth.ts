@@ -139,12 +139,19 @@ export function normalizePhoneToE164(value: string): string {
   return `+58${national}`;
 }
 
-async function createRefreshSession(user: User, token: string, jti: string, expiresAt: Date) {
+async function createRefreshSession(
+  user: User,
+  token: string,
+  jti: string,
+  expiresAt: Date,
+  rememberMe?: boolean,
+) {
   const now = new Date();
   await refreshTokenSessionRepository.create({
     id: jti,
     userId: user.id,
     tokenHash: authService.hashToken(token),
+    rememberMe,
     createdAt: now,
     expiresAt,
     lastUsedAt: now,
@@ -173,9 +180,12 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const accessToken = authService.generateAccessToken(user);
-    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(user);
+    const rememberMe = req.body?.rememberMe !== false;
+    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(user, {
+      rememberMe,
+    });
 
-    await createRefreshSession(user, refreshToken, jti, expiresAt);
+    await createRefreshSession(user, refreshToken, jti, expiresAt, rememberMe);
 
     const updatedUser: User = { ...user, lastLoginAt: new Date() };
     await userRepository.update(updatedUser);
@@ -233,8 +243,9 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       throw new BusinessError('USER_NOT_FOUND', 'Usuario no encontrado.');
     }
 
+    const rememberMe = session.rememberMe !== false;
     const { token: newRefreshToken, jti: newJti, expiresAt: newExpiresAt } =
-      authService.generateRefreshToken(user);
+      authService.generateRefreshToken(user, { rememberMe });
 
     await refreshTokenSessionRepository.update({
       ...session,
@@ -243,7 +254,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       lastUsedAt: new Date(),
     });
 
-    await createRefreshSession(user, newRefreshToken, newJti, newExpiresAt);
+    await createRefreshSession(user, newRefreshToken, newJti, newExpiresAt, rememberMe);
 
     await syncUserCustomClaims({
       uid: user.id,

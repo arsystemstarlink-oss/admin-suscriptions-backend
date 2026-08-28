@@ -35,6 +35,7 @@ export interface RefreshTokenSession {
   id: string;
   userId: string;
   tokenHash: string;
+  rememberMe?: boolean;
   createdAt: Date;
   expiresAt: Date;
   lastUsedAt: Date;
