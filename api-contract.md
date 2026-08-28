@@ -96,7 +96,7 @@ interface Subscription {
 }
 
 interface SchedulerConfig {
-  id: string; // organizationId para configs por org; 'global' para la configuración global
+  id: string; // organizationId de la org; la configuración siempre es por organización (no existe configuración global)
   enabled: boolean;
   cronSchedule: string;
   lastRun?: string;
@@ -633,28 +633,32 @@ interface DebtorItem {
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
-| GET | /scheduler/config | Obtener configuración del scheduler |
-| PUT | /scheduler/config | Actualizar configuración (reprograma el cron en caliente) |
-| POST | /scheduler/run | Ejecutar Daily Job manualmente |
-| GET | /scheduler/logs | Histórico de ejecuciones (por org) |
+| GET | /scheduler/config | Obtener configuración del scheduler (**requiere `?organizationId=org_X`**) |
+| PUT | /scheduler/config | Actualizar configuración (reprograma el cron en caliente) (**requiere `?organizationId=org_X`**) |
+| POST | /scheduler/run | Ejecutar Daily Job manualmente (**requiere `?organizationId=org_X`**) |
+| GET | /scheduler/logs | Histórico de ejecuciones (por org, **requiere `?organizationId=org_X`**) |
+
+El scheduler es siempre por organización: no existe una configuración global ni un run "global". Para todos los endpoints de scheduler, un `admin` usa su organización del contexto autenticado y un `super-admin` debe enviar `?organizationId=org_X`. Si el `super-admin` no lo envía, la API responde `400` con `code: 'TENANT_REQUIRED'`.
 
 **GET /scheduler/config**
 ```typescript
+// Query: ?organizationId=org_X (obligatorio para super-admin)
 // Response 200 → SchedulerConfig
 ```
 
 **PUT /scheduler/config**
 ```typescript
+// Query: ?organizationId=org_X (obligatorio para super-admin)
 // Request (partial)
 { enabled?: boolean; cronSchedule?: string }
 // cronSchedule debe ser una expresión cron válida (ej: "0 0 * * *" para medianoche diario)
 // Response 200 → SchedulerConfig
-// Reprograma el scheduler automáticamente
+// Reprograma el cron de la organización indicada automáticamente (en caliente)
 ```
 
 **GET /scheduler/logs**
 ```typescript
-// Query: ?limit=50
+// Query: ?organizationId=org_X (obligatorio para super-admin) & ?limit=50
 // Response 200
 {
   logs: SchedulerLog[];
@@ -682,7 +686,8 @@ interface DebtorItem {
 
 **POST /scheduler/run**
 ```typescript
-// Ejecuta el Daily Job inmediatamente (independiente del estado enabled)
+// Query: ?organizationId=org_X (obligatorio para super-admin; valida que la org exista y esté activa)
+// Ejecuta el Daily Job de la organización indicada inmediatamente (independiente del estado enabled)
 // Response 200
 {
   success: true,
@@ -927,7 +932,8 @@ Authorization: Bearer {accessToken}
 | DELETE /subscriptions/:id | Elimina suscripcion y sus periodos de facturacion |
 | cronSchedule | Expresion cron valida (ej: "0 0 * * *" = medianoche diario) |
 | scheduler enabled | Si es false por org, el cron automático no se programa para esa org; el Daily Job se ejecuta por la programación `cronSchedule` de cada org |
-| POST /scheduler/run | Ejecuta el job manualmente sin importar enabled (por org) |
+| POST /scheduler/run | Ejecuta el job manualmente sin importar enabled (por org). Requiere `?organizationId=org_X`; no existe run global |
+| GET/PUT /scheduler/config, GET /scheduler/logs | Siempre por organización; `?organizationId=org_X` obligatorio para super-admin (400 `TENANT_REQUIRED` si falta). No existe configuración global |
 | Daily Job idempotente | Lock transaccional por org en `jobLocks/{orgId}` (TTL 15 min); si otra instancia esta ejecutando la org, se omite (409 `JOB_ALREADY_RUNNING` en el run manual) |
 | dni | Opcional; SOLO "V-" o "J-" + 7-9 digitos numericos con guion (ej: V-2769383); unico |
 | PUT /clients/:id dni | null o "" elimina la cedula |
@@ -964,8 +970,8 @@ Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene 
 |----------|-------|-------------|
 | GET/POST/PUT/DELETE /clients, /plans, /subscriptions, /billing-periods | Solo su organización. `?organizationId` y `body.organizationId` son **ignorados** | Todas, o filtradas con `?organizationId=org_X`. Al crear, debe indicar `organizationId` (body o query) |
 | GET /dashboard/summary, /alerts | Solo su organización | Todas o filtradas |
-| GET/PUT /scheduler/config | Su organización | `?organizationId=org_X` o configuración global sin filtro |
-| POST /scheduler/run | Su organización (ignora enabled) | `?organizationId=org_X` o todas sin filtro (respeta enabled por org en el run global) |
+| GET/PUT /scheduler/config | Su organización | `?organizationId=org_X` (obligatorio; `TENANT_REQUIRED` si falta). No existe configuración global. |
+| POST /scheduler/run | Su organización (ignora enabled) | `?organizationId=org_X` (obligatorio; `TENANT_REQUIRED` si falta). Ejecuta solo esa org. |
 | GET/PUT/DELETE /admins | Solo admins de su organización | Todos o filtrados |
 | POST /auth/register | Crea admin en su organización | Crea admin (con org) o super-admin |
 | POST /subscriptions | Valida que `clientId` y `planId` pertenezcan a su organización (`CROSS_TENANT_REFERENCE` si no) | Igual validación contra la org indicada |

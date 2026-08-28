@@ -353,27 +353,6 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   return { overdue: overdueCount, generated: generatedCount, suspended: suspendedCount, notifications: notificationCount, errors: notificationErrors };
 }
 
-export async function runDailyJob(): Promise<void> {
-  const organizations = await organizationRepository.list();
-  for (const organization of organizations) {
-    if (!organization.active) continue;
-    try {
-      await runDailyJobForOrganizationIfEnabled(organization.id);
-    } catch (error) {
-      console.error(`[Daily Job] Error en organización ${organization.id}:`, error);
-    }
-  }
-}
-
-export async function runDailyJobForOrganizationIfEnabled(organizationId: string): Promise<void> {
-  const config = await schedulerConfigRepository.getConfig(organizationId);
-  if (config.enabled) {
-    await runDailyJobForOrganization(organizationId);
-  } else {
-    console.log(`[Daily Job] Organización ${organizationId} desactivada en su configuración. Skipping.`);
-  }
-}
-
 export async function scheduleOrganization(organizationId: string): Promise<boolean> {
   const existing = scheduledTasks.get(organizationId);
   if (existing) {

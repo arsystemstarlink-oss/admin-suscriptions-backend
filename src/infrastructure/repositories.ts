@@ -199,12 +199,11 @@ export class SchedulerConfigFirestoreRepository extends FirestoreRepository<Sche
     super('schedulerConfig');
   }
 
-  async getConfig(organizationId?: string): Promise<SchedulerConfig> {
-    const configId = organizationId || 'global';
-    const config = await this.getById(configId);
+  async getConfig(organizationId: string): Promise<SchedulerConfig> {
+    const config = await this.getById(organizationId);
     if (!config) {
       const defaultConfig: SchedulerConfig = {
-        id: configId,
+        id: organizationId,
         enabled: true,
         cronSchedule: '0 0 * * *',
         updatedAt: new Date(),
@@ -215,7 +214,7 @@ export class SchedulerConfigFirestoreRepository extends FirestoreRepository<Sche
     return config;
   }
 
-  async updateConfig(updates: Partial<Pick<SchedulerConfig, 'enabled' | 'cronSchedule' | 'lastRun'>>, organizationId?: string): Promise<SchedulerConfig> {
+  async updateConfig(updates: Partial<Pick<SchedulerConfig, 'enabled' | 'cronSchedule' | 'lastRun'>>, organizationId: string): Promise<SchedulerConfig> {
     const config = await this.getConfig(organizationId);
     const updated: SchedulerConfig = {
       ...config,
