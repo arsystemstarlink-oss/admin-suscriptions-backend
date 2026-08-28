@@ -163,6 +163,9 @@ export class FirestoreRepository<T extends Identifiable> {
 
   async listByField(field: string, value: any, limit?: number): Promise<T[]> {
     this.logOperation('QUERY');
+    if (value === undefined) {
+      return this.list();
+    }
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName).where(field, '==', value);
     if (limit) {
       query = query.limit(limit);
@@ -173,8 +176,12 @@ export class FirestoreRepository<T extends Identifiable> {
 
   async listByFields(fields: Array<[string, any]>, limit?: number): Promise<T[]> {
     this.logOperation('QUERY');
+    const validFields = fields.filter(([, value]) => value !== undefined);
+    if (validFields.length === 0) {
+      return this.list();
+    }
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
-    fields.forEach(([field, value]) => {
+    validFields.forEach(([field, value]) => {
       query = query.where(field, '==', value);
     });
 
@@ -187,6 +194,9 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async deleteByField(field: string, value: any): Promise<number> {
+    if (value === undefined) {
+      return 0;
+    }
     const snapshot = await this.db
       .collection(this.collectionName)
       .where(field, '==', value)
@@ -197,8 +207,12 @@ export class FirestoreRepository<T extends Identifiable> {
   }
 
   async deleteByFields(fields: Array<[string, any]>): Promise<number> {
+    const validFields = fields.filter(([, value]) => value !== undefined);
+    if (validFields.length === 0) {
+      return 0;
+    }
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
-    fields.forEach(([field, value]) => {
+    validFields.forEach(([field, value]) => {
       query = query.where(field, '==', value);
     });
 
