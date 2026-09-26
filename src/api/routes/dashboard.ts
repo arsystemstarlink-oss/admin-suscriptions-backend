@@ -116,18 +116,29 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         p.status === 'OVERDUE'
     );
 
-    const topDebtorsMap = new Map<string, { clientId: string; totalDebt: number; overdueCount: number }>();
+    const topDebtorsMap = new Map<string, { clientId: string; totalDebt: number; overdueCount: number; oldestOverdueEnd: Date }>();
     for (const period of overdueDebt) {
       const sub = subscriptions.find((s) => s.id === period.subscriptionId);
       if (!sub) continue;
-      const existing = topDebtorsMap.get(sub.clientId) || { clientId: sub.clientId, totalDebt: 0, overdueCount: 0 };
+      const existing = topDebtorsMap.get(sub.clientId) || {
+        clientId: sub.clientId,
+        totalDebt: 0,
+        overdueCount: 0,
+        oldestOverdueEnd: period.endDate,
+      };
       existing.totalDebt += period.amount;
       existing.overdueCount += 1;
+      if (period.endDate < existing.oldestOverdueEnd) {
+        existing.oldestOverdueEnd = period.endDate;
+      }
       topDebtorsMap.set(sub.clientId, existing);
     }
 
     const topDebtors = Array.from(topDebtorsMap.values())
-      .sort((a, b) => b.totalDebt - a.totalDebt)
+      .sort((a, b) => {
+        if (a.overdueCount !== b.overdueCount) return b.overdueCount - a.overdueCount;
+        return a.oldestOverdueEnd.getTime() - b.oldestOverdueEnd.getTime();
+      })
       .slice(0, 5)
       .map((debtor) => {
         const client = clients.find((c) => c.id === debtor.clientId);
@@ -181,7 +192,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       },
       topDebtors: {
         count: topDebtors.length,
-        description: 'Top 5 clientes con mayor deuda (solo suscripciones ACTIVAS)',
+        description: 'Top 5 clientes con más períodos vencidos, del vencido más antiguo al más reciente (solo suscripciones ACTIVAS)',
         items: topDebtors,
       },
     });
