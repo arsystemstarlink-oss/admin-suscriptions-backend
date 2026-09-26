@@ -102,13 +102,15 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
 
     const activeSubIds = new Set(activeSubscriptions.map((s) => s.id));
 
-    const expiringSoon = periods.filter(
-      (p) =>
-        activeSubIds.has(p.subscriptionId) &&
-        (p.status === 'PENDING' || p.status === 'PAID') &&
-        p.endDate > now &&
-        p.endDate <= in7Days
-    );
+    const expiringSoon = periods
+      .filter(
+        (p) =>
+          activeSubIds.has(p.subscriptionId) &&
+          (p.status === 'PENDING' || p.status === 'PAID') &&
+          p.endDate > now &&
+          p.endDate <= in7Days
+      )
+      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime());
 
     const overdueDebt = periods.filter(
       (p) =>
