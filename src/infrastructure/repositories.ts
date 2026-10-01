@@ -157,6 +157,41 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     }
     return results;
   }
+
+  async listRadarPage(params: {
+    organizationId: string;
+    status: 'ACTIVE' | 'SUSPENDED';
+    limit: number;
+    offset: number;
+    requireTotal?: boolean;
+  }): Promise<{ items: Subscription[]; total?: number; hasMore: boolean }> {
+    const filters: QueryFilter[] = [
+      ['organizationId', '==', params.organizationId],
+      ['status', '==', params.status],
+    ];
+
+    const snapshot = await this.buildQuery(filters)
+      .orderBy('radarRank', 'asc')
+      .orderBy('nearestPendingDate', 'asc')
+      .orderBy('closestOverdueDate', 'desc')
+      .orderBy('createdAt', 'desc')
+      .offset(params.offset)
+      .limit(params.limit)
+      .get();
+
+    const items = snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+
+    let total: number | undefined;
+    if (params.requireTotal) {
+      const countSnapshot = await this.buildQuery(filters).count().get();
+      total = countSnapshot.data().count;
+    }
+
+    const hasMore =
+      total !== undefined ? params.offset + items.length < total : items.length >= params.limit;
+
+    return { items, total, hasMore };
+  }
 }
 
 export class BillingPeriodFirestoreRepository extends FirestoreRepository<BillingPeriod> {

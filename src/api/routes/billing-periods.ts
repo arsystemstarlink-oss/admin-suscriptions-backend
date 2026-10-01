@@ -9,6 +9,7 @@ import {
 import { RegisterPaymentDto, UpdateBillingPeriodDto } from '../dto';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
+import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
 
@@ -306,30 +307,32 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
     if (subscription) {
       const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
 
-      updatedSubscription = businessService.evaluateSubscriptionStatus(
+      const evaluatedSubscription = businessService.evaluateSubscriptionStatus(
         subscription,
         allPeriods
       );
 
-      if (updatedSubscription.status !== subscription.status) {
-        await subscriptionRepository.update(updatedSubscription);
-      }
+      let periodsForRadar = allPeriods;
 
-      if (subscription.status === 'SUSPENDED' && updatedSubscription.status === 'ACTIVE') {
+      if (subscription.status === 'SUSPENDED' && evaluatedSubscription.status === 'ACTIVE') {
         const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
         if (!plan) {
           throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
         }
 
         const generatedPeriod = businessService.generateCurrentPeriod({
-          subscription: updatedSubscription,
+          subscription: evaluatedSubscription,
           plan,
           now: new Date(),
         });
 
         await billingPeriodRepository.create(generatedPeriod);
         currentPeriod = generatedPeriod;
+        periodsForRadar = [...allPeriods, generatedPeriod];
       }
+
+      updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);
+      await subscriptionRepository.update(updatedSubscription);
     }
 
     res.json({

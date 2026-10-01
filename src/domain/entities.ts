@@ -84,6 +84,19 @@ export interface Subscription {
   createdAt: Date;
   createdByUserId?: string;
   createdByRole?: UserRole;
+  radarRank?: number;
+  pendingPeriods?: number;
+  overduePeriods?: number;
+  hasDebt?: boolean;
+  nearestPendingDate?: Date | null;
+  closestOverdueDate?: Date | null;
+  currentPeriodId?: string | null;
+  currentPeriodStatus?: BillingPeriodStatus | null;
+  currentPeriodStartDate?: Date | null;
+  currentPeriodEndDate?: Date | null;
+  currentPeriodAmount?: number | null;
+  totalPeriods?: number;
+  radarUpdatedAt?: Date;
 }
 
 export interface BillingPeriod {

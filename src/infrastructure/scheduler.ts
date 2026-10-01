@@ -17,6 +17,7 @@ import { SubscriptionBusinessService } from '../domain/subscription-service';
 import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
+import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
 import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
@@ -235,34 +236,36 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       subscriptionPeriods
     );
 
-    if (updatedSubscription.status !== subscription.status) {
-      await subscriptionRepository.update(updatedSubscription);
-      if (updatedSubscription.status === 'SUSPENDED') {
-        suspendedCount++;
+    const finalSubscription = applyRadarToSubscription(updatedSubscription, subscriptionPeriods);
 
-        const client = clients.find((c) => c.id === subscription.clientId);
-        if (client) {
-          const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
-          if (result.sent) {
-            notificationCount++;
-          } else {
-            notificationErrors.push(result.error);
-          }
-        }
-
-        await recordDomainEvent(
-          'subscription.suspended',
-          organizationId,
-          'subscription',
-          subscription.id,
-          { kitNumber: subscription.kitNumber }
-        );
-      }
+    if (
+      finalSubscription.status !== subscription.status ||
+      hasRadarChanged(subscription, finalSubscription)
+    ) {
+      await subscriptionRepository.update(finalSubscription);
     }
 
-    const finalSubscription = updatedSubscription.status !== subscription.status
-      ? updatedSubscription
-      : subscription;
+    if (finalSubscription.status !== subscription.status && finalSubscription.status === 'SUSPENDED') {
+      suspendedCount++;
+
+      const client = clients.find((c) => c.id === subscription.clientId);
+      if (client) {
+        const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
+        if (result.sent) {
+          notificationCount++;
+        } else {
+          notificationErrors.push(result.error);
+        }
+      }
+
+      await recordDomainEvent(
+        'subscription.suspended',
+        organizationId,
+        'subscription',
+        subscription.id,
+        { kitNumber: subscription.kitNumber }
+      );
+    }
 
     if (finalSubscription.status === 'ACTIVE') {
         if (
@@ -281,6 +284,11 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
           const scopedNextPeriod = { ...nextPeriod, organizationId };
           await billingPeriodRepository.create(scopedNextPeriod);
           generatedCount++;
+          const radarWithNextPeriod = applyRadarToSubscription(finalSubscription, [
+            ...subscriptionPeriods,
+            scopedNextPeriod,
+          ]);
+          await subscriptionRepository.update(radarWithNextPeriod);
           await recordDomainEvent(
             'billing_period.generated',
             organizationId,

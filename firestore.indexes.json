@@ -8,6 +8,17 @@
       ]
     },
     {
+      "collectionGroup": "subscriptions",
+      "fields": [
+        { "fieldPath": "organizationId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "radarRank", "order": "ASCENDING" },
+        { "fieldPath": "nearestPendingDate", "order": "ASCENDING" },
+        { "fieldPath": "closestOverdueDate", "order": "DESCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "billingPeriods",
       "fields": [
         { "fieldPath": "organizationId", "order": "ASCENDING" },
