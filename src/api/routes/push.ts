@@ -31,16 +31,16 @@ router.post('/subscriptions', async (req: Request, res: Response, next: NextFunc
     }
 
     const auth = getAuth(req);
-    if (!auth.organizationId) {
-      throw new BusinessError('TENANT_REQUIRED', 'El super-admin no puede registrar suscripciones push sin organización.');
-    }
-
     const adminId = auth.userId;
-    const subscription = await pushService.registerSubscription(adminId, auth.organizationId, {
-      endpoint,
-      keys,
-      userAgent,
-    });
+    const subscription = await pushService.registerSubscription(
+      adminId,
+      auth.organizationId ?? '',
+      {
+        endpoint,
+        keys,
+        userAgent,
+      }
+    );
 
     res.status(201).json({
       subscription: {
