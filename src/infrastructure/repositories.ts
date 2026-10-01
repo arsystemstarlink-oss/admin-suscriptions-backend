@@ -1,4 +1,4 @@
-import { FirestoreRepository } from './firestore-repository';
+import { FirestoreRepository, QueryFilter } from './firestore-repository';
 import { getFirestore, admin } from './firebase';
 import { createId } from '../domain/business-rules';
 import {
@@ -11,6 +11,7 @@ import {
   SchedulerLog,
   WhatsAppMessage,
   WhatsAppConversation,
+  WhatsAppConversationRecord,
   MessageStatus,
   RefreshTokenSession,
   PushSubscription,
@@ -18,6 +19,15 @@ import {
   OrganizationTwilioConfig,
   DomainEvent,
 } from '../domain/entities';
+
+function toDate(value: any): Date | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value instanceof Date) return value;
+  if (typeof value?.toDate === 'function') return value.toDate();
+  if (typeof value?._seconds === 'number') return new Date(value._seconds * 1000);
+  const parsed = new Date(value);
+  return isNaN(parsed.getTime()) ? undefined : parsed;
+}
 
 export class OrganizationFirestoreRepository extends FirestoreRepository<Organization> {
   constructor() {
@@ -125,6 +135,28 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
       ['planId', planId],
     ]);
   }
+
+  async listByClientIds(clientIds: string[], organizationId?: string): Promise<Subscription[]> {
+    const unique = [...new Set(clientIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const MAX_IN_FILTER = 30;
+    const results: Subscription[] = [];
+    for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
+      const chunk = unique.slice(i, i + MAX_IN_FILTER);
+      const filters: QueryFilter[] = [['clientId', 'in', chunk]];
+      if (organizationId) {
+        filters.unshift(['organizationId', '==', organizationId]);
+      }
+      const snapshot = await this.buildQuery(filters).get();
+      snapshot.docs.forEach((doc) =>
+        results.push(this.deserialize({ id: doc.id, ...doc.data() }))
+      );
+    }
+    return results;
+  }
 }
 
 export class BillingPeriodFirestoreRepository extends FirestoreRepository<BillingPeriod> {
@@ -150,6 +182,31 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
       ['organizationId', organizationId],
       ['subscriptionId', subscriptionId],
     ]);
+  }
+
+  async listBySubscriptionIds(
+    subscriptionIds: string[],
+    organizationId?: string
+  ): Promise<BillingPeriod[]> {
+    const unique = [...new Set(subscriptionIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const MAX_IN_FILTER = 30;
+    const results: BillingPeriod[] = [];
+    for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
+      const chunk = unique.slice(i, i + MAX_IN_FILTER);
+      const filters: QueryFilter[] = [['subscriptionId', 'in', chunk]];
+      if (organizationId) {
+        filters.unshift(['organizationId', '==', organizationId]);
+      }
+      const snapshot = await this.buildQuery(filters).get();
+      snapshot.docs.forEach((doc) =>
+        results.push(this.deserialize({ id: doc.id, ...doc.data() }))
+      );
+    }
+    return results;
   }
 }
 
@@ -331,6 +388,174 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
   }
 }
 
+export class WhatsAppConversationFirestoreRepository extends FirestoreRepository<WhatsAppConversationRecord> {
+  private cacheTtlMs = Number(process.env.CONVERSATION_CACHE_TTL_MS || 600000);
+  private maxConversations = Number(process.env.CONVERSATION_LIST_LIMIT || 500);
+  private cache = new Map<string, { items: WhatsAppConversationRecord[]; loadedAt: number }>();
+
+  constructor() {
+    super('whatsappConversations');
+  }
+
+  static docId(organizationId: string, phone: string): string {
+    return `${organizationId}__${phone}`;
+  }
+
+  private cacheKey(organizationId?: string): string {
+    return organizationId ?? '__all__';
+  }
+
+  private toRecord(data: any, id: string): WhatsAppConversationRecord {
+    const lastMessage = data?.lastMessage
+      ? { ...data.lastMessage, createdAt: toDate(data.lastMessage.createdAt) }
+      : undefined;
+    return {
+      id,
+      organizationId: data?.organizationId,
+      phone: data?.phone,
+      clientId: data?.clientId,
+      profileName: data?.profileName,
+      lastMessage,
+      messageCount: data?.messageCount ?? 0,
+      createdAt: toDate(data?.createdAt) ?? new Date(),
+      updatedAt: toDate(data?.updatedAt) ?? new Date(),
+    } as WhatsAppConversationRecord;
+  }
+
+  private sortByLastMessage(items: WhatsAppConversationRecord[]): void {
+    items.sort((a, b) => {
+      const at = a.lastMessage?.createdAt ? a.lastMessage.createdAt.getTime() : 0;
+      const bt = b.lastMessage?.createdAt ? b.lastMessage.createdAt.getTime() : 0;
+      return bt - at;
+    });
+  }
+
+  private upsertInCaches(record: WhatsAppConversationRecord): void {
+    for (const [key, entry] of this.cache) {
+      if (key !== '__all__' && key !== this.cacheKey(record.organizationId)) {
+        continue;
+      }
+      const index = entry.items.findIndex((c) => c.id === record.id);
+      if (index >= 0) {
+        entry.items[index] = record;
+      } else {
+        entry.items.push(record);
+      }
+      this.sortByLastMessage(entry.items);
+    }
+  }
+
+  private removeFromCaches(organizationId: string, phone: string): void {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    for (const entry of this.cache.values()) {
+      const index = entry.items.findIndex((c) => c.id === id);
+      if (index >= 0) {
+        entry.items.splice(index, 1);
+      }
+    }
+  }
+
+  async listByOrganization(organizationId?: string): Promise<WhatsAppConversationRecord[]> {
+    const key = this.cacheKey(organizationId);
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.loadedAt < this.cacheTtlMs) {
+      return cached.items;
+    }
+
+    const filters: QueryFilter[] = organizationId
+      ? [['organizationId', '==', organizationId]]
+      : [];
+    const snapshot = await this.buildQuery(filters)
+      .orderBy('updatedAt', 'desc')
+      .limit(this.maxConversations)
+      .get();
+    const items = snapshot.docs.map((doc) => this.toRecord(doc.data(), doc.id));
+    this.sortByLastMessage(items);
+    this.cache.set(key, { items, loadedAt: Date.now() });
+    return items;
+  }
+
+  async upsertFromMessage(message: WhatsAppMessage, organizationId: string): Promise<void> {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, message.phone);
+    const docRef = this.db.collection(this.collectionName).doc(id);
+    const now = new Date();
+
+    const record = await this.db.runTransaction(async (tx) => {
+      const doc = await tx.get(docRef);
+      const incomingAt = toDate(message.createdAt)?.getTime() ?? now.getTime();
+
+      if (!doc.exists) {
+        const created: WhatsAppConversationRecord = {
+          id,
+          organizationId,
+          phone: message.phone,
+          clientId: message.clientId,
+          profileName: message.profileName,
+          lastMessage: message,
+          messageCount: 1,
+          createdAt: now,
+          updatedAt: now,
+        };
+        tx.set(docRef, this.serialize(created));
+        return created;
+      }
+
+      const existing = this.toRecord(doc.data(), id);
+      const existingLastAt = existing.lastMessage?.createdAt?.getTime() ?? 0;
+      const isNewer = incomingAt >= existingLastAt;
+
+      const updated: WhatsAppConversationRecord = {
+        ...existing,
+        clientId: message.clientId ?? existing.clientId,
+        profileName: message.profileName ?? existing.profileName,
+        lastMessage: isNewer ? message : existing.lastMessage,
+        messageCount: existing.messageCount + 1,
+        updatedAt: existing.updatedAt.getTime() >= now.getTime() ? existing.updatedAt : now,
+      };
+      tx.set(docRef, this.serialize(updated));
+      return updated;
+    });
+
+    this.upsertInCaches(record);
+  }
+
+  async updateLastMessageStatus(
+    organizationId: string,
+    phone: string,
+    messageSid: string,
+    status: MessageStatus,
+    errorMessage?: string
+  ): Promise<void> {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    const docRef = this.db.collection(this.collectionName).doc(id);
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      return;
+    }
+
+    const record = this.toRecord(doc.data(), id);
+    if (record.lastMessage?.messageSid !== messageSid) {
+      return;
+    }
+
+    record.lastMessage = {
+      ...record.lastMessage,
+      status,
+      ...(errorMessage ? { errorMessage } : {}),
+    };
+    record.updatedAt = new Date();
+
+    await docRef.set(this.serialize(record));
+    this.upsertInCaches(record);
+  }
+
+  async deleteByPhone(organizationId: string, phone: string): Promise<void> {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    await this.db.collection(this.collectionName).doc(id).delete();
+    this.removeFromCaches(organizationId, phone);
+  }
+}
+
 export class PushSubscriptionFirestoreRepository extends FirestoreRepository<PushSubscription> {
   constructor() {
     super('pushSubscriptions');
@@ -442,6 +667,7 @@ export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRep
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
 export const schedulerLogRepository = new SchedulerLogFirestoreRepository();
 export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository();
+export const whatsappConversationRepository = new WhatsAppConversationFirestoreRepository();
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
 export const domainEventRepository = new DomainEventFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();

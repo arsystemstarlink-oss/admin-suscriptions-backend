@@ -1,6 +1,7 @@
 import twilio from 'twilio';
 import type { MessageListInstanceCreateOptions } from 'twilio/lib/rest/api/v2010/account/message';
 import { Organization } from '../domain/entities';
+import { isFirestoreError } from './firestore-error';
 
 export interface WhatsAppTemplateMessage {
   to: string;
@@ -57,6 +58,8 @@ export interface TwilioErrorInfo {
 
 export function extractTwilioError(error: unknown): TwilioErrorInfo | null {
   if (!error || typeof error !== 'object') return null;
+
+  if (isFirestoreError(error)) return null;
 
   const candidate = error as Record<string, unknown>;
   const code = candidate.code;

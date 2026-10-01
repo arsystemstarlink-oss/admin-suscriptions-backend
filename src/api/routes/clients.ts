@@ -17,12 +17,18 @@ async function enrichClients(
   organizationId: string | undefined,
   includeSubscriptions: boolean
 ): Promise<any[]> {
-  const allSubs = organizationId
-    ? await subscriptionRepository.listByOrganization(organizationId)
-    : [];
-  const allPeriods = organizationId
-    ? await billingPeriodRepository.listByOrganization(organizationId)
-    : [];
+  if (clients.length === 0) {
+    return [];
+  }
+
+  const allSubs = await subscriptionRepository.listByClientIds(
+    clients.map((c) => c.id),
+    organizationId
+  );
+  const allPeriods = await billingPeriodRepository.listBySubscriptionIds(
+    allSubs.map((s) => s.id),
+    organizationId
+  );
 
   const subsByClientId = new Map<string, any[]>();
   for (const sub of allSubs) {
@@ -38,39 +44,37 @@ async function enrichClients(
     periodsBySubscriptionId.set(period.subscriptionId, list);
   }
 
-  return Promise.all(
-    clients.map(async (client) => {
-      const subs = subsByClientId.get(client.id) || [];
-      const allSubPeriods = subs.flatMap((s) => periodsBySubscriptionId.get(s.id) || []);
+  return clients.map((client) => {
+    const subs = subsByClientId.get(client.id) || [];
+    const allSubPeriods = subs.flatMap((s) => periodsBySubscriptionId.get(s.id) || []);
 
-      const overdueCount = allSubPeriods.filter((p: any) => p.status === 'OVERDUE').length;
-      const hasDebt = overdueCount > 0;
-      const activeSubs = subs.filter((s: any) => s.status === 'ACTIVE');
-      const suspendedSubs = subs.filter((s: any) => s.status === 'SUSPENDED');
+    const overdueCount = allSubPeriods.filter((p: any) => p.status === 'OVERDUE').length;
+    const hasDebt = overdueCount > 0;
+    const activeSubs = subs.filter((s: any) => s.status === 'ACTIVE');
+    const suspendedSubs = subs.filter((s: any) => s.status === 'SUSPENDED');
 
-      let subscriptionStatusValue = 'NONE';
-      if (activeSubs.length > 0 && suspendedSubs.length > 0) subscriptionStatusValue = 'MIXED';
-      else if (activeSubs.length > 0) subscriptionStatusValue = 'ACTIVE';
-      else if (suspendedSubs.length > 0) subscriptionStatusValue = 'SUSPENDED';
+    let subscriptionStatusValue = 'NONE';
+    if (activeSubs.length > 0 && suspendedSubs.length > 0) subscriptionStatusValue = 'MIXED';
+    else if (activeSubs.length > 0) subscriptionStatusValue = 'ACTIVE';
+    else if (suspendedSubs.length > 0) subscriptionStatusValue = 'SUSPENDED';
 
-      const currentPeriods = subs.map((s: any) => {
-        const periods = (periodsBySubscriptionId.get(s.id) || []).slice();
-        periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
-        return periods[0];
-      });
+    const currentPeriods = subs.map((s: any) => {
+      const periods = (periodsBySubscriptionId.get(s.id) || []).slice();
+      periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
+      return periods[0];
+    });
 
-      return {
-        ...client,
-        subscriptionStatus: subscriptionStatusValue,
-        hasDebt,
-        overdueCount,
-        totalSubscriptions: subs.length,
-        subscriptions: includeSubscriptions
-          ? subs.map((s: any, i: number) => ({ ...s, currentPeriod: currentPeriods[i] }))
-          : undefined,
-      };
-    })
-  );
+    return {
+      ...client,
+      subscriptionStatus: subscriptionStatusValue,
+      hasDebt,
+      overdueCount,
+      totalSubscriptions: subs.length,
+      subscriptions: includeSubscriptions
+        ? subs.map((s: any, i: number) => ({ ...s, currentPeriod: currentPeriods[i] }))
+        : undefined,
+    };
+  });
 }
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {

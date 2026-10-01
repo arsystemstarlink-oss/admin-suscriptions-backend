@@ -6,6 +6,7 @@ import {
 } from '../../infrastructure/whatsapp-service';
 import {
   whatsappMessageRepository,
+  whatsappConversationRepository,
   clientRepository,
   organizationRepository,
 } from '../../infrastructure/repositories';
@@ -65,8 +66,14 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
       messageSid = await whatsappService.sendMessage({ to, body }, organization);
     }
 
-    const clients = await clientRepository.listByOrganization(organizationId);
-    const client = clients.find((c) => c.phone === to);
+    const matchedClients = await clientRepository.listByFields(
+      [
+        ['organizationId', organizationId],
+        ['phone', to],
+      ],
+      1
+    );
+    const client = matchedClients[0];
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),
@@ -82,6 +89,12 @@ router.post('/send', authenticateAdmin, async (req: Request, res: Response, next
     };
 
     await whatsappMessageRepository.create(whatsappMsg);
+
+    try {
+      await whatsappConversationRepository.upsertFromMessage(whatsappMsg, organizationId);
+    } catch (conversationError) {
+      console.error('[WhatsApp] Error actualizando conversación:', conversationError);
+    }
 
     res.status(201).json({
       success: true,
@@ -139,8 +152,14 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     let client;
 
     if (organizationId) {
-      const clients = await clientRepository.listByField('organizationId', organizationId, 200);
-      client = clients.find((c) => c.phone === parsed.from);
+      const matchedClients = await clientRepository.listByFields(
+        [
+          ['organizationId', organizationId],
+          ['phone', parsed.from],
+        ],
+        1
+      );
+      client = matchedClients[0];
     } else {
       client = await clientRepository.listByField('phone', parsed.from, 1).then((results) => results[0]);
       organizationId = client?.organizationId;
@@ -160,6 +179,14 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     };
 
     await whatsappMessageRepository.create(whatsappMsg);
+
+    if (organizationId) {
+      try {
+        await whatsappConversationRepository.upsertFromMessage(whatsappMsg, organizationId);
+      } catch (conversationError) {
+        console.error('[WhatsApp] Error actualizando conversación entrante:', conversationError);
+      }
+    }
 
     console.log(
       '[WhatsApp] Mensaje inbound recibido de',
@@ -198,9 +225,16 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 router.get('/conversations', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = getEffectiveOrganizationId(req);
-    const conversations = await whatsappMessageRepository.listConversations(organizationId);
-
-    conversations.sort((a, b) => b.lastMessage.createdAt.getTime() - a.lastMessage.createdAt.getTime());
+    const records = await whatsappConversationRepository.listByOrganization(organizationId);
+    const conversations = records.map(
+      ({ phone, clientId, profileName, lastMessage, messageCount }) => ({
+        phone,
+        clientId,
+        profileName,
+        lastMessage,
+        messageCount,
+      })
+    );
 
     res.json({
       conversations,
@@ -241,6 +275,7 @@ router.delete('/messages/:phone', authenticateAdmin, async (req: Request, res: R
     }
 
     const deleted = await whatsappMessageRepository.deleteByPhone(normalizedPhone, organizationId);
+    await whatsappConversationRepository.deleteByPhone(organizationId, normalizedPhone);
 
     res.json({
       success: true,
@@ -316,6 +351,20 @@ async function handleStatusCallback(req: Request, res: Response, next: NextFunct
       String(source.ErrorMessage || source.ErrorCode || '').trim().slice(0, 500) || undefined;
 
     await whatsappMessageRepository.updateStatusByMessageSid(messageSid, status, errorMessage);
+
+    if (message.organizationId) {
+      try {
+        await whatsappConversationRepository.updateLastMessageStatus(
+          message.organizationId,
+          message.phone,
+          messageSid,
+          status,
+          errorMessage
+        );
+      } catch (conversationError) {
+        console.error('[WhatsApp] Error actualizando estado de conversación:', conversationError);
+      }
+    }
 
     res.status(200).json({ success: true });
   } catch (err) {

@@ -17,23 +17,27 @@ const router = Router();
 const businessService = new SubscriptionBusinessService();
 
 async function enrichSubscriptions(subscriptions: Subscription[], organizationId: string | undefined): Promise<any[]> {
-  const allClients = organizationId
-    ? await clientRepository.listByOrganization(organizationId)
-    : [];
-  const allPlans = organizationId
-    ? await planRepository.listByOrganization(organizationId)
-    : [];
-  const allPeriods = organizationId
-    ? await billingPeriodRepository.listByOrganization(organizationId)
-    : [];
+  if (subscriptions.length === 0) {
+    return [];
+  }
+
+  const clientIds = [...new Set(subscriptions.map((s) => s.clientId))];
+  const planIds = [...new Set(subscriptions.map((s) => s.planId))];
+  const subscriptionIds = subscriptions.map((s) => s.id);
+
+  const [foundClients, foundPlans, allPeriods] = await Promise.all([
+    clientRepository.listByIds(clientIds),
+    planRepository.listByIds(planIds),
+    billingPeriodRepository.listBySubscriptionIds(subscriptionIds, organizationId),
+  ]);
 
   const clientsById = new Map<string, any>();
-  for (const client of allClients) {
+  for (const client of foundClients) {
     clientsById.set(client.id, client);
   }
 
   const plansById = new Map<string, any>();
-  for (const plan of allPlans) {
+  for (const plan of foundPlans) {
     plansById.set(plan.id, plan);
   }
 
@@ -44,34 +48,32 @@ async function enrichSubscriptions(subscriptions: Subscription[], organizationId
     periodsBySubscriptionId.set(period.subscriptionId, list);
   }
 
-  return Promise.all(
-    subscriptions.map(async (sub) => {
-      const client = clientsById.get(sub.clientId) || null;
-      const plan = plansById.get(sub.planId) || null;
-      const periods = (periodsBySubscriptionId.get(sub.id) || []).slice();
+  return subscriptions.map((sub) => {
+    const client = clientsById.get(sub.clientId) || null;
+    const plan = plansById.get(sub.planId) || null;
+    const periods = (periodsBySubscriptionId.get(sub.id) || []).slice();
 
-      const currentPeriod = periods.sort(
-        (a, b) => b.startDate.getTime() - a.startDate.getTime()
-      )[0];
+    const currentPeriod = periods.sort(
+      (a, b) => b.startDate.getTime() - a.startDate.getTime()
+    )[0];
 
-      const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
-      const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
-      const hasDebt = overduePeriods.length > 0;
+    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+    const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
+    const hasDebt = overduePeriods.length > 0;
 
-      return {
-        ...sub,
-        client: client
-          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
-          : null,
-        plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-        currentPeriod,
-        totalPeriods: periods.length,
-        overduePeriods: overduePeriods.length,
-        pendingPeriods: pendingPeriods.length,
-        hasDebt,
-      };
-    })
-  );
+    return {
+      ...sub,
+      client: client
+        ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
+        : null,
+      plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
+      currentPeriod,
+      totalPeriods: periods.length,
+      overduePeriods: overduePeriods.length,
+      pendingPeriods: pendingPeriods.length,
+      hasDebt,
+    };
+  });
 }
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {

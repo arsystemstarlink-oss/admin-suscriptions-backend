@@ -151,6 +151,13 @@ export interface WhatsAppConversation {
   messageCount: number;
 }
 
+export interface WhatsAppConversationRecord extends WhatsAppConversation {
+  id: string;
+  organizationId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface PushSubscription {
   id: string;
   organizationId: string;

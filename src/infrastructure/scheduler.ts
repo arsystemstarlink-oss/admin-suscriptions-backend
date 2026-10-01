@@ -8,6 +8,7 @@ import {
   schedulerLogRepository,
   clientRepository,
   whatsappMessageRepository,
+  whatsappConversationRepository,
   organizationRepository,
   domainEventRepository,
   jobLockRepository,
@@ -500,6 +501,11 @@ async function sendWhatsAppNotification(
     };
 
     await whatsappMessageRepository.create(whatsappMsg);
+    try {
+      await whatsappConversationRepository.upsertFromMessage(whatsappMsg, organizationId);
+    } catch (conversationError) {
+      console.error('[WhatsApp] Error actualizando conversación:', conversationError);
+    }
     console.log(`[WhatsApp] Notificación ${type} enviada a ${clientFullName} (${client.phone})`);
     return { sent: true };
   } catch (error) {

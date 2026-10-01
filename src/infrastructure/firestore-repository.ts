@@ -1,6 +1,18 @@
-import { getFirestore } from './firebase';
+import { getFirestore, admin } from './firebase';
 import { Identifiable } from '../domain/in-memory-repository';
 import { getRequestContext } from '../api/middleware/request-id';
+
+export type QueryFilter = [
+  field: string | FirebaseFirestore.FieldPath,
+  op: FirebaseFirestore.WhereFilterOp,
+  value: any,
+];
+
+export interface ListQueryOptions {
+  orderBy?: string;
+  direction?: 'asc' | 'desc';
+  limit?: number;
+}
 
 export interface ListPageParams {
   organizationId?: string;
@@ -129,7 +141,11 @@ export class FirestoreRepository<T extends Identifiable> {
 
     if (params.requireTotal) {
       this.logOperation('COUNT');
-      const countSnapshot = await this.db.collection(this.collectionName).count().get();
+      const countSnapshot = await this.buildQuery(
+        params.organizationId ? [['organizationId', '==', params.organizationId]] : []
+      )
+        .count()
+        .get();
       total = countSnapshot.data().count;
       hasMore = params.offset + items.length < total;
     } else {
@@ -191,6 +207,67 @@ export class FirestoreRepository<T extends Identifiable> {
 
     const snapshot = await query.get();
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+  }
+
+  protected buildQuery(filters: QueryFilter[]): FirebaseFirestore.Query {
+    let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
+    for (const [field, op, value] of filters) {
+      if (value === undefined) continue;
+      query = query.where(field as any, op, value);
+    }
+    return query;
+  }
+
+  async countWhere(filters: QueryFilter[]): Promise<number> {
+    this.logOperation('COUNT');
+    const snapshot = await this.buildQuery(filters).count().get();
+    return snapshot.data().count;
+  }
+
+  async sumWhere(field: string, filters: QueryFilter[]): Promise<number> {
+    this.logOperation('SUM');
+    const snapshot = await this.buildQuery(filters)
+      .aggregate({ total: admin.firestore.AggregateField.sum(field) })
+      .get();
+    const total = snapshot.data().total;
+    return typeof total === 'number' ? total : 0;
+  }
+
+  async listWhere(filters: QueryFilter[], options: ListQueryOptions = {}): Promise<T[]> {
+    this.logOperation('QUERY');
+    let query = this.buildQuery(filters);
+    if (options.orderBy) {
+      query = query.orderBy(options.orderBy, options.direction === 'asc' ? 'asc' : 'desc');
+    }
+    if (options.limit) {
+      query = query.limit(options.limit);
+    }
+    const snapshot = await query.get();
+    return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+  }
+
+  async listByIds(ids: string[]): Promise<T[]> {
+    const unique = [...new Set(ids.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+
+    this.logOperation('QUERY');
+    const MAX_IN_FILTER = 30;
+    const results: T[] = [];
+
+    for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
+      const chunk = unique.slice(i, i + MAX_IN_FILTER);
+      const snapshot = await this.db
+        .collection(this.collectionName)
+        .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
+        .get();
+      snapshot.docs.forEach((doc) =>
+        results.push(this.deserialize({ id: doc.id, ...doc.data() }))
+      );
+    }
+
+    return results;
   }
 
   async deleteByField(field: string, value: any): Promise<number> {

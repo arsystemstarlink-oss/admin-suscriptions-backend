@@ -16,15 +16,17 @@ const router = Router();
 const businessService = new SubscriptionBusinessService();
 
 async function enrichPeriods(periods: BillingPeriod[], organizationId: string | undefined): Promise<any[]> {
-  const allSubs = organizationId
-    ? await subscriptionRepository.listByOrganization(organizationId)
-    : [];
-  const allClients = organizationId
-    ? await clientRepository.listByOrganization(organizationId)
-    : [];
-  const allPlans = organizationId
-    ? await planRepository.listByOrganization(organizationId)
-    : [];
+  if (periods.length === 0) {
+    return [];
+  }
+
+  const subscriptionIds = [...new Set(periods.map((p) => p.subscriptionId))];
+  const allSubs = await subscriptionRepository.listByIds(subscriptionIds);
+
+  const [allClients, allPlans] = await Promise.all([
+    clientRepository.listByIds(allSubs.map((s) => s.clientId)),
+    planRepository.listByIds(allSubs.map((s) => s.planId)),
+  ]);
 
   const subsById = new Map<string, any>();
   for (const sub of allSubs) {
@@ -41,33 +43,31 @@ async function enrichPeriods(periods: BillingPeriod[], organizationId: string | 
     plansById.set(plan.id, plan);
   }
 
-  return Promise.all(
-    periods.map(async (period) => {
-      const subscription = subsById.get(period.subscriptionId) || null;
-      let client = null;
-      let plan = null;
+  return periods.map((period) => {
+    const subscription = subsById.get(period.subscriptionId) || null;
+    let client = null;
+    let plan = null;
 
-      if (subscription) {
-        client = clientsById.get(subscription.clientId) || null;
-        plan = plansById.get(subscription.planId) || null;
-      }
+    if (subscription) {
+      client = clientsById.get(subscription.clientId) || null;
+      plan = plansById.get(subscription.planId) || null;
+    }
 
-      return {
-        ...period,
-        subscription: subscription
-          ? {
-              id: subscription.id,
-              kitNumber: subscription.kitNumber,
-              status: subscription.status,
-            }
-          : null,
-        client: client
-          ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
-          : null,
-        plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-      };
-    })
-  );
+    return {
+      ...period,
+      subscription: subscription
+        ? {
+            id: subscription.id,
+            kitNumber: subscription.kitNumber,
+            status: subscription.status,
+          }
+        : null,
+      client: client
+        ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
+        : null,
+      plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
+    };
+  });
 }
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {

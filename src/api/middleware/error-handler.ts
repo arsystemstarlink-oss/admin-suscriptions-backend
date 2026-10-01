@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { BusinessError } from '../../domain/entities';
 import { extractTwilioError } from '../../infrastructure/whatsapp-service';
+import { isFirestoreQuotaError } from '../../infrastructure/firestore-error';
 
 const STATUS_BY_CODE: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -55,6 +56,17 @@ export function errorHandler(
         message: twilioError.message,
         twilioCode: twilioError.code,
         moreInfo: twilioError.moreInfo,
+      },
+    });
+    return;
+  }
+
+  if (isFirestoreQuotaError(err)) {
+    console.error('Firestore quota exceeded:', err);
+    res.status(503).json({
+      error: {
+        code: 'DATABASE_UNAVAILABLE',
+        message: 'La base de datos alcanzó su límite diario de uso. Intenta más tarde.',
       },
     });
     return;

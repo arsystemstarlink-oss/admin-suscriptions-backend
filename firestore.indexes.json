@@ -29,6 +29,21 @@
         { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "dni", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "billingPeriods",
+      "fields": [
+        { "fieldPath": "organizationId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "paidAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "whatsappConversations",
+      "fields": [
+        { "fieldPath": "organizationId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

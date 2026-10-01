@@ -5,65 +5,79 @@ import {
   subscriptionRepository,
   billingPeriodRepository,
 } from '../../infrastructure/repositories';
+import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { getEffectiveOrganizationId } from '../middleware/tenant';
+import { BillingPeriod, Client, Subscription } from '../../domain/entities';
 
 const router = Router();
+
+function orgFilters(organizationId: string | undefined): QueryFilter[] {
+  return organizationId ? [['organizationId', '==', organizationId]] : [];
+}
 
 router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = getEffectiveOrganizationId(req);
-    const DASHBOARD_ITEM_LIMIT = 500;
-    const [clientsPage, plansPage, subscriptionsPage, periodsPage] = await Promise.all([
-      clientRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
-      planRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
-      subscriptionRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
-      billingPeriodRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'startDate', direction: 'desc', requireTotal: true }),
-    ]);
-
-    const clients = clientsPage.items;
-    const plans = plansPage.items;
-    const subscriptions = subscriptionsPage.items;
-    const periods = periodsPage.items;
-
-    const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
-    const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
-
-    const paidPeriods = periods.filter((p) => p.status === 'PAID');
-    const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
-    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
-
+    const org = orgFilters(organizationId);
     const now = new Date();
-    const currentMonth = now.getMonth();
-    const currentYear = now.getFullYear();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
-    const currentMonthPeriods = paidPeriods.filter((p) => {
-      const paidDate = p.paidAt;
-      return paidDate && paidDate.getMonth() === currentMonth && paidDate.getFullYear() === currentYear;
-    });
-
-    const monthlyIncome = currentMonthPeriods.reduce((sum, p) => sum + p.amount, 0);
-    const totalIncome = paidPeriods.reduce((sum, p) => sum + p.amount, 0);
-    const totalPending = pendingPeriods.reduce((sum, p) => sum + p.amount, 0);
-    const totalOverdue = overduePeriods.reduce((sum, p) => sum + p.amount, 0);
+    const [
+      clientsTotal,
+      plansTotal,
+      plansActive,
+      subscriptionsTotal,
+      subscriptionsActive,
+      subscriptionsSuspended,
+      periodsTotal,
+      periodsPaid,
+      periodsPending,
+      periodsOverdue,
+      totalIncome,
+      totalPending,
+      totalOverdue,
+      monthlyIncome,
+    ] = await Promise.all([
+      clientRepository.countWhere(org),
+      planRepository.countWhere(org),
+      planRepository.countWhere([...org, ['active', '==', true]]),
+      subscriptionRepository.countWhere(org),
+      subscriptionRepository.countWhere([...org, ['status', '==', 'ACTIVE']]),
+      subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
+      billingPeriodRepository.countWhere(org),
+      billingPeriodRepository.countWhere([...org, ['status', '==', 'PAID']]),
+      billingPeriodRepository.countWhere([...org, ['status', '==', 'PENDING']]),
+      billingPeriodRepository.countWhere([...org, ['status', '==', 'OVERDUE']]),
+      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'PAID']]),
+      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'PENDING']]),
+      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'OVERDUE']]),
+      billingPeriodRepository.sumWhere('amount', [
+        ...org,
+        ['status', '==', 'PAID'],
+        ['paidAt', '>=', monthStart],
+        ['paidAt', '<', nextMonthStart],
+      ]),
+    ]);
 
     res.json({
       clients: {
-        total: clientsPage.total,
+        total: clientsTotal,
       },
       plans: {
-        total: plansPage.total,
-        active: plans.filter((p) => p.active).length,
+        total: plansTotal,
+        active: plansActive,
       },
       subscriptions: {
-        total: subscriptionsPage.total,
-        active: activeSubscriptions.length,
-        suspended: suspendedSubscriptions.length,
+        total: subscriptionsTotal,
+        active: subscriptionsActive,
+        suspended: subscriptionsSuspended,
       },
       billingPeriods: {
-        total: periodsPage.total,
-        paid: paidPeriods.length,
-        pending: pendingPeriods.length,
-        overdue: overduePeriods.length,
+        total: periodsTotal,
+        paid: periodsPaid,
+        pending: periodsPending,
+        overdue: periodsOverdue,
       },
       financial: {
         monthlyIncome,
@@ -82,45 +96,66 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = getEffectiveOrganizationId(req);
-    const DASHBOARD_ITEM_LIMIT = 500;
-    const [subscriptionsPage, periodsPage, clientsPage] = await Promise.all([
-      subscriptionRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
-      billingPeriodRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'startDate', direction: 'desc', requireTotal: true }),
-      clientRepository.listPage({ organizationId, limit: DASHBOARD_ITEM_LIMIT, offset: 0, orderBy: 'createdAt', direction: 'asc', requireTotal: true }),
-    ]);
-
-    const subscriptions = subscriptionsPage.items;
-    const periods = periodsPage.items;
-    const clients = clientsPage.items;
-
+    const org = orgFilters(organizationId);
     const now = new Date();
     const in7Days = new Date(now);
     in7Days.setDate(in7Days.getDate() + 7);
 
-    const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
-    const suspendedSubscriptions = subscriptions.filter((s) => s.status === 'SUSPENDED');
+    const [suspendedCount, rawExpiring, rawOverdue] = await Promise.all([
+      subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
+      billingPeriodRepository.listWhere(
+        [...org, ['endDate', '>', now], ['endDate', '<=', in7Days]],
+        { orderBy: 'endDate', direction: 'asc', limit: 200 }
+      ),
+      billingPeriodRepository.listWhere([...org, ['status', '==', 'OVERDUE']], {
+        limit: 500,
+      }),
+    ]);
 
-    const activeSubIds = new Set(activeSubscriptions.map((s) => s.id));
-
-    const expiringSoon = periods
-      .filter(
-        (p) =>
-          activeSubIds.has(p.subscriptionId) &&
-          (p.status === 'PENDING' || p.status === 'PAID') &&
-          p.endDate > now &&
-          p.endDate <= in7Days
-      )
-      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime());
-
-    const overdueDebt = periods.filter(
-      (p) =>
-        activeSubIds.has(p.subscriptionId) &&
-        p.status === 'OVERDUE'
+    const subscriptions = await subscriptionRepository.listByIds([
+      ...rawExpiring.map((p) => p.subscriptionId),
+      ...rawOverdue.map((p) => p.subscriptionId),
+    ]);
+    const subsById = new Map<string, Subscription>(subscriptions.map((s) => [s.id, s]));
+    const activeSubIds = new Set(
+      subscriptions.filter((s) => s.status === 'ACTIVE').map((s) => s.id)
     );
 
-    const topDebtorsMap = new Map<string, { clientId: string; totalDebt: number; overdueCount: number; oldestOverdueEnd: Date }>();
+    const clients = await clientRepository.listByIds(subscriptions.map((s) => s.clientId));
+    const clientsById = new Map<string, Client>(clients.map((c) => [c.id, c]));
+
+    const expiringSoon = rawExpiring.filter(
+      (p) =>
+        activeSubIds.has(p.subscriptionId) &&
+        (p.status === 'PENDING' || p.status === 'PAID')
+    );
+
+    const overdueDebt = rawOverdue
+      .filter((p) => activeSubIds.has(p.subscriptionId))
+      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime());
+
+    const enrichPeriod = (period: BillingPeriod) => {
+      const sub = subsById.get(period.subscriptionId);
+      const client = sub ? clientsById.get(sub.clientId) : undefined;
+      return {
+        periodId: period.id,
+        periodLabel: period.periodLabel,
+        amount: period.amount,
+        endDate: period.endDate,
+        subscriptionId: sub?.id,
+        kitNumber: sub?.kitNumber,
+        clientName: client ? `${client.firstName} ${client.lastName}` : undefined,
+        clientPhone: client?.phone,
+        clientDni: client?.dni,
+      };
+    };
+
+    const topDebtorsMap = new Map<
+      string,
+      { clientId: string; totalDebt: number; overdueCount: number; oldestOverdueEnd: Date }
+    >();
     for (const period of overdueDebt) {
-      const sub = subscriptions.find((s) => s.id === period.subscriptionId);
+      const sub = subsById.get(period.subscriptionId);
       if (!sub) continue;
       const existing = topDebtorsMap.get(sub.clientId) || {
         clientId: sub.clientId,
@@ -143,7 +178,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       })
       .slice(0, 5)
       .map((debtor) => {
-        const client = clients.find((c) => c.id === debtor.clientId);
+        const client = clientsById.get(debtor.clientId);
         return {
           clientId: debtor.clientId,
           clientName: client ? `${client.firstName} ${client.lastName}` : 'Desconocido',
@@ -154,47 +189,27 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         };
       });
 
-    const enrichPeriod = async (period: (typeof periods)[number]) => {
-      const sub = subscriptions.find((s) => s.id === period.subscriptionId);
-      const client = sub ? clients.find((c) => c.id === sub.clientId) : null;
-      return {
-        periodId: period.id,
-        periodLabel: period.periodLabel,
-        amount: period.amount,
-        endDate: period.endDate,
-        subscriptionId: sub?.id,
-        kitNumber: sub?.kitNumber,
-        clientName: client ? `${client.firstName} ${client.lastName}` : undefined,
-        clientPhone: client?.phone,
-        clientDni: client?.dni,
-      };
-    };
-
-    const [expiringSoonEnriched, overdueDebtEnriched] = await Promise.all([
-      Promise.all(expiringSoon.map(enrichPeriod)),
-      Promise.all(overdueDebt.map(enrichPeriod)),
-    ]);
-
     res.json({
       generatedAt: now,
       expiringSoon: {
-        count: expiringSoonEnriched.length,
+        count: expiringSoon.length,
         description: 'Suscripciones ACTIVAS con período por vencer en los próximos 7 días',
-        items: expiringSoonEnriched,
+        items: expiringSoon.map(enrichPeriod),
       },
       overdueDebt: {
-        count: overdueDebtEnriched.length,
+        count: overdueDebt.length,
         description: 'Suscripciones ACTIVAS con períodos vencidos (adeudados)',
         totalAmount: overdueDebt.reduce((sum, p) => sum + p.amount, 0),
-        items: overdueDebtEnriched,
+        items: overdueDebt.map(enrichPeriod),
       },
       suspended: {
-        count: suspendedSubscriptions.length,
+        count: suspendedCount,
         description: 'Suscripciones suspendidas (sin notificaciones)',
       },
       topDebtors: {
         count: topDebtors.length,
-        description: 'Top 5 clientes con más períodos vencidos, del vencido más antiguo al más reciente (solo suscripciones ACTIVAS)',
+        description:
+          'Top 5 clientes con más períodos vencidos, del vencido más antiguo al más reciente (solo suscripciones ACTIVAS)',
         items: topDebtors,
       },
     });

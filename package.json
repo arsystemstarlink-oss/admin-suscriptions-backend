@@ -12,6 +12,7 @@
     "test:watch": "jest --watch",
     "create-admin": "ts-node scripts/create-admin.ts",
     "migrate:tenant": "ts-node scripts/migrate-tenant.ts",
+    "backfill:conversations": "ts-node scripts/backfill-conversations.ts",
     "test:endpoints": "ts-node scripts/test-endpoints.ts",
     "smoke:tenant": "ts-node scripts/smoke-tenant.ts"
   },
