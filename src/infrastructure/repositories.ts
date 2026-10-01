@@ -18,6 +18,7 @@ import {
   Organization,
   OrganizationTwilioConfig,
   DomainEvent,
+  PaymentReport,
 } from '../domain/entities';
 
 function toDate(value: any): Date | undefined {
@@ -652,6 +653,35 @@ export class DomainEventFirestoreRepository extends FirestoreRepository<DomainEv
   }
 }
 
+export class PaymentReportFirestoreRepository extends FirestoreRepository<PaymentReport> {
+  constructor() {
+    super('paymentReports');
+  }
+
+  async findPendingByPeriod(billingPeriodId: string, organizationId?: string): Promise<PaymentReport | undefined> {
+    const filters: Array<[string, any]> =
+      organizationId !== undefined
+        ? [
+            ['organizationId', organizationId],
+            ['billingPeriodId', billingPeriodId],
+            ['status', 'PENDING'],
+          ]
+        : [
+            ['billingPeriodId', billingPeriodId],
+            ['status', 'PENDING'],
+          ];
+    const results = await this.listByFields(filters, 1);
+    return results[0];
+  }
+
+  async listPendingByOrganization(organizationId: string): Promise<PaymentReport[]> {
+    return this.listByFields([
+      ['organizationId', organizationId],
+      ['status', 'PENDING'],
+    ]);
+  }
+}
+
 export class JobLockFirestoreRepository {
   private collectionName = 'jobLocks';
 
@@ -705,4 +735,5 @@ export const whatsappMessageRepository = new WhatsAppMessageFirestoreRepository(
 export const whatsappConversationRepository = new WhatsAppConversationFirestoreRepository();
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
 export const domainEventRepository = new DomainEventFirestoreRepository();
+export const paymentReportRepository = new PaymentReportFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();

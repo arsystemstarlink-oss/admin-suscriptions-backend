@@ -80,3 +80,22 @@ export interface SendWhatsAppDto {
   to: string;
   body: string;
 }
+
+export interface PublicLookupDto {
+  dni: string;
+  phone: string;
+}
+
+export interface CreatePaymentReportDto {
+  dni: string;
+  phone: string;
+  billingPeriodId: string;
+  paymentMethod: string;
+  paidAt: string;
+  notes?: string;
+}
+
+export interface ReviewPaymentReportDto {
+  action: 'approve' | 'reject';
+  notes?: string;
+}

@@ -7,6 +7,7 @@ import {
   planRepository,
   subscriptionRepository,
   billingPeriodRepository,
+  paymentReportRepository,
   whatsappMessageRepository,
   pushSubscriptionRepository,
   domainEventRepository,
@@ -309,6 +310,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     await planRepository.deleteByFields([['organizationId', orgId]]);
     await subscriptionRepository.deleteByFields([['organizationId', orgId]]);
     await billingPeriodRepository.deleteByFields([['organizationId', orgId]]);
+    await paymentReportRepository.deleteByFields([['organizationId', orgId]]);
     await whatsappMessageRepository.deleteByFields([['organizationId', orgId]]);
     await pushSubscriptionRepository.deleteByFields([['organizationId', orgId]]);
     await domainEventRepository.deleteByFields([['organizationId', orgId]]);

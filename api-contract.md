@@ -16,12 +16,12 @@ Auth: Authorization: Bearer {accessToken}
 - Referencias cruzadas (ej: `clientId` y `planId` de organizaciones distintas en `POST /subscriptions`) se rechazan con `403 CROSS_TENANT_REFERENCE`.
 
 **Seguridad:**
-- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout` y webhooks Twilio) requieren JWT de admin/super-admin.
+- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/public/*` y webhooks Twilio) requieren JWT de admin/super-admin.
 - Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId), `role` y `organizationId`; no son intercambiables.
 - El refresh token es de un solo uso: cada `POST /auth/refresh` rota a un token nuevo y revoca el anterior (sesión persistida en `refreshTokenSessions`).
 - Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
-- Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP) y `POST /api/auth/refresh` (60 / 15 min por IP).
+- Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP) y `POST /api/auth/refresh` (60 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
 - Headers de seguridad HTTP vía Helmet.
 - `POST /communications/webhook` (público) valida firma Twilio (obligatoria en production).
 
@@ -46,6 +46,8 @@ enum PaymentMethod { CASH, TRANSFER, USDT, CARD, OTHER }
 enum SubscriptionStatus { ACTIVE, SUSPENDED }
 
 enum BillingPeriodStatus { PENDING, PAID, OVERDUE }
+
+enum PaymentReportStatus { PENDING, APPROVED, REJECTED }
 ```
 
 ### Entidades
@@ -616,6 +618,84 @@ interface DebtorItem {
 
 ---
 
+### Portal Publico de Consulta y Reportes (`/public`, sin auth)
+
+Link por organizacion: `/consulta/:orgSlug`. Rate limit: 60 req / 15 min por IP.
+Privacidad: error 404 generico (`NOT_FOUND` — "No encontramos registros con esos datos") sin revelar si fallo dni o telefono; telefonos/emails solo enmascarados (`phoneMasked`, `emailMasked`); no exponer `createdBy*`.
+
+```typescript
+interface PaymentReport {
+  id: string; organizationId: string; clientId: string;
+  subscriptionId: string; billingPeriodId: string;
+  amount: number; paymentMethod: PaymentMethod; paidAt: string;
+  notes?: string; status: PaymentReportStatus;
+  createdAt: string; reviewedAt?: string; reviewedByUserId?: string; reviewNotes?: string;
+}
+```
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| GET | /public/org/:slug | Datos minimos de la organizacion (id, name, slug). 404 si inexistente/inactiva |
+| POST | /public/org/:slug/lookup | Consulta con cedula+telefono: detalle completo + totales + reportes en verificacion |
+| POST | /public/org/:slug/reports | Crear reporte de pago (monto = `period.amount`; periodo sigue PENDING/OVERDUE hasta aprobacion) |
+
+**POST /public/org/:slug/lookup**
+```typescript
+// Request
+{ dni: string; phone: string }
+// dni: formato V-/J- + 7-9 digitos (se normaliza); phone: se compara normalizando ambos lados (legacy no-E.164)
+// Response 200
+{
+  organization: { id: string; name: string; slug?: string };
+  client: { id: string; firstName: string; lastName: string; dni?: string; phoneMasked: string; emailMasked?: string };
+  subscriptions: { id: string; kitNumber: string; billingDay: number; status: SubscriptionStatus; plan: { id: string; name: string; price: number } | null }[];
+  periods: { id: string; subscriptionId: string; periodLabel: string; startDate: string; endDate: string; amount: number; status: BillingPeriodStatus; hasPendingReport: boolean }[];
+  pendingReports: { id: string; billingPeriodId: string; amount: number; status: PaymentReportStatus; createdAt: string }[];
+  totals: { totalDebt: number; pendingCount: number; overdueCount: number; pendingVerificationCount: number; pendingVerificationAmount: number };
+}
+// Errors: 404 NOT_FOUND (generico) | 404 ORGANIZATION_NOT_FOUND
+```
+
+**POST /public/org/:slug/reports**
+```typescript
+// Request
+{ dni: string; phone: string; billingPeriodId: string; paymentMethod: PaymentMethod (sin INITIAL_PAYMENT); paidAt: string; notes?: string }
+// paidAt formato YYYY-MM-DD, >= startDate del periodo, no futura
+// Response 201
+{ report: { id: string; billingPeriodId: string; amount: number; paymentMethod: PaymentMethod; paidAt: string; status: PaymentReportStatus; createdAt: string } }
+// Errors: 404 NOT_FOUND (generico, credenciales o periodo ajeno) | 400 INVALID_PAYMENT_METHOD | 400 INVALID_DATE_FORMAT | 400 INVALID_PAYMENT_DATE | 400 PERIOD_ALREADY_PAID | 409 PAYMENT_REPORT_ALREADY_EXISTS (ya hay reporte PENDING para ese periodo)
+```
+
+---
+
+### Bandeja de Reportes de Pago (admin, con auth)
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| GET | /payment-reports?status=PENDING&limit=&offset= | Listar reportes (enriquecidos con cliente/suscripcion/periodo) |
+| GET | /payment-reports/count | Contador de pendientes (`{ pending: number }`) para badge del sidebar |
+| GET | /payment-reports/:id | Detalle de un reporte |
+| POST | /payment-reports/:id/review | Aprobar (aplica pago con el flujo de `POST /pay`) o rechazar con motivo |
+
+**POST /payment-reports/:id/review**
+```typescript
+// Request
+{ action: 'approve' | 'reject'; notes?: string }
+// notes obligatorio al rechazar (motivo)
+// Response 200 (approve)
+{
+  report: PaymentReport;
+  billingPeriod: BillingPeriod;
+  currentPeriod?: BillingPeriod;
+  subscription: { id: string; status: SubscriptionStatus; previousStatus: SubscriptionStatus; reactivated: boolean } | null;
+}
+// Response 200 (reject)
+{ report: PaymentReport }
+// Errors: 404 PAYMENT_REPORT_NOT_FOUND | 409 PAYMENT_REPORT_ALREADY_REVIEWED (segundo admin concurrente) | 400 PERIOD_ALREADY_PAID | 400 PAYMENT_REPORT_INVALID_STATE
+```
+
+---
+
 ### Dashboard
 
 | Metodo | Path | Descripcion |
@@ -955,6 +1035,8 @@ Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) |
 
 Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias completas (`accountSid`, `authToken`, `phoneNumber` y `enabled !== false`).
 
+Codigos portal/reportes: `PAYMENT_REPORT_NOT_FOUND` (404) | `PAYMENT_REPORT_ALREADY_EXISTS` (409) | `PAYMENT_REPORT_ALREADY_REVIEWED` (409) | `PAYMENT_REPORT_INVALID_STATE` (400)
+
 ## WhatsApp por Organización (Twilio multi-tenant)
 
 - Cada organización debe tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`. No existe configuración Twilio global de servidor.
@@ -976,6 +1058,9 @@ Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene 
 | POST /auth/register | Crea admin en su organización | Crea admin (con org) o super-admin |
 | POST /subscriptions | Valida que `clientId` y `planId` pertenezcan a su organización (`CROSS_TENANT_REFERENCE` si no) | Igual validación contra la org indicada |
 | POST /billing-periods/:id/pay | Solo períodos de su organización | Todos o filtrados |
+| GET/POST /public/org/:slug | **Público (sin auth)** por slug; solo org activa | N/A (sin auth) |
+| GET /payment-reports, /payment-reports/count, /payment-reports/:id | Solo su organización | Todas o filtradas |
+| POST /payment-reports/:id/review | Solo reportes de su organización | Todos o filtrados |
 
 ## Migración (single-tenant → multi-tenant)
 

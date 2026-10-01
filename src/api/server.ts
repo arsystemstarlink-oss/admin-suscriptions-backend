@@ -14,6 +14,8 @@ import schedulerRoutes from './routes/scheduler';
 import whatsappRoutes from './routes/whatsapp';
 import pushRoutes from './routes/push';
 import organizationRoutes from './routes/organizations';
+import publicRoutes from './routes/public';
+import paymentReportRoutes from './routes/payment-reports';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { initializeFirebase } from '../infrastructure/firebase';
@@ -88,6 +90,19 @@ const setupRateLimiter = rateLimit({
   },
 });
 
+const publicRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas solicitudes. Intenta de nuevo más tarde.',
+    },
+  },
+});
+
 app.get('/', (req, res) => {
   res.json({
     message: 'API de Gestión de Suscripciones',
@@ -100,6 +115,8 @@ app.get('/', (req, res) => {
       plans: '/api/plans',
       subscriptions: '/api/subscriptions',
       billingPeriods: '/api/billing-periods',
+      paymentReports: '/api/payment-reports',
+      public: '/api/public',
       whatsapp: '/api/whatsapp',
       dashboard: '/api/dashboard',
       scheduler: '/api/scheduler',
@@ -119,7 +136,9 @@ app.get('/health', (req, res) => {
 app.use('/api/auth/login', loginRateLimiter);
 app.use('/api/auth/refresh', refreshRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
+app.use('/api/public', publicRateLimiter);
 app.use('/api/auth', authRoutes);
+app.use('/api/public', publicRoutes);
 app.use('/api/admins', authenticateAdmin, adminRoutes);
 app.use('/api/organizations', authenticateAdmin, organizationRoutes);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
@@ -127,6 +146,7 @@ app.use('/api/clients', authenticateAdmin, clientRoutes);
 app.use('/api/plans', authenticateAdmin, planRoutes);
 app.use('/api/subscriptions', authenticateAdmin, subscriptionRoutes);
 app.use('/api/billing-periods', authenticateAdmin, billingPeriodRoutes);
+app.use('/api/payment-reports', authenticateAdmin, paymentReportRoutes);
 app.use('/api/scheduler', authenticateAdmin, schedulerRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/communications', whatsappRoutes);

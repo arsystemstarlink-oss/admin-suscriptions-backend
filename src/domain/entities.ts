@@ -114,6 +114,25 @@ export interface BillingPeriod {
   createdAt: Date;
 }
 
+export type PaymentReportStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface PaymentReport {
+  id: string;
+  organizationId: string;
+  clientId: string;
+  subscriptionId: string;
+  billingPeriodId: string;
+  amount: number;
+  paymentMethod: string;
+  paidAt: Date;
+  notes?: string;
+  status: PaymentReportStatus;
+  createdAt: Date;
+  reviewedAt?: Date;
+  reviewedByUserId?: string;
+  reviewNotes?: string;
+}
+
 export interface SchedulerConfig {
   id: string;
   enabled: boolean;
@@ -191,7 +210,10 @@ export type DomainEventType =
   | 'subscription.plan_changed'
   | 'billing_period.overdue'
   | 'billing_period.paid'
-  | 'billing_period.generated';
+  | 'billing_period.generated'
+  | 'payment_report.created'
+  | 'payment_report.approved'
+  | 'payment_report.rejected';
 
 export interface DomainEvent {
   id: string;

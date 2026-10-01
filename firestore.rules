@@ -41,6 +41,9 @@ service cloud.firestore {
     match /billingPeriods/{id} {
       allow read, write: if scopedReadWrite();
     }
+    match /paymentReports/{id} {
+      allow read, write: if scopedReadWrite();
+    }
     match /domainEvents/{id} {
       allow read: if scopedReadWrite();
       allow create: if isSuperAdmin() || sameOrg(request.resource.data.organizationId);
