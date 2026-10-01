@@ -648,7 +648,7 @@ interface PaymentReport {
 {
   organization: { id: string; name: string; slug?: string };
   client: { id: string; firstName: string; lastName: string; dni?: string; phoneMasked: string; emailMasked?: string };
-  subscriptions: { id: string; kitNumber: string; billingDay: number; status: SubscriptionStatus; plan: { id: string; name: string; price: number } | null }[];
+  subscriptions: { id: string; kitNumber: string; accountNumber?: string; billingDay: number; status: SubscriptionStatus; plan: { id: string; name: string; price: number } | null }[];
   periods: { id: string; subscriptionId: string; periodLabel: string; startDate: string; endDate: string; amount: number; status: BillingPeriodStatus; hasPendingReport: boolean }[];
   pendingReports: { id: string; billingPeriodId: string; amount: number; status: PaymentReportStatus; createdAt: string }[];
   totals: { totalDebt: number; pendingCount: number; overdueCount: number; pendingVerificationCount: number; pendingVerificationAmount: number };

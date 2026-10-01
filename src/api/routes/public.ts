@@ -131,6 +131,7 @@ router.post('/org/:slug/lookup', async (req: Request, res: Response, next: NextF
       subscriptions: subscriptions.map((s) => ({
         id: s.id,
         kitNumber: s.kitNumber,
+        accountNumber: s.accountNumber,
         billingDay: s.billingDay,
         status: s.status,
         plan: plansById.get(s.planId)
