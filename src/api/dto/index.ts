@@ -69,6 +69,12 @@ export interface RegisterPaymentDto {
   notes?: string;
 }
 
+export interface RegisterAdvancePaymentDto {
+  paymentMethod: string;
+  paidAt: string;
+  notes?: string;
+}
+
 export interface UpdateBillingPeriodDto {
   paymentMethod?: string;
   amount?: number;

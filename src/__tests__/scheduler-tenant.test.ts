@@ -261,4 +261,42 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(mockedSchedulerConfig.updateConfig).not.toHaveBeenCalled();
     expect(mockedJobLock.release).not.toHaveBeenCalled();
   });
+
+  it('no duplica ni notifica un ciclo futuro pagado por adelantado', async () => {
+    const orgA = 'org_A';
+    const subA = makeSubscription(orgA);
+    const paidAnchor: BillingPeriod = {
+      ...makePeriod(orgA, subA.id, 'p_anchor'),
+      startDate: new Date(Date.UTC(2026, 5, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 5)),
+      status: 'PAID',
+      paidAt: new Date(Date.UTC(2026, 5, 20)),
+      paymentMethod: 'CASH',
+    };
+    const advancePeriod: BillingPeriod = {
+      ...makePeriod(orgA, subA.id, 'p_advance'),
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 7, 5)),
+      amount: 50,
+      status: 'PAID',
+      paidAt: new Date(Date.UTC(2026, 6, 10)),
+      paymentMethod: 'CASH',
+    };
+
+    mockedBillingPeriods.listByOrganization.mockResolvedValue([paidAnchor, advancePeriod]);
+    mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      { id: `client_${orgA}`, organizationId: orgA, firstName: 'Ana', lastName: 'López', phone: '+584123456789', createdAt: new Date() },
+    ]);
+    mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: orgA, enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.generated).toBe(0);
+    expect(result.notifications).toBe(0);
+    expect(result.errors).toHaveLength(0);
+    expect(mockedBillingPeriods.create).not.toHaveBeenCalled();
+  });
 });

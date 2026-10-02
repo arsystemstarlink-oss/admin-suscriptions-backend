@@ -1006,6 +1006,126 @@ describe('SubscriptionBusinessService', () => {
     });
   });
 
+  describe('createAdvanceBillingPeriod', () => {
+    const makeActiveSubscription = (): Subscription => ({
+      id: 'sub_1',
+      organizationId: 'org_test_1',
+      clientId: testClient.id,
+      planId: testPlan.id,
+      kitNumber: 'KIT-001',
+      billingDay: 5,
+      status: 'ACTIVE',
+      maxOverduePeriods: 2,
+      createdAt: new Date(),
+    });
+
+    const makePaidAnchor = (subscriptionId: string): BillingPeriod => ({
+      id: 'period_anchor',
+      organizationId: 'org_test_1',
+      subscriptionId,
+      periodLabel: 'Julio - Agosto',
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 7, 5)),
+      amount: testPlan.price,
+      status: 'PAID',
+      paidAt: new Date(Date.UTC(2026, 6, 20)),
+      paymentMethod: 'CASH',
+      createdAt: new Date(),
+    });
+
+    it('debería generar el ciclo futuro PAID encadenado al ancla', () => {
+      const subscription = makeActiveSubscription();
+      const anchor = makePaidAnchor(subscription.id);
+
+      const next = service.createAdvanceBillingPeriod({
+        anchorPeriod: anchor,
+        subscription,
+        plan: testPlan,
+        paymentMethod: 'TRANSFER',
+        paidAt: new Date(Date.UTC(2026, 7, 2)),
+        notes: 'Adelanto agosto',
+      });
+
+      expect(next.status).toBe('PAID');
+      expect(next.amount).toBe(testPlan.price);
+      expect(next.startDate.getTime()).toBe(anchor.endDate.getTime());
+      expect(next.endDate).toEqual(new Date(Date.UTC(2026, 8, 5)));
+      expect(next.paymentMethod).toBe('TRANSFER');
+      expect(next.paidAt).toEqual(new Date(Date.UTC(2026, 7, 2)));
+      expect(next.subscriptionId).toBe(subscription.id);
+    });
+
+    it('debería encadenar un segundo adelanto sobre el primero', () => {
+      const subscription = makeActiveSubscription();
+      const anchor = makePaidAnchor(subscription.id);
+
+      const first = service.createAdvanceBillingPeriod({
+        anchorPeriod: anchor,
+        subscription,
+        plan: testPlan,
+        paymentMethod: 'CASH',
+        paidAt: new Date(Date.UTC(2026, 7, 2)),
+      });
+
+      const second = service.createAdvanceBillingPeriod({
+        anchorPeriod: first,
+        subscription,
+        plan: testPlan,
+        paymentMethod: 'CASH',
+        paidAt: new Date(Date.UTC(2026, 7, 2)),
+      });
+
+      expect(second.startDate.getTime()).toBe(first.endDate.getTime());
+      expect(second.endDate).toEqual(new Date(Date.UTC(2026, 9, 5)));
+      expect(second.status).toBe('PAID');
+    });
+
+    it('debería rechazar si la suscripción está suspendida', () => {
+      const subscription = { ...makeActiveSubscription(), status: 'SUSPENDED' as const };
+      const anchor = makePaidAnchor(subscription.id);
+
+      expect(() => {
+        service.createAdvanceBillingPeriod({
+          anchorPeriod: anchor,
+          subscription,
+          plan: testPlan,
+          paymentMethod: 'CASH',
+          paidAt: new Date(),
+        });
+      }).toThrow('No se puede generar un período por adelantado para una suscripción suspendida.');
+    });
+
+    it('debería rechazar si el ancla no está PAID', () => {
+      const subscription = makeActiveSubscription();
+      const anchor = { ...makePaidAnchor(subscription.id), status: 'PENDING' as const };
+
+      expect(() => {
+        service.createAdvanceBillingPeriod({
+          anchorPeriod: anchor,
+          subscription,
+          plan: testPlan,
+          paymentMethod: 'CASH',
+          paidAt: new Date(),
+        });
+      }).toThrow('Solo se puede pagar por adelantado cuando el último período está PAID y no hay deuda.');
+    });
+
+    it('debería rechazar si el ancla pertenece a otra suscripción', () => {
+      const subscription = makeActiveSubscription();
+      const anchor = { ...makePaidAnchor('sub_other'), status: 'PAID' as const };
+
+      expect(() => {
+        service.createAdvanceBillingPeriod({
+          anchorPeriod: anchor,
+          subscription,
+          plan: testPlan,
+          paymentMethod: 'CASH',
+          paidAt: new Date(),
+        });
+      }).toThrow('El período ancla no pertenece a la suscripción.');
+    });
+  });
+
   describe('markPendingPeriodsOverdue', () => {
     it('debería marcar períodos PENDING vencidos como OVERDUE', () => {
       const periods: BillingPeriod[] = [

@@ -6,11 +6,12 @@ import {
   billingPeriodRepository,
   domainEventRepository,
 } from '../../infrastructure/repositories';
-import { CreateSubscriptionDto, UpdateSubscriptionDto } from '../dto';
+import { CreateSubscriptionDto, RegisterAdvancePaymentDto, UpdateSubscriptionDto } from '../dto';
 import { BusinessError, Subscription } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
-import { buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
+import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { validateReportPaymentMethod } from '../../domain/payment-reports';
 import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 
@@ -422,6 +423,10 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       (a, b) => b.startDate.getTime() - a.startDate.getTime()
     );
 
+    const currentPeriod = sortedPeriods[0];
+    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+    const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
+
     res.json({
       subscription: {
         ...subscription,
@@ -429,6 +434,11 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
           ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
           : null,
         plan: plan ? { id: plan.id, name: plan.name, price: plan.price, description: plan.description } : null,
+        currentPeriod,
+        totalPeriods: periods.length,
+        overduePeriods: overduePeriods.length,
+        pendingPeriods: pendingPeriods.length,
+        hasDebt: overduePeriods.length > 0,
       },
       billingPeriods: sortedPeriods,
       summary: {
@@ -511,6 +521,116 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     await billingPeriodRepository.deleteBySubscriptionId(req.params.id, organizationId);
     await subscriptionRepository.delete(req.params.id);
     res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const dto: RegisterAdvancePaymentDto = req.body;
+    const auth = getAuth(req);
+    const organizationId = getEffectiveOrganizationId(req);
+    const subscription = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
+
+    if (!subscription) {
+      throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
+    }
+
+    if (subscription.status !== 'ACTIVE') {
+      throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede pagar por adelantado una suscripción suspendida. Cobre los períodos vencidos primero.');
+    }
+
+    if (!dto.paymentMethod || !dto.paidAt) {
+      throw new BusinessError('INVALID_DATA', 'Método de pago y fecha son obligatorios.');
+    }
+
+    validateReportPaymentMethod(dto.paymentMethod);
+
+    if (!isValidDateString(dto.paidAt)) {
+      throw new BusinessError('INVALID_DATE_FORMAT', `Fecha de pago inválida: ${dto.paidAt}. Use formato YYYY-MM-DD.`);
+    }
+
+    const paidAt = parseDateOnly(dto.paidAt);
+
+    const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+
+    const unpaidCount = allPeriods.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE').length;
+    if (unpaidCount > 0) {
+      throw new BusinessError('HAS_UNPAID_PERIODS', 'La suscripción tiene períodos pendientes o vencidos. Cóbrelos primero antes de pagar por adelantado.');
+    }
+
+    if (allPeriods.length === 0) {
+      throw new BusinessError('NO_PERIODS', 'La suscripción no tiene períodos registrados.');
+    }
+
+    const anchor = [...allPeriods].sort((a, b) => b.endDate.getTime() - a.endDate.getTime())[0];
+
+    if (anchor.status !== 'PAID') {
+      throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede pagar por adelantado cuando el último período está pagado.');
+    }
+
+    const alreadyExists = allPeriods.some((p) => p.startDate.getTime() === anchor.endDate.getTime());
+    if (alreadyExists) {
+      throw new BusinessError('PERIOD_ALREADY_EXISTS', 'El siguiente ciclo ya existe. Recargue los períodos.');
+    }
+
+    const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
+    if (!plan) {
+      throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+    }
+    if (!plan.active) {
+      throw new BusinessError('PLAN_INACTIVE', 'El plan debe estar activo.');
+    }
+
+    const advancePeriod = businessService.createAdvanceBillingPeriod({
+      anchorPeriod: anchor,
+      subscription,
+      plan,
+      paymentMethod: dto.paymentMethod,
+      paidAt,
+      notes: dto.notes,
+    });
+
+    await billingPeriodRepository.create(advancePeriod);
+
+    try {
+      await domainEventRepository.create({
+        id: createId(),
+        type: 'billing_period.generated',
+        organizationId: advancePeriod.organizationId,
+        actorUserId: auth.userId,
+        entity: 'billingPeriod',
+        entityId: advancePeriod.id,
+        payload: { subscriptionId: subscription.id, advance: true, anchorPeriodId: anchor.id },
+        createdAt: new Date(),
+      });
+      await domainEventRepository.create({
+        id: createId(),
+        type: 'billing_period.paid',
+        organizationId: advancePeriod.organizationId,
+        actorUserId: auth.userId,
+        entity: 'billingPeriod',
+        entityId: advancePeriod.id,
+        payload: { subscriptionId: subscription.id, amount: advancePeriod.amount, paymentMethod: dto.paymentMethod, advance: true },
+        createdAt: new Date(),
+      });
+    } catch (eventError) {
+      console.error('[DomainEvent] Error registrando pay-advance:', eventError);
+    }
+
+    const updatedSubscription = applyRadarToSubscription(subscription, [...allPeriods, advancePeriod]);
+    await subscriptionRepository.update(updatedSubscription);
+
+    res.json({
+      billingPeriod: advancePeriod,
+      subscription: {
+        id: updatedSubscription.id,
+        status: updatedSubscription.status,
+        previousStatus: subscription.status,
+        reactivated: false,
+      },
+    });
   } catch (err) {
     next(err);
   }

@@ -268,40 +268,47 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     }
 
     if (finalSubscription.status === 'ACTIVE') {
-        if (
-          isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
-        ) {
+      if (
+        isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
+      ) {
+        const alreadyExists = subscriptionPeriods.some(
+          (p) => p.id !== currentPeriod.id && p.startDate.getTime() === currentPeriod.endDate.getTime()
+        );
+        if (alreadyExists) {
+          console.log(`[Daily Job] El siguiente período de ${subscription.id} ya existe (adelanto previo). Skipping.`);
+        } else {
           try {
             const plan = plansById.get(subscription.planId);
             if (!plan) continue;
 
-          const nextPeriod = businessService.createNextBillingPeriod({
-            currentPeriod,
-            subscription,
-            plan,
-          });
+            const nextPeriod = businessService.createNextBillingPeriod({
+              currentPeriod,
+              subscription,
+              plan,
+            });
 
-          const scopedNextPeriod = { ...nextPeriod, organizationId };
-          await billingPeriodRepository.create(scopedNextPeriod);
-          generatedCount++;
-          const radarWithNextPeriod = applyRadarToSubscription(finalSubscription, [
-            ...subscriptionPeriods,
-            scopedNextPeriod,
-          ]);
-          await subscriptionRepository.update(radarWithNextPeriod);
-          await recordDomainEvent(
-            'billing_period.generated',
-            organizationId,
-            'billingPeriod',
-            scopedNextPeriod.id,
-            { subscriptionId: subscription.id }
-          );
-        } catch (error) {
-          console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
+            const scopedNextPeriod = { ...nextPeriod, organizationId };
+            await billingPeriodRepository.create(scopedNextPeriod);
+            generatedCount++;
+            const radarWithNextPeriod = applyRadarToSubscription(finalSubscription, [
+              ...subscriptionPeriods,
+              scopedNextPeriod,
+            ]);
+            await subscriptionRepository.update(radarWithNextPeriod);
+            await recordDomainEvent(
+              'billing_period.generated',
+              organizationId,
+              'billingPeriod',
+              scopedNextPeriod.id,
+              { subscriptionId: subscription.id }
+            );
+          } catch (error) {
+            console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
+          }
         }
       }
 
-      if (currentPeriod.status === 'PENDING' || currentPeriod.status === 'PAID') {
+      if (currentPeriod.status === 'PENDING') {
         const endDateNormalized = new Date(Date.UTC(currentPeriod.endDate.getUTCFullYear(), currentPeriod.endDate.getUTCMonth(), currentPeriod.endDate.getUTCDate()));
         const nowNormalized = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));

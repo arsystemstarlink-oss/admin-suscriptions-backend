@@ -316,6 +316,52 @@ export class SubscriptionBusinessService {
     };
   }
 
+  createAdvanceBillingPeriod(params: {
+    anchorPeriod: BillingPeriod;
+    subscription: Subscription;
+    plan: Plan;
+    paymentMethod: string;
+    paidAt: Date;
+    notes?: string;
+  }): BillingPeriod {
+    const { anchorPeriod, subscription, plan, paymentMethod, paidAt, notes } = params;
+
+    if (subscription.status === 'SUSPENDED') {
+      throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede generar un período por adelantado para una suscripción suspendida.');
+    }
+
+    if (anchorPeriod.subscriptionId !== subscription.id) {
+      throw new BusinessError('INVALID_PERIOD_STATE', 'El período ancla no pertenece a la suscripción.');
+    }
+
+    if (anchorPeriod.status !== 'PAID') {
+      throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede pagar por adelantado cuando el último período está PAID y no hay deuda.');
+    }
+
+    if (!plan.active) {
+      throw new BusinessError('PLAN_INACTIVE', 'El plan debe estar activo.');
+    }
+
+    const nextStartDate = new Date(anchorPeriod.endDate);
+    const nextEndDate = new Date(Date.UTC(nextStartDate.getUTCFullYear(), nextStartDate.getUTCMonth() + 1, nextStartDate.getUTCDate()));
+    const now = new Date();
+
+    return {
+      id: createId(),
+      organizationId: subscription.organizationId,
+      subscriptionId: subscription.id,
+      periodLabel: buildPeriodLabel(nextStartDate, nextEndDate),
+      startDate: nextStartDate,
+      endDate: nextEndDate,
+      amount: plan.price,
+      status: 'PAID',
+      paidAt,
+      paymentMethod,
+      notes,
+      createdAt: now,
+    };
+  }
+
   generateCurrentPeriod(params: {
     subscription: Subscription;
     plan: Plan;

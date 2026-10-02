@@ -524,6 +524,7 @@ interface DebtorItem {
 | GET | /subscriptions/:id | Detalle con periodos |
 | POST | /subscriptions | Crear suscripcion |
 | PUT | /subscriptions/:id | Actualizar suscripcion |
+| POST | /subscriptions/:id/pay-advance | Cobrar por adelantado el siguiente ciclo (solo al día) |
 | DELETE | /subscriptions/:id | Eliminar suscripcion |
 
 **GET /subscriptions**
@@ -570,6 +571,22 @@ interface DebtorItem {
 { planId?: string; kitNumber?: string; accountNumber?: string; billingDay?: number; maxOverduePeriods?: number; status?: SubscriptionStatus }
 // kitNumber se convierte a UPPERCASE automaticamente
 // Response 200 → Subscription
+```
+
+**POST /subscriptions/:id/pay-advance** (solo suscripcion ACTIVE y al día)
+```typescript
+// Request (amount lo fija el backend = plan.price vigente)
+{ paymentMethod: PaymentMethod; paidAt: string; notes?: string }
+// paidAt formato YYYY-MM-DD
+// Response 200
+{
+  billingPeriod: BillingPeriod; // ciclo futuro generado ya en PAID (start = fin del ancla, +1 mes)
+  subscription: { id: string; status: SubscriptionStatus; previousStatus: SubscriptionStatus; reactivated: false };
+}
+// Precondiciones: sin PENDING/OVERDUE (si hay deuda → 409 HAS_UNPAID_PERIODS),
+// ancla (último periodo) en PAID, sin ciclo siguiente existente (→ 409 PERIOD_ALREADY_EXISTS),
+// plan vigente activo. Con SUSPENDED → SUBSCRIPTION_SUSPENDED.
+// Errors: 404 NOT_FOUND | 404 NO_PERIODS | 404 PLAN_NOT_FOUND | 409 HAS_UNPAID_PERIODS | 409 PERIOD_ALREADY_EXISTS | 409 INVALID_PERIOD_STATE | 400 INVALID_DATE_FORMAT | 400 INVALID_DATA
 ```
 
 **DELETE /subscriptions/:id** → Response 204
@@ -941,6 +958,18 @@ POST /billing-periods/:id/pay
 - Si era el último vencido de una suscripcion `SUSPENDED`, se reactiva y se genera el período actual `PENDING`
 - Ver Caso de Uso 4
 
+### 9. Cobrar por adelantado el siguiente ciclo
+
+```
+POST /subscriptions/:id/pay-advance
+{ paymentMethod: "CASH", paidAt: "2026-08-02", notes: "Adelanto agosto" }
+```
+- Solo si la suscripcion esta `ACTIVE` y al dia (0 `PENDING` y 0 `OVERDUE`); con deuda → `409 HAS_UNPAID_PERIODS`
+- Genera el siguiente ciclo encadenado (`startDate` = fin del ultimo periodo, `+1 mes`) ya en `PAID` con `amount = plan.price` vigente
+- Solo 1 mes por operacion; para varios meses se repite la operacion (cada llamada ancla sobre el ultimo periodo)
+- Si el siguiente ciclo ya existe (doble clic o carrera con el cron) → `409 PERIOD_ALREADY_EXISTS`
+- El cron posterior no lo duplica (el `endDate` queda en futuro y hay chequeo de existencia) ni lo notifica (los avisos `reminder`/`suspension-warning` solo aplican a periodos `PENDING`; `markPendingPeriodsOverdue` no toca `PAID`)
+
 ### 7. Enviar mensaje de WhatsApp desde perfil de cliente
 
 > Requiere header `Authorization: Bearer {accessToken}` en send e historial.
@@ -1021,6 +1050,7 @@ Authorization: Bearer {accessToken}
 | Suscripcion SUSPENDED | overdueCount >= maxOverduePeriods |
 | Suscripcion reactivada | overdueCount === 0 al pagar (todos los vencidos) |
 | Periodo actual al reactivar | Se genera desde hoy + billingDay como PENDING |
+| Adelanto (pay-advance) | Solo al dia, 1 mes por operacion, genera futuro PAID con plan.price; cron lo salta sin duplicar ni notificar; con deuda 409 HAS_UNPAID_PERIODS |
 
 ---
 
@@ -1037,6 +1067,8 @@ Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) |
 Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias completas (`accountSid`, `authToken`, `phoneNumber` y `enabled !== false`).
 
 Codigos portal/reportes: `PAYMENT_REPORT_NOT_FOUND` (404) | `PAYMENT_REPORT_ALREADY_EXISTS` (409) | `PAYMENT_REPORT_ALREADY_REVIEWED` (409) | `PAYMENT_REPORT_INVALID_STATE` (400)
+
+Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `NO_PERIODS` (404)
 
 ## WhatsApp por Organización (Twilio multi-tenant)
 
@@ -1059,6 +1091,7 @@ Codigos portal/reportes: `PAYMENT_REPORT_NOT_FOUND` (404) | `PAYMENT_REPORT_ALRE
 | POST /auth/register | Crea admin en su organización | Crea admin (con org) o super-admin |
 | POST /subscriptions | Valida que `clientId` y `planId` pertenezcan a su organización (`CROSS_TENANT_REFERENCE` si no) | Igual validación contra la org indicada |
 | POST /billing-periods/:id/pay | Solo períodos de su organización | Todos o filtrados |
+| POST /subscriptions/:id/pay-advance | Solo suscripciones de su organización | Todas o filtradas |
 | GET/POST /public/org/:slug | **Público (sin auth)** por slug; solo org activa | N/A (sin auth) |
 | GET /payment-reports, /payment-reports/count, /payment-reports/:id | Solo su organización | Todas o filtradas |
 | POST /payment-reports/:id/review | Solo reportes de su organización | Todos o filtrados |
