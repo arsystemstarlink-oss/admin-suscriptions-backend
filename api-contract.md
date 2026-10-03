@@ -169,9 +169,11 @@ interface DashboardSummary {
 
 interface DashboardAlerts {
   generatedAt: string;
-  expiringSoon: { count: number; items: AlertItem[] };
+  expiringSoon: { count: number; description?: string; hasMore: boolean; items: AlertItem[] };
+  overdueDebt: { count: number; description?: string; totalAmount: number; hasMore: boolean; items: AlertItem[] };
   overdue: { totalOverduePeriods: number; totalOverdueAmount: number; suspendedSubscriptions: number };
-  topDebtors: { count: number; items: DebtorItem[] };
+  suspended: { count: number; description?: string };
+  topDebtors: { count: number; description?: string; items: DebtorItem[] };
 }
 
 interface AlertItem {
@@ -721,9 +723,13 @@ interface PaymentReport {
 | GET | /dashboard/summary | Resumen general |
 | GET | /dashboard/alerts | Alertas y datos accionables |
 
-**GET /dashboard/summary** → Response 200 → `DashboardSummary`
+**GET /dashboard/summary** → Response 200 → `DashboardSummary` (1 lectura a `organizationStats`; `generatedAt` = `updatedAt` del doc; `monthlyIncome` cortado en mes calendario UTC)
 
 **GET /dashboard/alerts** → Response 200 → `DashboardAlerts`
+- `expiringSoon`: períodos `PENDING` de suscripciones `ACTIVE` con `endDate` en `[hoy UTC, hoy+7d UTC]`, `orderBy endDate asc`, `limit 50` + `hasMore`. Los ciclos futuros `PAID` (adelantos) nunca entran.
+- `overdueDebt.items`: períodos `OVERDUE` de suscripciones `ACTIVE`, `orderBy endDate asc`, `limit 100` + `hasMore`. `overdue.*` es el resumen agregado para el contrato legacy.
+- `topDebtors`: top 5 por `overdueCount desc, oldestOverdueEnd asc`, solo `ACTIVE`.
+- Requiere `organizationId` efectivo (admin: su org; super-admin: `?organizationId=org_X`), si no `403 TENANT_REQUIRED`.
 
 ---
 

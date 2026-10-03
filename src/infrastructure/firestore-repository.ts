@@ -119,8 +119,26 @@ export class FirestoreRepository<T extends Identifiable> {
 
     Object.keys(deserialized).forEach((key) => {
       const value = deserialized[key];
-      if (value && typeof value === 'object' && value._seconds !== undefined) {
-        deserialized[key] = value.toDate();
+      if (value instanceof Date) {
+        return;
+      }
+      if (value && typeof value === 'object') {
+        if (typeof value.toDate === 'function') {
+          try {
+            deserialized[key] = value.toDate();
+          } catch {
+            // conservar valor original si la conversión falla
+          }
+          return;
+        }
+        if (typeof value._seconds === 'number') {
+          deserialized[key] = new Date(value._seconds * 1000);
+          return;
+        }
+        if (typeof value.seconds === 'number') {
+          const nanos = typeof value.nanoseconds === 'number' ? value.nanoseconds : 0;
+          deserialized[key] = new Date(value.seconds * 1000 + Math.round(nanos / 1e6));
+        }
       }
     });
 

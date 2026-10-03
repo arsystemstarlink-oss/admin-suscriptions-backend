@@ -39,19 +39,25 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     const organizationId = requireOrganizationId(req);
     const org = orgFilters(organizationId);
     const now = new Date();
-    const in7Days = new Date(now);
-    in7Days.setDate(in7Days.getDate() + 7);
+    // Ventana inclusiva [now, now+7d] en UTC día para no excluir vencimientos de hoy
+    // por diferencia horaria entre el servidor y el cálculo del endDate.
+    const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const in7Days = new Date(startOfTodayUtc);
+    in7Days.setUTCDate(in7Days.getUTCDate() + 7);
+
+    const EXPIRING_LIMIT = 50;
+    const OVERDUE_LIMIT = 100;
 
     const [suspendedCount, rawExpiring, rawOverdue] = await Promise.all([
       subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
       billingPeriodRepository.listWhere(
-        [...org, ['endDate', '>', now], ['endDate', '<=', in7Days]],
-        { orderBy: 'endDate', direction: 'asc', limit: 50 }
+        [...org, ['status', '==', 'PENDING'], ['endDate', '>=', startOfTodayUtc], ['endDate', '<=', in7Days]],
+        { orderBy: 'endDate', direction: 'asc', limit: EXPIRING_LIMIT + 1 }
       ),
       billingPeriodRepository.listWhere([...org, ['status', '==', 'OVERDUE']], {
         orderBy: 'endDate',
         direction: 'asc',
-        limit: 100,
+        limit: OVERDUE_LIMIT + 1,
       }),
     ]);
 
@@ -70,15 +76,16 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     );
     const clientsById = new Map<string, Client>(clients.map((c) => [c.id, c]));
 
-    const expiringSoon = rawExpiring.filter(
-      (p) =>
-        activeSubIds.has(p.subscriptionId) &&
-        (p.status === 'PENDING' || p.status === 'PAID')
-    );
+    // rawExpiring ya viene filtrado por Firestore a PENDING en la ventana;
+    // aquí solo se exige suscripción ACTIVE (los PAID adelantados jamás entran).
+    const expiringSoon = rawExpiring
+      .filter((p) => activeSubIds.has(p.subscriptionId))
+      .slice(0, EXPIRING_LIMIT);
 
     const overdueDebt = rawOverdue
       .filter((p) => activeSubIds.has(p.subscriptionId))
-      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime());
+      .sort((a, b) => a.endDate.getTime() - b.endDate.getTime())
+      .slice(0, OVERDUE_LIMIT);
 
     const enrichPeriod = (period: BillingPeriod) => {
       const sub = subsById.get(period.subscriptionId);
@@ -139,14 +146,22 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       generatedAt: now,
       expiringSoon: {
         count: expiringSoon.length,
-        description: 'Suscripciones ACTIVAS con período por vencer en los próximos 7 días',
+        description: 'Suscripciones ACTIVAS con período PENDING por vencer en los próximos 7 días',
+        hasMore: rawExpiring.length > expiringSoon.length,
         items: expiringSoon.map(enrichPeriod),
       },
       overdueDebt: {
         count: overdueDebt.length,
         description: 'Suscripciones ACTIVAS con períodos vencidos (adeudados)',
         totalAmount: overdueDebt.reduce((sum, p) => sum + p.amount, 0),
+        hasMore: rawOverdue.length > overdueDebt.length,
         items: overdueDebt.map(enrichPeriod),
+      },
+      // Alias de compatibilidad con api-contract.md / frontend DashboardAlerts.overdue.
+      overdue: {
+        totalOverduePeriods: overdueDebt.length,
+        totalOverdueAmount: overdueDebt.reduce((sum, p) => sum + p.amount, 0),
+        suspendedSubscriptions: suspendedCount,
       },
       suspended: {
         count: suspendedCount,

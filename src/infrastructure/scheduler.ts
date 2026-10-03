@@ -18,7 +18,7 @@ import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
-import { scheduleStatsRecompute } from './stats-service';
+import { flushStatsRecompute } from './stats-service';
 import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
@@ -167,14 +167,34 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
   const organization = await organizationRepository.getById(organizationId);
-  const [pendingPeriods, overduePeriods, subscriptions, clients, allPlans] = await Promise.all([
-    billingPeriodRepository.listByOrganizationAndStatus(organizationId, 'PENDING'),
-    billingPeriodRepository.listByOrganizationAndStatus(organizationId, 'OVERDUE'),
-    subscriptionRepository.listByOrganization(organizationId),
+  // Los OVERDUE existentes solo se necesitan para evaluar suspensión/generación
+  // de las suscripciones tocadas, no de toda la org.
+  const pendingCandidates = await billingPeriodRepository.listPendingOverdueCandidates(
+    organizationId,
+    now,
+    500
+  );
+  const touchedSubscriptionIds = [...new Set(pendingCandidates.map((p) => p.subscriptionId))];
+  const [overdueForTouched, subscriptions, clients, allPlans] = await Promise.all([
+    touchedSubscriptionIds.length > 0
+      ? billingPeriodRepository.listBySubscriptionIds(touchedSubscriptionIds, organizationId)
+      : Promise.resolve([] as typeof pendingCandidates),
+    touchedSubscriptionIds.length > 0
+      ? subscriptionRepository.listByIds(touchedSubscriptionIds, organizationId)
+      : subscriptionRepository.listByOrganization(organizationId),
     clientRepository.listByOrganization(organizationId),
     planRepository.listByOrganization(organizationId),
   ]);
-  const allPeriods = [...pendingPeriods, ...overduePeriods];
+  // PENDING futuros (para generación de ciclo y recordatorios) solo de las
+  // suscripciones tocadas; el resto no acciona hoy.
+  // pendingCandidates ya son PENDING vencidos; overdueForTouched trae el resto
+  // de períodos (PENDING futuros + OVERDUE) de esas suscripciones.
+  const pendingPeriods = overdueForTouched.filter((p) => p.status === 'PENDING');
+  const overduePeriods = overdueForTouched.filter((p) => p.status === 'OVERDUE');
+  const seenPeriodIds = new Set<string>();
+  const allPeriods = [...pendingPeriods, ...pendingCandidates, ...overduePeriods].filter((p) =>
+    seenPeriodIds.has(p.id) ? false : (seenPeriodIds.add(p.id), true)
+  );
 
   const plansById = new Map(allPlans.map((plan) => [plan.id, plan]));
   const periodsBySubscriptionId = new Map<string, typeof allPeriods>();
@@ -233,7 +253,20 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       .filter((p) => p.subscriptionId === subscription.id)
       .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
 
-    if (
+    if (subscriptionPeriods.length === 0) {
+      // Sin períodos visibles para esta suscripción: rehidratar solo el actual
+      // desde el radar (currentPeriodId) en vez de leer todo su historial.
+      if (subscription.currentPeriodId) {
+        const currentFromRadar = await billingPeriodRepository.getByIdScoped(
+          subscription.currentPeriodId,
+          organizationId
+        );
+        if (currentFromRadar) {
+          subscriptionPeriods = [currentFromRadar];
+        }
+      }
+      if (subscriptionPeriods.length === 0) continue;
+    } else if (
       subscription.currentPeriodId &&
       !subscriptionPeriods.some((p) => p.id === subscription.currentPeriodId)
     ) {
@@ -361,7 +394,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   }
 
   await schedulerConfigRepository.updateConfig({ lastRun: now }, organizationId);
-  scheduleStatsRecompute(organizationId);
+  // Reconciliación diaria: el job es el punto que ve todas las mutaciones del
+  // día (vencidos/suspendidos/generados); fuerza el recompute en vez de
+  // depender del debounce, que puede perderse si el proceso rota.
+  try {
+    await flushStatsRecompute(organizationId);
+  } catch (error) {
+    console.error(`[Daily Job] Error reconciliando organizationStats/${organizationId}:`, error);
+  }
 
   if (overdueCount > 0 || suspendedCount > 0) {
     try {

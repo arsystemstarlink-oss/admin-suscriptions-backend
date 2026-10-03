@@ -343,6 +343,26 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
     );
   }
 
+  /**
+   * Consulta accionable del daily job: solo PENDING ya vencidos
+   * (endDate <= now). Acotada con límite + orden por endDate para no
+   * inspeccionar todo el historial PENDING futuro.
+   */
+  async listPendingOverdueCandidates(
+    organizationId: string,
+    referenceDate: Date,
+    limit = 500
+  ): Promise<BillingPeriod[]> {
+    return this.listWhere(
+      [
+        ['organizationId', '==', organizationId],
+        ['status', '==', 'PENDING'],
+        ['endDate', '<=', referenceDate],
+      ],
+      { orderBy: 'endDate', direction: 'asc', limit }
+    );
+  }
+
   async deleteBySubscriptionId(subscriptionId: string, organizationId?: string): Promise<number> {
     if (!organizationId) {
       return this.deleteByField('subscriptionId', subscriptionId);

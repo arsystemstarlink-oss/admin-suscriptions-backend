@@ -5,12 +5,15 @@ jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
     listByOrganization: jest.fn(),
     listByOrganizationAndStatus: jest.fn(),
+    listPendingOverdueCandidates: jest.fn(),
+    listBySubscriptionIds: jest.fn(),
     getByIdScoped: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
   },
   subscriptionRepository: {
     listByOrganization: jest.fn(),
+    listByIds: jest.fn(),
     update: jest.fn(),
   },
   planRepository: {
@@ -66,7 +69,7 @@ jest.mock('../infrastructure/push-service', () => ({
 }));
 
 jest.mock('../infrastructure/stats-service', () => ({
-  scheduleStatsRecompute: jest.fn(),
+  flushStatsRecompute: jest.fn(),
 }));
 
 import {
@@ -128,7 +131,10 @@ function makePeriod(orgId: string, subscriptionId: string, id = `period_${orgId}
 }
 
 function setPeriods(periods: BillingPeriod[]): void {
-  mockedBillingPeriods.listByOrganization.mockResolvedValue(periods);
+  mockedBillingPeriods.listPendingOverdueCandidates.mockImplementation(async () =>
+    periods.filter((p) => p.status === 'PENDING')
+  );
+  mockedBillingPeriods.listBySubscriptionIds.mockImplementation(async () => periods);
   mockedBillingPeriods.listByOrganizationAndStatus.mockImplementation(
     async (_org: string, status: string) => periods.filter((p) => p.status === status)
   );
@@ -160,6 +166,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const periodA = makePeriod(orgA, subA.id);
 
     setPeriods([periodA]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
     mockedClients.listByOrganization.mockResolvedValue([]);
@@ -168,9 +175,19 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     const result = await runDailyJobForOrganization(orgA);
 
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'PENDING');
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'OVERDUE');
-    expect(mockedSubscriptions.listByOrganization).toHaveBeenCalledWith('org_A');
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).toHaveBeenCalledWith(
+      'org_A',
+      expect.any(Date),
+      500
+    );
+    expect(mockedBillingPeriods.listBySubscriptionIds).toHaveBeenCalledWith(
+      expect.arrayContaining([subA.id]),
+      'org_A'
+    );
+    expect(mockedSubscriptions.listByIds).toHaveBeenCalledWith(
+      expect.arrayContaining([subA.id]),
+      'org_A'
+    );
     expect(mockedClients.listByOrganization).toHaveBeenCalledWith('org_A');
 
     expect(result.overdue).toBe(1);
@@ -201,15 +218,18 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const subB = makeSubscription('org_B');
     const periodB = makePeriod('org_B', subB.id, 'period_org_B');
 
-    mockedBillingPeriods.listByOrganizationAndStatus.mockImplementation(
-      async (org: string, status: string) => {
-        const map: Record<string, BillingPeriod[]> = { org_A: [periodA], org_B: [periodB] };
-        return (map[org] || []).filter((p) => p.status === status);
-      }
-    );
-    mockedSubscriptions.listByOrganization
-      .mockResolvedValueOnce([subA])
-      .mockResolvedValueOnce([subB]);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockImplementation(async (org: string) => {
+      const map: Record<string, BillingPeriod[]> = { org_A: [periodA], org_B: [periodB] };
+      return (map[org] || []).filter((p) => p.status === 'PENDING');
+    });
+    mockedBillingPeriods.listBySubscriptionIds.mockImplementation(async (ids: string[]) => {
+      const all = [periodA, periodB];
+      return all.filter((p) => ids.includes(p.subscriptionId));
+    });
+    mockedSubscriptions.listByIds.mockImplementation(async (ids: string[]) => {
+      const all = [subA, subB];
+      return all.filter((s) => ids.includes(s.id));
+    });
     mockedPlans.listByOrganization.mockImplementation((orgId: string) => [makePlan(orgId)]);
     mockedClients.listByOrganization.mockResolvedValue([]);
     mockedSchedulerConfig.updateConfig.mockResolvedValue({ id: 'x', enabled: true, cronSchedule: '0 0 * * *', updatedAt: new Date() });
@@ -218,10 +238,28 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     await runDailyJobForOrganization('org_A');
     await runDailyJobForOrganization('org_B');
 
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenNthCalledWith(1, 'org_A', 'PENDING');
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenNthCalledWith(3, 'org_B', 'PENDING');
-    expect(mockedSubscriptions.listByOrganization).toHaveBeenNthCalledWith(1, 'org_A');
-    expect(mockedSubscriptions.listByOrganization).toHaveBeenNthCalledWith(2, 'org_B');
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).toHaveBeenNthCalledWith(
+      1,
+      'org_A',
+      expect.any(Date),
+      500
+    );
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).toHaveBeenNthCalledWith(
+      2,
+      'org_B',
+      expect.any(Date),
+      500
+    );
+    expect(mockedSubscriptions.listByIds).toHaveBeenNthCalledWith(
+      1,
+      expect.arrayContaining([subA.id]),
+      'org_A'
+    );
+    expect(mockedSubscriptions.listByIds).toHaveBeenNthCalledWith(
+      2,
+      expect.arrayContaining([subB.id]),
+      'org_B'
+    );
 
     const orgBCreated = mockedBillingPeriods.create.mock.calls[1][0];
     expect(orgBCreated.organizationId).toBe('org_B');
@@ -238,6 +276,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     };
 
     setPeriods([pendingOverdue, pendingFuture]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan('org_A')]);
     mockedClients.listByOrganization.mockResolvedValue([]);
@@ -269,7 +308,11 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const result = await runDailyJobForOrganization('org_A');
 
     expect(result.skipped).toBeFalsy();
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'PENDING');
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).toHaveBeenCalledWith(
+      'org_A',
+      expect.any(Date),
+      500
+    );
     expect(mockedSchedulerConfig.updateConfig).toHaveBeenCalledWith(expect.any(Object), 'org_A');
   });
 
@@ -281,7 +324,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     expect(result.skipped).toBe(true);
     expect(result.overdue).toBe(0);
-    expect(mockedBillingPeriods.listByOrganizationAndStatus).not.toHaveBeenCalled();
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).not.toHaveBeenCalled();
     expect(mockedSchedulerConfig.updateConfig).not.toHaveBeenCalled();
     expect(mockedJobLock.release).not.toHaveBeenCalled();
   });
@@ -307,6 +350,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     };
 
     setPeriods([paidAnchor, advancePeriod]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
     mockedClients.listByOrganization.mockResolvedValue([

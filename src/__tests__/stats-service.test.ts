@@ -13,6 +13,7 @@ jest.mock('../infrastructure/firebase', () => ({
       doc: jest.fn(() => ({ set: mockSet, get: mockGet, delete: mockDelete })),
     })),
   })),
+  admin: { firestore: { FieldValue: { delete: jest.fn() } } },
 }));
 
 jest.mock('../infrastructure/repositories', () => ({
@@ -70,5 +71,28 @@ describe('stats-service', () => {
     expect(stats.financial.totalOverdue).toBe(500);
     expect(stats.financial.monthlyIncome).toBe(1200);
     expect(stats.financial.totalDebt).toBe(1500 + 500);
+  });
+
+  it('normaliza Timestamps de Firestore al leer organizationStats', async () => {
+    const { Timestamp } = jest.requireActual('firebase-admin/firestore');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getOrganizationStats } = require('../infrastructure/stats-service');
+    const ts = Timestamp.fromDate(new Date('2026-09-15T12:00:00.000Z'));
+    mockGet.mockResolvedValueOnce({
+      exists: true,
+      data: () => ({
+        clients: { total: 1 },
+        plans: { total: 1, active: 1 },
+        subscriptions: { total: 1, active: 1, suspended: 0 },
+        billingPeriods: { total: 1, paid: 0, pending: 1, overdue: 0 },
+        financial: { monthlyIncome: 0, totalIncome: 0, totalPending: 50, totalOverdue: 0, totalDebt: 50 },
+        updatedAt: ts,
+      }),
+    });
+
+    const stats = await getOrganizationStats('org_A');
+
+    expect(stats.updatedAt).toBeInstanceOf(Date);
+    expect(stats.updatedAt.toISOString()).toBe('2026-09-15T12:00:00.000Z');
   });
 });
