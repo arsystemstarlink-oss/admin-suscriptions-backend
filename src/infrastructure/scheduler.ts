@@ -18,6 +18,7 @@ import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
+import { scheduleStatsRecompute } from './stats-service';
 import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
 
 const businessService = new SubscriptionBusinessService();
@@ -166,10 +167,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
   const organization = await organizationRepository.getById(organizationId);
-  const allPeriods = await billingPeriodRepository.listByOrganization(organizationId);
-  const subscriptions = await subscriptionRepository.listByOrganization(organizationId);
-  const clients = await clientRepository.listByOrganization(organizationId);
-  const allPlans = await planRepository.listByOrganization(organizationId);
+  const [pendingPeriods, overduePeriods, subscriptions, clients, allPlans] = await Promise.all([
+    billingPeriodRepository.listByOrganizationAndStatus(organizationId, 'PENDING'),
+    billingPeriodRepository.listByOrganizationAndStatus(organizationId, 'OVERDUE'),
+    subscriptionRepository.listByOrganization(organizationId),
+    clientRepository.listByOrganization(organizationId),
+    planRepository.listByOrganization(organizationId),
+  ]);
+  const allPeriods = [...pendingPeriods, ...overduePeriods];
 
   const plansById = new Map(allPlans.map((plan) => [plan.id, plan]));
   const periodsBySubscriptionId = new Map<string, typeof allPeriods>();
@@ -224,9 +229,24 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   for (const subscription of subscriptions) {
     if (subscription.status === 'SUSPENDED') continue;
 
-    const subscriptionPeriods = updatedPeriods
+    let subscriptionPeriods = updatedPeriods
       .filter((p) => p.subscriptionId === subscription.id)
       .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
+
+    if (
+      subscription.currentPeriodId &&
+      !subscriptionPeriods.some((p) => p.id === subscription.currentPeriodId)
+    ) {
+      const currentFromRadar = await billingPeriodRepository.getByIdScoped(
+        subscription.currentPeriodId,
+        organizationId
+      );
+      if (currentFromRadar) {
+        subscriptionPeriods = [currentFromRadar, ...subscriptionPeriods].sort(
+          (a, b) => b.endDate.getTime() - a.endDate.getTime()
+        );
+      }
+    }
 
     const currentPeriod = subscriptionPeriods[0];
     if (!currentPeriod) continue;
@@ -237,6 +257,9 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     );
 
     const finalSubscription = applyRadarToSubscription(updatedSubscription, subscriptionPeriods);
+    if (subscription.totalPeriods !== undefined) {
+      finalSubscription.totalPeriods = subscription.totalPeriods;
+    }
 
     if (
       finalSubscription.status !== subscription.status ||
@@ -294,6 +317,9 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
               ...subscriptionPeriods,
               scopedNextPeriod,
             ]);
+            if (subscription.totalPeriods !== undefined) {
+              radarWithNextPeriod.totalPeriods = subscription.totalPeriods + 1;
+            }
             await subscriptionRepository.update(radarWithNextPeriod);
             await recordDomainEvent(
               'billing_period.generated',
@@ -335,6 +361,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   }
 
   await schedulerConfigRepository.updateConfig({ lastRun: now }, organizationId);
+  scheduleStatsRecompute(organizationId);
 
   if (overdueCount > 0 || suspendedCount > 0) {
     try {

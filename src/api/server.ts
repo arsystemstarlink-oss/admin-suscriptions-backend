@@ -20,7 +20,7 @@ import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { initializeFirebase } from '../infrastructure/firebase';
 import { startScheduler, stopScheduler } from '../infrastructure/scheduler';
-import { requestIdMiddleware } from './middleware/request-id';
+import { requestIdMiddleware, getMetricsSnapshot, isMetricsEnabled } from './middleware/request-id';
 
 dotenv.config();
 
@@ -42,7 +42,7 @@ try {
 
 app.use(helmet());
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: (process.env.CORS_ORIGIN || 'http://localhost:5173').split(',').map((o) => o.trim()).filter(Boolean),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -151,6 +151,12 @@ app.use('/api/scheduler', authenticateAdmin, schedulerRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/communications', whatsappRoutes);
 app.use('/api/push', pushRoutes);
+
+if (isMetricsEnabled()) {
+  app.get('/api/_metrics', authenticateAdmin, (req, res) => {
+    res.json({ metrics: getMetricsSnapshot() });
+  });
+}
 
 app.use(errorHandler);
 

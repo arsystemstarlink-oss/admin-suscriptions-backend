@@ -12,85 +12,14 @@ import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domai
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
-import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
+import { getAuth, requireOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
+import { getFirestore } from '../../infrastructure/firebase';
+import { stripUndefined } from '../../infrastructure/serialization';
+import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
-
-async function enrichSubscriptions(subscriptions: Subscription[], organizationId: string | undefined): Promise<any[]> {
-  if (subscriptions.length === 0) {
-    return [];
-  }
-
-  const clientIds = [...new Set(subscriptions.map((s) => s.clientId))];
-  const planIds = [...new Set(subscriptions.map((s) => s.planId))];
-  const subscriptionIds = subscriptions.map((s) => s.id);
-
-  const [foundClients, foundPlans, allPeriods] = await Promise.all([
-    clientRepository.listByIds(clientIds),
-    planRepository.listByIds(planIds),
-    billingPeriodRepository.listBySubscriptionIds(subscriptionIds, organizationId),
-  ]);
-
-  const clientsById = new Map<string, any>();
-  for (const client of foundClients) {
-    clientsById.set(client.id, client);
-  }
-
-  const plansById = new Map<string, any>();
-  for (const plan of foundPlans) {
-    plansById.set(plan.id, plan);
-  }
-
-  const periodsBySubscriptionId = new Map<string, any[]>();
-  for (const period of allPeriods) {
-    const list = periodsBySubscriptionId.get(period.subscriptionId) || [];
-    list.push(period);
-    periodsBySubscriptionId.set(period.subscriptionId, list);
-  }
-
-  return subscriptions.map((sub) => {
-    const client = clientsById.get(sub.clientId) || null;
-    const plan = plansById.get(sub.planId) || null;
-    const periods = (periodsBySubscriptionId.get(sub.id) || []).slice();
-
-    const currentPeriod = periods.sort(
-      (a, b) => b.startDate.getTime() - a.startDate.getTime()
-    )[0];
-
-    const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
-    const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
-    const hasDebt = overduePeriods.length > 0;
-
-    const nearestPendingDate = pendingPeriods.reduce<Date | undefined>(
-      (nearest, period) =>
-        !nearest || period.endDate.getTime() < nearest.getTime() ? period.endDate : nearest,
-      undefined
-    );
-
-    const closestOverdueDate = overduePeriods.reduce<Date | undefined>(
-      (closest, period) =>
-        !closest || period.endDate.getTime() > closest.getTime() ? period.endDate : closest,
-      undefined
-    );
-
-    return {
-      ...sub,
-      client: client
-        ? { id: client.id, firstName: client.firstName, lastName: client.lastName, phone: client.phone, dni: client.dni, email: client.email }
-        : null,
-      plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-      currentPeriod,
-      totalPeriods: periods.length,
-      overduePeriods: overduePeriods.length,
-      pendingPeriods: pendingPeriods.length,
-      hasDebt,
-      nearestPendingDate,
-      closestOverdueDate,
-    };
-  });
-}
 
 function radarRank(subscription: any): number {
   if ((subscription.pendingPeriods ?? 0) > 0) return 1;
@@ -126,7 +55,10 @@ function compareSubscriptionsForRadar(a: any, b: any): number {
   return (toTime(b.createdAt) ?? 0) - (toTime(a.createdAt) ?? 0);
 }
 
-async function enrichRadarSubscriptions(subscriptions: Subscription[]): Promise<any[]> {
+async function enrichRadarSubscriptions(
+  subscriptions: Subscription[],
+  organizationId?: string
+): Promise<any[]> {
   if (subscriptions.length === 0) {
     return [];
   }
@@ -135,8 +67,8 @@ async function enrichRadarSubscriptions(subscriptions: Subscription[]): Promise<
   const planIds = [...new Set(subscriptions.map((s) => s.planId))];
 
   const [foundClients, foundPlans] = await Promise.all([
-    clientRepository.listByIds(clientIds),
-    planRepository.listByIds(planIds),
+    clientRepository.listByIds(clientIds, organizationId),
+    planRepository.listByIds(planIds, organizationId),
   ]);
 
   const clientsById = new Map<string, any>();
@@ -265,25 +197,37 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       createdByRole: auth.role,
     };
 
-    await subscriptionRepository.create(scopedSubscription);
+    const db = getFirestore();
+    const batch = db.batch();
+    batch.set(
+      db.collection('subscriptions').doc(scopedSubscription.id),
+      stripUndefined(scopedSubscription)
+    );
     for (const period of scopedPeriods) {
-      await billingPeriodRepository.create(period);
+      batch.set(db.collection('billingPeriods').doc(period.id), stripUndefined(period));
     }
 
     try {
-      await domainEventRepository.create({
-        id: createId(),
-        type: 'subscription.created',
-        organizationId,
-        actorUserId: auth.userId,
-        entity: 'subscription',
-        entityId: scopedSubscription.id,
-        payload: { kitNumber: scopedSubscription.kitNumber, planId: scopedSubscription.planId },
-        createdAt: new Date(),
-      });
+      const eventId = createId();
+      batch.set(
+        db.collection('domainEvents').doc(eventId),
+        stripUndefined({
+          id: eventId,
+          type: 'subscription.created',
+          organizationId,
+          actorUserId: auth.userId,
+          entity: 'subscription',
+          entityId: scopedSubscription.id,
+          payload: { kitNumber: scopedSubscription.kitNumber, planId: scopedSubscription.planId },
+          createdAt: new Date(),
+        })
+      );
     } catch (eventError) {
       console.error('[DomainEvent] Error registrando subscription.created:', eventError);
     }
+
+    await batch.commit();
+    scheduleStatsRecompute(organizationId);
 
     res.status(201).json({
       subscription: scopedSubscription,
@@ -297,107 +241,79 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const clientId = req.query.clientId as string | undefined;
     const requestedStatus = (req.query.status as string | undefined)?.toUpperCase();
     const status = requestedStatus && requestedStatus !== 'ALL' ? requestedStatus : undefined;
     const search = req.query.search as string | undefined;
     const hasOverduePeriods = req.query.hasOverduePeriods as string | undefined;
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const offset = parseInt(req.query.offset as string) || 0;
+    const cursor = req.query.cursor as string | undefined;
 
-    const canUseRadarQuery =
-      Boolean(organizationId) &&
-      (status === 'ACTIVE' || status === 'SUSPENDED') &&
-      !clientId &&
-      !search &&
-      hasOverduePeriods === undefined;
-
-    if (canUseRadarQuery) {
-      try {
-        const page = await subscriptionRepository.listRadarPage({
-          organizationId: organizationId as string,
-          status: status as 'ACTIVE' | 'SUSPENDED',
-          limit,
-          offset,
-          requireTotal: true,
-        });
-
-        const isBackfilled = page.items.every(
-          (sub) => sub.radarRank !== undefined && sub.radarRank !== null
-        );
-
-        if (isBackfilled) {
-          const enrichedSubscriptions = await enrichRadarSubscriptions(page.items);
-          return res.json({
-            subscriptions: enrichedSubscriptions,
-            pagination: {
-              total: page.total ?? enrichedSubscriptions.length,
-              limit,
-              offset,
-              hasMore: page.hasMore,
-            },
-          });
-        }
-      } catch (error) {
-        console.error('[Subscriptions] Fallback a cálculo en memoria:', error);
-      }
-    }
-
-    const filters: Array<[string, any]> = [];
-    if (organizationId) filters.push(['organizationId', organizationId]);
-    if (status) filters.push(['status', status]);
-
-    let subscriptions =
-      filters.length > 0
-        ? await subscriptionRepository.listByFields(filters)
-        : await subscriptionRepository.list();
-
-    if (clientId) {
-      if (!isSuperAdmin(auth)) {
-        const client = await clientRepository.getByIdScoped(clientId, auth.organizationId ?? undefined);
-        if (!client) {
-          throw new BusinessError('CLIENT_NOT_FOUND', 'Cliente no encontrado.');
-        }
-      }
-      subscriptions = subscriptions.filter((s) => s.clientId === clientId);
-    }
-
-    const enrichedSubscriptions = await enrichSubscriptions(subscriptions, organizationId);
-
-    let filteredSubscriptions = enrichedSubscriptions;
+    const parsedStatus = status === 'ACTIVE' || status === 'SUSPENDED' ? status : undefined;
+    const parsedHasDebt =
+      hasOverduePeriods !== undefined ? hasOverduePeriods === 'true' : undefined;
 
     if (search) {
-      const searchLower = search.toLowerCase();
-      filteredSubscriptions = filteredSubscriptions.filter(
-        (s) =>
-          (s.client?.firstName?.toLowerCase().includes(searchLower)) ||
-          (s.client?.lastName?.toLowerCase().includes(searchLower)) ||
-          (`${s.client?.firstName ?? ''} ${s.client?.lastName ?? ''}`.toLowerCase().includes(searchLower)) ||
-          (s.client?.email?.toLowerCase().includes(searchLower)) ||
-          (s.client?.phone?.includes(search)) ||
-          (s.kitNumber?.toLowerCase().includes(searchLower))
+      const [matchedClients, kitMatches] = await Promise.all([
+        clientRepository.searchBounded(organizationId, search, 100),
+        subscriptionRepository.searchByKitNumberBounded(organizationId, search, 100),
+      ]);
+      const clientIds = matchedClients.map((c) => c.id);
+      const found = clientIds.length
+        ? await subscriptionRepository.listByClientIds(clientIds, organizationId)
+        : [];
+      const byId = new Map(found.map((sub) => [sub.id, sub]));
+      kitMatches.forEach((sub) => byId.set(sub.id, sub));
+
+      let subscriptions = [...byId.values()];
+      if (clientId) subscriptions = subscriptions.filter((sub) => sub.clientId === clientId);
+      if (parsedStatus) subscriptions = subscriptions.filter((sub) => sub.status === parsedStatus);
+      if (parsedHasDebt !== undefined) {
+        subscriptions = subscriptions.filter((sub) => (sub.hasDebt ?? false) === parsedHasDebt);
+      }
+
+      const enriched = await enrichRadarSubscriptions(subscriptions, organizationId);
+      const sorted = [...enriched].sort(compareSubscriptionsForRadar);
+      const total = sorted.length;
+      const paginated = sorted.slice(offset, offset + limit);
+      return res.json({
+        subscriptions: paginated,
+        pagination: { total, limit, offset, hasMore: offset + limit < total },
+      });
+    }
+
+    const page = await subscriptionRepository.listRadarPage({
+      organizationId,
+      status: parsedStatus,
+      clientId,
+      hasDebt: parsedHasDebt,
+      limit,
+      offset,
+      cursor,
+      requireTotal: !cursor,
+    });
+
+    const missingRadar = page.items.filter(
+      (sub) => sub.radarRank === undefined || sub.radarRank === null
+    );
+    if (missingRadar.length > 0) {
+      console.error(
+        '[Subscriptions] Suscripciones sin campos radar (requieren backfill):',
+        missingRadar.map((sub) => sub.id)
       );
     }
 
-    if (hasOverduePeriods !== undefined) {
-      const wantOverdue = hasOverduePeriods === 'true';
-      filteredSubscriptions = filteredSubscriptions.filter((s) => s.hasDebt === wantOverdue);
-    }
-
-    filteredSubscriptions = [...filteredSubscriptions].sort(compareSubscriptionsForRadar);
-
-    const total = filteredSubscriptions.length;
-    const paginatedSubscriptions = filteredSubscriptions.slice(offset, offset + limit);
-
-    res.json({
-      subscriptions: paginatedSubscriptions,
+    const enrichedSubscriptions = await enrichRadarSubscriptions(page.items, organizationId);
+    return res.json({
+      subscriptions: enrichedSubscriptions,
       pagination: {
-        total,
+        total: page.total,
         limit,
         offset,
-        hasMore: offset + limit < total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
       },
     });
   } catch (err) {
@@ -407,7 +323,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const subscription = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
     if (!subscription) {
       throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
@@ -464,7 +380,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateSubscriptionDto = req.body;
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
@@ -504,6 +420,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     businessService.validateSubscription(updated);
     await subscriptionRepository.update(updated);
+    scheduleStatsRecompute(organizationId);
     res.json(updated);
   } catch (err) {
     next(err);
@@ -512,7 +429,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
@@ -520,6 +437,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
     await billingPeriodRepository.deleteBySubscriptionId(req.params.id, organizationId);
     await subscriptionRepository.delete(req.params.id);
+    scheduleStatsRecompute(organizationId);
     res.status(204).send();
   } catch (err) {
     next(err);
@@ -530,7 +448,7 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
   try {
     const dto: RegisterAdvancePaymentDto = req.body;
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const subscription = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!subscription) {
@@ -621,6 +539,7 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
 
     const updatedSubscription = applyRadarToSubscription(subscription, [...allPeriods, advancePeriod]);
     await subscriptionRepository.update(updatedSubscription);
+    scheduleStatsRecompute(organizationId);
 
     res.json({
       billingPeriod: advancePeriod,

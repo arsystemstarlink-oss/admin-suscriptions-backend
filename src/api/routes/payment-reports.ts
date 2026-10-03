@@ -5,14 +5,17 @@ import {
   planRepository,
   clientRepository,
   paymentReportRepository,
-  domainEventRepository,
 } from '../../infrastructure/repositories';
 import { BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
-import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
+import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
+import { getFirestore } from '../../infrastructure/firebase';
+import { stripUndefined } from '../../infrastructure/serialization';
+import { getAuth, requireOrganizationId } from '../middleware/tenant';
+import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { ReviewPaymentReportDto } from '../dto';
 
 const router = Router();
@@ -21,9 +24,9 @@ const businessService = new SubscriptionBusinessService();
 async function enrichReports(reports: any[], organizationId: string | undefined): Promise<any[]> {
   if (reports.length === 0) return [];
   const [clients, subscriptions, periods] = await Promise.all([
-    clientRepository.listByIds(reports.map((r) => r.clientId)),
-    subscriptionRepository.listByIds(reports.map((r) => r.subscriptionId)),
-    billingPeriodRepository.listByIds(reports.map((r) => r.billingPeriodId)),
+    clientRepository.listByIds(reports.map((r) => r.clientId), organizationId),
+    subscriptionRepository.listByIds(reports.map((r) => r.subscriptionId), organizationId),
+    billingPeriodRepository.listByIds(reports.map((r) => r.billingPeriodId), organizationId),
   ]);
   const clientsById = new Map(clients.map((c: any) => [c.id, c]));
   const subsById = new Map(subscriptions.map((s: any) => [s.id, s]));
@@ -49,24 +52,38 @@ async function enrichReports(reports: any[], organizationId: string | undefined)
 
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const status = (req.query.status as string) || 'PENDING';
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const offset = parseInt(req.query.offset as string) || 0;
+    const cursor = req.query.cursor as string | undefined;
 
-    let reports = await paymentReportRepository.listByOrganization(organizationId);
+    const filters: QueryFilter[] = [];
     if (status && status !== 'ALL') {
-      reports = reports.filter((r) => r.status === status);
+      filters.push(['status', '==', status]);
     }
-    reports.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 
-    const total = reports.length;
-    const paginated = reports.slice(offset, offset + limit);
-    const enriched = await enrichReports(paginated, organizationId);
+    const page = await paymentReportRepository.listPage({
+      organizationId,
+      filters,
+      orderBy: 'createdAt',
+      direction: 'desc',
+      limit,
+      offset,
+      cursor,
+      requireTotal: !cursor,
+    });
+    const enriched = await enrichReports(page.items, organizationId);
 
     res.json({
       reports: enriched,
-      pagination: { total, limit, offset, hasMore: offset + limit < total },
+      pagination: {
+        total: page.total,
+        limit,
+        offset,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
+      },
     });
   } catch (err) {
     next(err);
@@ -75,11 +92,12 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/count', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
-    const pending = organizationId
-      ? await paymentReportRepository.listPendingByOrganization(organizationId)
-      : await paymentReportRepository.listByField('status', 'PENDING');
-    res.json({ pending: pending.length });
+    const organizationId = requireOrganizationId(req);
+    const pending = await paymentReportRepository.countWhere([
+      ['organizationId', '==', organizationId],
+      ['status', '==', 'PENDING'],
+    ]);
+    res.json({ pending });
   } catch (err) {
     next(err);
   }
@@ -87,7 +105,7 @@ router.get('/count', async (req: Request, res: Response, next: NextFunction) => 
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const report = await paymentReportRepository.getByIdScoped(req.params.id, organizationId);
     if (!report) {
       throw new BusinessError('PAYMENT_REPORT_NOT_FOUND', 'Reporte no encontrado.');
@@ -103,7 +121,7 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
   try {
     const dto: ReviewPaymentReportDto = req.body;
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const report = await paymentReportRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!report) {
@@ -134,10 +152,16 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
         reviewedByUserId: auth.userId,
         reviewNotes,
       };
-      await paymentReportRepository.update(rejected);
-      try {
-        await domainEventRepository.create({
-          id: createId(),
+
+      const db = getFirestore();
+      const batch = db.batch();
+      batch.set(db.collection('paymentReports').doc(rejected.id), stripUndefined(rejected));
+
+      const rejectedEventId = createId();
+      batch.set(
+        db.collection('domainEvents').doc(rejectedEventId),
+        stripUndefined({
+          id: rejectedEventId,
           type: 'payment_report.rejected',
           organizationId: report.organizationId,
           actorUserId: auth.userId,
@@ -145,10 +169,12 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
           entityId: report.id,
           payload: { billingPeriodId: report.billingPeriodId, reason: reviewNotes },
           createdAt: new Date(),
-        });
-      } catch (eventError) {
-        console.error('[DomainEvent] Error registrando payment_report.rejected:', eventError);
-      }
+        })
+      );
+
+      await batch.commit();
+      scheduleStatsRecompute(organizationId);
+
       const [enriched] = await enrichReports([rejected], organizationId);
       return res.json({ report: enriched });
     }
@@ -178,28 +204,13 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
       notes: report.notes,
     });
 
-    await billingPeriodRepository.update(updatedPeriod);
-
-    try {
-      await domainEventRepository.create({
-        id: createId(),
-        type: 'billing_period.paid',
-        organizationId: period.organizationId,
-        actorUserId: auth.userId,
-        entity: 'billingPeriod',
-        entityId: updatedPeriod.id,
-        payload: { subscriptionId: period.subscriptionId, amount: period.amount, paymentMethod: report.paymentMethod, viaReport: report.id },
-        createdAt: new Date(),
-      });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando billing_period.paid:', eventError);
-    }
-
     const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
     let updatedSubscription = subscription;
     let currentPeriod;
+    let generatedPeriod;
     if (subscription) {
-      const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+      const storedPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+      const allPeriods = storedPeriods.map((p) => (p.id === updatedPeriod.id ? updatedPeriod : p));
       const evaluatedSubscription = businessService.evaluateSubscriptionStatus(subscription, allPeriods);
       let periodsForRadar = allPeriods;
       if (subscription.status === 'SUSPENDED' && evaluatedSubscription.status === 'ACTIVE') {
@@ -207,17 +218,15 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
         if (!plan) {
           throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
         }
-        const generatedPeriod = businessService.generateCurrentPeriod({
+        generatedPeriod = businessService.generateCurrentPeriod({
           subscription: evaluatedSubscription,
           plan,
           now: new Date(),
         });
-        await billingPeriodRepository.create(generatedPeriod);
         currentPeriod = generatedPeriod;
         periodsForRadar = [...allPeriods, generatedPeriod];
       }
       updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);
-      await subscriptionRepository.update(updatedSubscription);
     }
 
     const approved = {
@@ -227,11 +236,31 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
       reviewedByUserId: auth.userId,
       reviewNotes,
     };
-    await paymentReportRepository.update(approved);
 
-    try {
-      await domainEventRepository.create({
-        id: createId(),
+    const db = getFirestore();
+    const batch = db.batch();
+    batch.set(db.collection('paymentReports').doc(approved.id), stripUndefined(approved));
+
+    const paidEventId = createId();
+    batch.set(
+      db.collection('domainEvents').doc(paidEventId),
+      stripUndefined({
+        id: paidEventId,
+        type: 'billing_period.paid',
+        organizationId: period.organizationId,
+        actorUserId: auth.userId,
+        entity: 'billingPeriod',
+        entityId: updatedPeriod.id,
+        payload: { subscriptionId: period.subscriptionId, amount: period.amount, paymentMethod: report.paymentMethod, viaReport: report.id },
+        createdAt: new Date(),
+      })
+    );
+
+    const approvedEventId = createId();
+    batch.set(
+      db.collection('domainEvents').doc(approvedEventId),
+      stripUndefined({
+        id: approvedEventId,
         type: 'payment_report.approved',
         organizationId: report.organizationId,
         actorUserId: auth.userId,
@@ -239,10 +268,18 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
         entityId: report.id,
         payload: { billingPeriodId: report.billingPeriodId, amount: report.amount },
         createdAt: new Date(),
-      });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando payment_report.approved:', eventError);
+      })
+    );
+
+    if (generatedPeriod) {
+      batch.set(db.collection('billingPeriods').doc(generatedPeriod.id), stripUndefined(generatedPeriod));
     }
+    if (updatedSubscription) {
+      batch.set(db.collection('subscriptions').doc(updatedSubscription.id), stripUndefined(updatedSubscription));
+    }
+
+    await batch.commit();
+    scheduleStatsRecompute(organizationId);
 
     const [enriched] = await enrichReports([approved], organizationId);
     res.json({

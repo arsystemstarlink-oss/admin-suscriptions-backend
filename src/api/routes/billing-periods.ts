@@ -4,14 +4,17 @@ import {
   subscriptionRepository,
   planRepository,
   clientRepository,
-  domainEventRepository,
 } from '../../infrastructure/repositories';
 import { RegisterPaymentDto, UpdateBillingPeriodDto } from '../dto';
+import { QueryFilter } from '../../infrastructure/firestore-repository';
+import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
-import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
+import { getAuth, requireOrganizationId } from '../middleware/tenant';
+import { getFirestore } from '../../infrastructure/firebase';
+import { stripUndefined } from '../../infrastructure/serialization';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -22,11 +25,11 @@ async function enrichPeriods(periods: BillingPeriod[], organizationId: string | 
   }
 
   const subscriptionIds = [...new Set(periods.map((p) => p.subscriptionId))];
-  const allSubs = await subscriptionRepository.listByIds(subscriptionIds);
+  const allSubs = await subscriptionRepository.listByIds(subscriptionIds, organizationId);
 
   const [allClients, allPlans] = await Promise.all([
-    clientRepository.listByIds(allSubs.map((s) => s.clientId)),
-    planRepository.listByIds(allSubs.map((s) => s.planId)),
+    clientRepository.listByIds(allSubs.map((s) => s.clientId), organizationId),
+    planRepository.listByIds(allSubs.map((s) => s.planId), organizationId),
   ]);
 
   const subsById = new Map<string, any>();
@@ -78,83 +81,69 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const status = req.query.status as string;
     const search = req.query.search as string;
     const expiresBefore = req.query.expiresBefore as string;
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const offset = parseInt(req.query.offset as string) || 0;
-    const organizationId = getEffectiveOrganizationId(req);
+    const cursor = req.query.cursor as string | undefined;
+    const organizationId = requireOrganizationId(req);
 
-    if (!subscriptionId && !status && !expiresBefore && !clientId && !search) {
-      const page = await billingPeriodRepository.listPage({
-        organizationId,
-        limit,
-        offset,
-        orderBy: 'startDate',
-        direction: 'desc',
-        requireTotal: true,
-      });
-      const enrichedPeriods = await enrichPeriods(page.items, organizationId);
-      return res.json({
-        periods: enrichedPeriods,
-        pagination: {
-          total: page.total,
-          limit,
-          offset,
-          hasMore: page.hasMore,
-        },
-      });
-    }
-
-    let periods = await billingPeriodRepository.listByField('organizationId', organizationId, 500);
-
-    if (subscriptionId) {
-      periods = periods.filter((p) => p.subscriptionId === subscriptionId);
-    }
-
-    if (status) {
-      periods = periods.filter((p) => p.status === status);
-    }
-
-    if (expiresBefore) {
-      const beforeDate = new Date(expiresBefore);
-      if (!isNaN(beforeDate.getTime())) {
-        periods = periods.filter((p) => p.endDate <= beforeDate);
-      }
-    }
-
-    const enrichedPeriods = await enrichPeriods(periods, organizationId);
-
-    let filteredPeriods = enrichedPeriods;
-
-    if (clientId) {
-      filteredPeriods = filteredPeriods.filter((p) => p.client?.id === clientId);
-    }
+    const beforeDate = expiresBefore ? new Date(expiresBefore) : undefined;
 
     if (search) {
-      const searchLower = search.toLowerCase();
-      filteredPeriods = filteredPeriods.filter(
-        (p) =>
-          (p.client?.firstName?.toLowerCase().includes(searchLower)) ||
-          (p.client?.lastName?.toLowerCase().includes(searchLower)) ||
-          (`${p.client?.firstName ?? ''} ${p.client?.lastName ?? ''}`.toLowerCase().includes(searchLower)) ||
-          (p.client?.email?.toLowerCase().includes(searchLower)) ||
-          (p.client?.phone?.includes(search)) ||
-          (p.subscription?.kitNumber?.toLowerCase().includes(searchLower))
-      );
+      const [matchedClients, kitMatches] = await Promise.all([
+        clientRepository.searchBounded(organizationId, search, 100),
+        subscriptionRepository.searchByKitNumberBounded(organizationId, search, 100),
+      ]);
+      const clientIds = matchedClients.map((c) => c.id);
+      const subscriptionIds = new Set<string>(kitMatches.map((sub) => sub.id));
+      if (clientIds.length > 0) {
+        const clientSubs = await subscriptionRepository.listByClientIds(clientIds, organizationId);
+        clientSubs.forEach((sub) => subscriptionIds.add(sub.id));
+      }
+      let periods = subscriptionIds.size
+        ? await billingPeriodRepository.listBySubscriptionIds([...subscriptionIds], organizationId)
+        : [];
+      if (subscriptionId) periods = periods.filter((p) => p.subscriptionId === subscriptionId);
+      if (clientId) periods = periods.filter((p) => (p as any).clientId === clientId);
+      if (status) periods = periods.filter((p) => p.status === status);
+      if (beforeDate && !isNaN(beforeDate.getTime())) {
+        periods = periods.filter((p) => p.endDate <= beforeDate);
+      }
+      const enriched = await enrichPeriods(periods, organizationId);
+      const sorted = enriched.sort((a, b) => b.startDate.getTime() - a.startDate.getTime());
+      const total = sorted.length;
+      const paginated = sorted.slice(offset, offset + limit);
+      return res.json({
+        periods: paginated,
+        pagination: { total, limit, offset, hasMore: offset + limit < total },
+      });
     }
 
-    const sortedPeriods = filteredPeriods.sort(
-      (a, b) => b.startDate.getTime() - a.startDate.getTime()
-    );
+    const filters: QueryFilter[] = [];
+    if (subscriptionId) filters.push(['subscriptionId', '==', subscriptionId]);
+    if (clientId) filters.push(['clientId', '==', clientId]);
+    if (status) filters.push(['status', '==', status]);
+    if (beforeDate && !isNaN(beforeDate.getTime())) filters.push(['endDate', '<=', beforeDate]);
 
-    const total = sortedPeriods.length;
-    const paginatedPeriods = sortedPeriods.slice(offset, offset + limit);
+    const page = await billingPeriodRepository.listPage({
+      organizationId,
+      filters,
+      limit,
+      offset,
+      cursor,
+      orderBy: beforeDate && !isNaN(beforeDate.getTime()) ? 'endDate' : 'startDate',
+      direction: beforeDate && !isNaN(beforeDate.getTime()) ? 'asc' : 'desc',
+      requireTotal: !cursor,
+    });
+    const enrichedPeriods = await enrichPeriods(page.items, organizationId);
 
     res.json({
-      periods: paginatedPeriods,
+      periods: enrichedPeriods,
       pagination: {
-        total,
+        total: page.total,
         limit,
         offset,
-        hasMore: offset + limit < total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
       },
     });
   } catch (err) {
@@ -164,7 +153,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
     if (!period) {
       throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
@@ -201,7 +190,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateBillingPeriodDto = req.body;
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!period) {
@@ -225,6 +214,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     });
 
     await billingPeriodRepository.update(updatedPeriod);
+    scheduleStatsRecompute(organizationId);
 
     const subscription = await subscriptionRepository.getByIdScoped(updatedPeriod.subscriptionId, organizationId);
     let client = null;
@@ -258,7 +248,7 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
   try {
     const dto: RegisterPaymentDto = req.body;
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!period) {
@@ -283,29 +273,14 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
       notes: dto.notes,
     });
 
-    await billingPeriodRepository.update(updatedPeriod);
-
-    try {
-      await domainEventRepository.create({
-        id: createId(),
-        type: 'billing_period.paid',
-        organizationId: period.organizationId,
-        actorUserId: auth.userId,
-        entity: 'billingPeriod',
-        entityId: updatedPeriod.id,
-        payload: { subscriptionId: period.subscriptionId, amount: dto.amount, paymentMethod: dto.paymentMethod },
-        createdAt: new Date(),
-      });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando billing_period.paid:', eventError);
-    }
-
     const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
     let updatedSubscription = subscription;
     let currentPeriod: BillingPeriod | undefined;
+    let generatedPeriod: BillingPeriod | undefined;
 
     if (subscription) {
-      const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+      const storedPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+      const allPeriods = storedPeriods.map((p) => (p.id === updatedPeriod.id ? updatedPeriod : p));
 
       const evaluatedSubscription = businessService.evaluateSubscriptionStatus(
         subscription,
@@ -320,20 +295,48 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
           throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
         }
 
-        const generatedPeriod = businessService.generateCurrentPeriod({
+        generatedPeriod = businessService.generateCurrentPeriod({
           subscription: evaluatedSubscription,
           plan,
           now: new Date(),
         });
-
-        await billingPeriodRepository.create(generatedPeriod);
         currentPeriod = generatedPeriod;
         periodsForRadar = [...allPeriods, generatedPeriod];
       }
 
       updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);
-      await subscriptionRepository.update(updatedSubscription);
     }
+
+    // Escritura atómica: periodo pagado + evento + periodo generado (si aplica) + suscripción.
+    const db = getFirestore();
+    const batch = db.batch();
+    batch.set(db.collection('billingPeriods').doc(updatedPeriod.id), stripUndefined(updatedPeriod));
+
+    const eventId = createId();
+    batch.set(
+      db.collection('domainEvents').doc(eventId),
+      stripUndefined({
+        id: eventId,
+        type: 'billing_period.paid',
+        organizationId: period.organizationId,
+        actorUserId: auth.userId,
+        entity: 'billingPeriod',
+        entityId: updatedPeriod.id,
+        payload: { subscriptionId: period.subscriptionId, amount: dto.amount, paymentMethod: dto.paymentMethod },
+        createdAt: new Date(),
+      })
+    );
+
+    if (generatedPeriod) {
+      batch.set(db.collection('billingPeriods').doc(generatedPeriod.id), stripUndefined(generatedPeriod));
+    }
+
+    if (updatedSubscription) {
+      batch.set(db.collection('subscriptions').doc(updatedSubscription.id), stripUndefined(updatedSubscription));
+    }
+
+    await batch.commit();
+    scheduleStatsRecompute(organizationId);
 
     res.json({
       billingPeriod: updatedPeriod,

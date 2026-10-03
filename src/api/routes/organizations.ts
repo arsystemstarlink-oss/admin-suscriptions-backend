@@ -19,6 +19,7 @@ import {
   OrganizationTwilioConfig,
 } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
+import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
 import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
@@ -165,14 +166,16 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const search = req.query.search as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
+    const cursor = req.query.cursor as string | undefined;
 
     if (!search) {
         const page = await organizationRepository.listPage({
           limit,
           offset,
+          cursor,
           orderBy: 'createdAt',
           direction: 'asc',
-          requireTotal: true,
+          requireTotal: !cursor,
         });
       return res.json({
         organizations: page.items.map(toOrganizationDto),
@@ -181,6 +184,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           limit,
           offset,
           hasMore: page.hasMore,
+          nextCursor: page.nextCursor,
         },
       });
     }
@@ -316,6 +320,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     await domainEventRepository.deleteByFields([['organizationId', orgId]]);
     await schedulerConfigRepository.delete(orgId);
 
+    await deleteOrganizationStats(orgId);
     await organizationRepository.delete(orgId);
     res.status(204).send();
   } catch (err) {

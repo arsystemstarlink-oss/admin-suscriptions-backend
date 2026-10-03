@@ -4,6 +4,7 @@ export interface SubscriptionRadarFields {
   radarRank: number;
   pendingPeriods: number;
   overduePeriods: number;
+  overdueAmount: number;
   hasDebt: boolean;
   nearestPendingDate: Date | null;
   closestOverdueDate: Date | null;
@@ -42,6 +43,7 @@ export function buildSubscriptionRadarFields(periods: BillingPeriod[]): Subscrip
     radarRank: pending.length > 0 ? 1 : overdue.length > 0 ? 2 : 3,
     pendingPeriods: pending.length,
     overduePeriods: overdue.length,
+    overdueAmount: overdue.reduce((sum, period) => sum + period.amount, 0),
     hasDebt: overdue.length > 0,
     nearestPendingDate,
     closestOverdueDate,
@@ -73,6 +75,7 @@ export function hasRadarChanged(previous: Subscription, next: Subscription): boo
     previous.radarRank !== next.radarRank ||
     (previous.pendingPeriods ?? 0) !== (next.pendingPeriods ?? 0) ||
     (previous.overduePeriods ?? 0) !== (next.overduePeriods ?? 0) ||
+    (previous.overdueAmount ?? 0) !== (next.overdueAmount ?? 0) ||
     (previous.hasDebt ?? false) !== (next.hasDebt ?? false) ||
     previous.currentPeriodId !== next.currentPeriodId ||
     previous.currentPeriodStatus !== next.currentPeriodStatus ||

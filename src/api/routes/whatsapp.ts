@@ -14,7 +14,7 @@ import { pushService } from '../../infrastructure/push-service';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
-import { getAuth, requireOrganizationId, getEffectiveOrganizationId } from '../middleware/tenant';
+import { getAuth, requireOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
@@ -161,8 +161,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       );
       client = matchedClients[0];
     } else {
-      client = await clientRepository.listByField('phone', parsed.from, 1).then((results) => results[0]);
-      organizationId = client?.organizationId;
+      client = undefined;
     }
 
     const whatsappMsg: WhatsAppMessage = {
@@ -224,7 +223,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
 router.get('/conversations', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const records = await whatsappConversationRepository.listByOrganization(organizationId);
     const conversations = records.map(
       ({ phone, clientId, profileName, lastMessage, messageCount }) => ({
@@ -248,14 +247,22 @@ router.get('/conversations', authenticateAdmin, async (req: Request, res: Respon
 router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phone } = req.params;
-    const organizationId = getEffectiveOrganizationId(req);
-    const messages = await whatsappMessageRepository.listByPhone(phone, organizationId);
+    const organizationId = requireOrganizationId(req);
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+    const offset = parseInt(req.query.offset as string) || 0;
+    const cursor = req.query.cursor as string | undefined;
 
-    const sortedMessages = messages.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    const page = await whatsappMessageRepository.listByPhonePage({
+      organizationId,
+      phone,
+      limit,
+      offset,
+      cursor,
+    });
 
     res.json({
-      messages: sortedMessages,
-      total: sortedMessages.length,
+      messages: page.items,
+      pagination: { limit, offset, hasMore: page.hasMore, nextCursor: page.nextCursor },
     });
   } catch (err) {
     next(err);
@@ -350,7 +357,7 @@ async function handleStatusCallback(req: Request, res: Response, next: NextFunct
     const errorMessage =
       String(source.ErrorMessage || source.ErrorCode || '').trim().slice(0, 500) || undefined;
 
-    await whatsappMessageRepository.updateStatusByMessageSid(messageSid, status, errorMessage);
+    await whatsappMessageRepository.updateStatusByMessageSid(message, status, errorMessage);
 
     if (message.organizationId) {
       try {

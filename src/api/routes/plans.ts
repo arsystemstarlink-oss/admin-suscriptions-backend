@@ -3,7 +3,8 @@ import { planRepository, subscriptionRepository } from '../../infrastructure/rep
 import { CreatePlanDto, UpdatePlanDto } from '../dto';
 import { BusinessError } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
-import { getAuth, getEffectiveOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
+import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
@@ -34,6 +35,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     await planRepository.create(plan);
+    scheduleStatsRecompute(organizationId);
     res.status(201).json(plan);
   } catch (err) {
     next(err);
@@ -46,16 +48,18 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const active = req.query.active as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
-    const organizationId = getEffectiveOrganizationId(req);
+    const cursor = req.query.cursor as string | undefined;
+    const organizationId = requireOrganizationId(req);
 
     if (!search && active === undefined) {
         const page = await planRepository.listPage({
           organizationId,
           limit,
           offset,
+          cursor,
           orderBy: 'createdAt',
           direction: 'asc',
-          requireTotal: true,
+          requireTotal: !cursor,
         });
       return res.json({
         plans: page.items,
@@ -64,6 +68,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           limit,
           offset,
           hasMore: page.hasMore,
+          nextCursor: page.nextCursor,
         },
       });
     }
@@ -103,7 +108,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const plan = await planRepository.getByIdScoped(req.params.id, organizationId);
     if (!plan) {
       throw new BusinessError('NOT_FOUND', 'Plan no encontrado.');
@@ -117,7 +122,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdatePlanDto = req.body;
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await planRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
@@ -134,6 +139,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     await planRepository.update(updated);
+    scheduleStatsRecompute(organizationId);
     res.json(updated);
   } catch (err) {
     next(err);
@@ -142,7 +148,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await planRepository.getByIdScoped(req.params.id, organizationId);
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Plan no encontrado.');
@@ -158,6 +164,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     await planRepository.delete(req.params.id);
+    scheduleStatsRecompute(organizationId);
     res.status(204).send();
   } catch (err) {
     next(err);

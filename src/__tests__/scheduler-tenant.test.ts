@@ -4,6 +4,8 @@ import { Plan, Subscription, BillingPeriod } from '../domain/entities';
 jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
     listByOrganization: jest.fn(),
+    listByOrganizationAndStatus: jest.fn(),
+    getByIdScoped: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
   },
@@ -25,13 +27,13 @@ jest.mock('../infrastructure/repositories', () => ({
   whatsappMessageRepository: {
     create: jest.fn(),
   },
-  organizationRepository: {
-    getById: jest.fn(),
+  whatsappConversationRepository: {
+    upsertFromMessage: jest.fn(),
   },
   organizationRepository: {
     getById: jest.fn(),
   },
-   domainEventRepository: {
+  domainEventRepository: {
     create: jest.fn(),
   },
   schedulerLogRepository: {
@@ -54,12 +56,17 @@ jest.mock('../infrastructure/whatsapp-service', () => ({
     authToken: 'token_test',
     phoneNumber: '+584111111111',
   })),
+  extractTwilioError: jest.fn(),
 }));
 
 jest.mock('../infrastructure/push-service', () => ({
   pushService: {
     sendBroadcastToOrganization: jest.fn(),
   },
+}));
+
+jest.mock('../infrastructure/stats-service', () => ({
+  scheduleStatsRecompute: jest.fn(),
 }));
 
 import {
@@ -120,6 +127,13 @@ function makePeriod(orgId: string, subscriptionId: string, id = `period_${orgId}
   };
 }
 
+function setPeriods(periods: BillingPeriod[]): void {
+  mockedBillingPeriods.listByOrganization.mockResolvedValue(periods);
+  mockedBillingPeriods.listByOrganizationAndStatus.mockImplementation(
+    async (_org: string, status: string) => periods.filter((p) => p.status === status)
+  );
+}
+
 describe('runDailyJobForOrganization (aislamiento por organización)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -127,6 +141,13 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     jest.setSystemTime(new Date(Date.UTC(2026, 6, 10)));
     mockedJobLock.acquire.mockResolvedValue(true);
     mockedJobLock.release.mockResolvedValue();
+    mockedBillingPeriods.getByIdScoped.mockResolvedValue(undefined);
+    mockedSchedulerConfig.getConfig.mockResolvedValue({
+      id: 'org_A',
+      enabled: true,
+      cronSchedule: '0 0 * * *',
+      updatedAt: new Date(),
+    });
   });
 
   afterEach(() => {
@@ -138,7 +159,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const subA = makeSubscription(orgA);
     const periodA = makePeriod(orgA, subA.id);
 
-    mockedBillingPeriods.listByOrganization.mockResolvedValue([periodA]);
+    setPeriods([periodA]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
     mockedClients.listByOrganization.mockResolvedValue([]);
@@ -147,7 +168,8 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     const result = await runDailyJobForOrganization(orgA);
 
-    expect(mockedBillingPeriods.listByOrganization).toHaveBeenCalledWith('org_A');
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'PENDING');
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'OVERDUE');
     expect(mockedSubscriptions.listByOrganization).toHaveBeenCalledWith('org_A');
     expect(mockedClients.listByOrganization).toHaveBeenCalledWith('org_A');
 
@@ -179,9 +201,12 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const subB = makeSubscription('org_B');
     const periodB = makePeriod('org_B', subB.id, 'period_org_B');
 
-    mockedBillingPeriods.listByOrganization
-      .mockResolvedValueOnce([periodA])
-      .mockResolvedValueOnce([periodB]);
+    mockedBillingPeriods.listByOrganizationAndStatus.mockImplementation(
+      async (org: string, status: string) => {
+        const map: Record<string, BillingPeriod[]> = { org_A: [periodA], org_B: [periodB] };
+        return (map[org] || []).filter((p) => p.status === status);
+      }
+    );
     mockedSubscriptions.listByOrganization
       .mockResolvedValueOnce([subA])
       .mockResolvedValueOnce([subB]);
@@ -193,8 +218,8 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     await runDailyJobForOrganization('org_A');
     await runDailyJobForOrganization('org_B');
 
-    expect(mockedBillingPeriods.listByOrganization).toHaveBeenNthCalledWith(1, 'org_A');
-    expect(mockedBillingPeriods.listByOrganization).toHaveBeenNthCalledWith(2, 'org_B');
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenNthCalledWith(1, 'org_A', 'PENDING');
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenNthCalledWith(3, 'org_B', 'PENDING');
     expect(mockedSubscriptions.listByOrganization).toHaveBeenNthCalledWith(1, 'org_A');
     expect(mockedSubscriptions.listByOrganization).toHaveBeenNthCalledWith(2, 'org_B');
 
@@ -212,7 +237,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       status: 'PENDING' as const,
     };
 
-    mockedBillingPeriods.listByOrganization.mockResolvedValue([pendingOverdue, pendingFuture]);
+    setPeriods([pendingOverdue, pendingFuture]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan('org_A')]);
     mockedClients.listByOrganization.mockResolvedValue([]);
@@ -222,9 +247,9 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     await runDailyJobForOrganization('org_A');
 
     const updates = mockedBillingPeriods.update.mock.calls.map((c) => c[0]);
-    expect(updates).toHaveLength(1);
-    expect(updates[0].id).toBe('p1');
-    expect(updates[0].status).toBe('OVERDUE');
+    const overdueUpdates = updates.filter((u) => u.status === 'OVERDUE');
+    expect(overdueUpdates).toHaveLength(1);
+    expect(overdueUpdates[0].id).toBe('p1');
   });
 
   it('el run manual de una org ejecuta el job aunque su config tenga enabled=false', async () => {
@@ -234,7 +259,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       cronSchedule: '0 0 * * *',
       updatedAt: new Date(),
     }));
-    mockedBillingPeriods.listByOrganization.mockResolvedValue([]);
+    setPeriods([]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([]);
     mockedClients.listByOrganization.mockResolvedValue([]);
     mockedPlans.listByOrganization.mockResolvedValue([]);
@@ -244,20 +269,19 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const result = await runDailyJobForOrganization('org_A');
 
     expect(result.skipped).toBeFalsy();
-    expect(mockedBillingPeriods.listByOrganization).toHaveBeenCalledWith('org_A');
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).toHaveBeenCalledWith('org_A', 'PENDING');
     expect(mockedSchedulerConfig.updateConfig).toHaveBeenCalledWith(expect.any(Object), 'org_A');
   });
 
   it('omite la ejecución cuando el lock de la organización está activo', async () => {
     mockedJobLock.acquire.mockResolvedValue(false);
     mockedBillingPeriods.listByOrganization.mockResolvedValue([]);
-    mockedSubscriptions.listByOrganization.mockResolvedValue([]);
 
     const result = await runDailyJobForOrganization('org_A');
 
     expect(result.skipped).toBe(true);
     expect(result.overdue).toBe(0);
-    expect(mockedBillingPeriods.listByOrganization).not.toHaveBeenCalled();
+    expect(mockedBillingPeriods.listByOrganizationAndStatus).not.toHaveBeenCalled();
     expect(mockedSchedulerConfig.updateConfig).not.toHaveBeenCalled();
     expect(mockedJobLock.release).not.toHaveBeenCalled();
   });
@@ -267,7 +291,6 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const subA = makeSubscription(orgA);
     const paidAnchor: BillingPeriod = {
       ...makePeriod(orgA, subA.id, 'p_anchor'),
-      startDate: new Date(Date.UTC(2026, 5, 5)),
       endDate: new Date(Date.UTC(2026, 6, 5)),
       status: 'PAID',
       paidAt: new Date(Date.UTC(2026, 5, 20)),
@@ -283,7 +306,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       paymentMethod: 'CASH',
     };
 
-    mockedBillingPeriods.listByOrganization.mockResolvedValue([paidAnchor, advancePeriod]);
+    setPeriods([paidAnchor, advancePeriod]);
     mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
     mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
     mockedClients.listByOrganization.mockResolvedValue([

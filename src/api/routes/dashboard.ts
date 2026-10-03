@@ -6,8 +6,9 @@ import {
   billingPeriodRepository,
 } from '../../infrastructure/repositories';
 import { QueryFilter } from '../../infrastructure/firestore-repository';
-import { getEffectiveOrganizationId } from '../middleware/tenant';
+import { requireOrganizationId } from '../middleware/tenant';
 import { BillingPeriod, Client, Subscription } from '../../domain/entities';
+import { getOrganizationStats } from '../../infrastructure/stats-service';
 
 const router = Router();
 
@@ -17,76 +18,16 @@ function orgFilters(organizationId: string | undefined): QueryFilter[] {
 
 router.get('/summary', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
-    const org = orgFilters(organizationId);
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const nextMonthStart = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-
-    const [
-      clientsTotal,
-      plansTotal,
-      plansActive,
-      subscriptionsTotal,
-      subscriptionsActive,
-      subscriptionsSuspended,
-      periodsTotal,
-      periodsPaid,
-      periodsPending,
-      periodsOverdue,
-      totalIncome,
-      totalPending,
-      totalOverdue,
-      monthlyIncome,
-    ] = await Promise.all([
-      clientRepository.countWhere(org),
-      planRepository.countWhere(org),
-      planRepository.countWhere([...org, ['active', '==', true]]),
-      subscriptionRepository.countWhere(org),
-      subscriptionRepository.countWhere([...org, ['status', '==', 'ACTIVE']]),
-      subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
-      billingPeriodRepository.countWhere(org),
-      billingPeriodRepository.countWhere([...org, ['status', '==', 'PAID']]),
-      billingPeriodRepository.countWhere([...org, ['status', '==', 'PENDING']]),
-      billingPeriodRepository.countWhere([...org, ['status', '==', 'OVERDUE']]),
-      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'PAID']]),
-      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'PENDING']]),
-      billingPeriodRepository.sumWhere('amount', [...org, ['status', '==', 'OVERDUE']]),
-      billingPeriodRepository.sumWhere('amount', [
-        ...org,
-        ['status', '==', 'PAID'],
-        ['paidAt', '>=', monthStart],
-        ['paidAt', '<', nextMonthStart],
-      ]),
-    ]);
+    const organizationId = requireOrganizationId(req);
+    const stats = await getOrganizationStats(organizationId);
 
     res.json({
-      clients: {
-        total: clientsTotal,
-      },
-      plans: {
-        total: plansTotal,
-        active: plansActive,
-      },
-      subscriptions: {
-        total: subscriptionsTotal,
-        active: subscriptionsActive,
-        suspended: subscriptionsSuspended,
-      },
-      billingPeriods: {
-        total: periodsTotal,
-        paid: periodsPaid,
-        pending: periodsPending,
-        overdue: periodsOverdue,
-      },
-      financial: {
-        monthlyIncome,
-        totalIncome,
-        totalPending,
-        totalOverdue,
-        totalDebt: totalPending + totalOverdue,
-      },
-      generatedAt: now,
+      clients: stats.clients,
+      plans: stats.plans,
+      subscriptions: stats.subscriptions,
+      billingPeriods: stats.billingPeriods,
+      financial: stats.financial,
+      generatedAt: stats.updatedAt,
     });
   } catch (err) {
     next(err);
@@ -95,7 +36,7 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 
 router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const org = orgFilters(organizationId);
     const now = new Date();
     const in7Days = new Date(now);
@@ -105,23 +46,28 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
       billingPeriodRepository.listWhere(
         [...org, ['endDate', '>', now], ['endDate', '<=', in7Days]],
-        { orderBy: 'endDate', direction: 'asc', limit: 200 }
+        { orderBy: 'endDate', direction: 'asc', limit: 50 }
       ),
       billingPeriodRepository.listWhere([...org, ['status', '==', 'OVERDUE']], {
-        limit: 500,
+        orderBy: 'endDate',
+        direction: 'asc',
+        limit: 100,
       }),
     ]);
 
-    const subscriptions = await subscriptionRepository.listByIds([
-      ...rawExpiring.map((p) => p.subscriptionId),
-      ...rawOverdue.map((p) => p.subscriptionId),
-    ]);
+    const subscriptions = await subscriptionRepository.listByIds(
+      [...rawExpiring.map((p) => p.subscriptionId), ...rawOverdue.map((p) => p.subscriptionId)],
+      organizationId
+    );
     const subsById = new Map<string, Subscription>(subscriptions.map((s) => [s.id, s]));
     const activeSubIds = new Set(
       subscriptions.filter((s) => s.status === 'ACTIVE').map((s) => s.id)
     );
 
-    const clients = await clientRepository.listByIds(subscriptions.map((s) => s.clientId));
+    const clients = await clientRepository.listByIds(
+      subscriptions.map((s) => s.clientId),
+      organizationId
+    );
     const clientsById = new Map<string, Client>(clients.map((c) => [c.id, c]));
 
     const expiringSoon = rawExpiring.filter(

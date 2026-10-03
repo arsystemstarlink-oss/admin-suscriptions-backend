@@ -6,9 +6,10 @@ import {
   planRepository,
 } from '../../infrastructure/repositories';
 import { CreateClientDto, UpdateClientDto } from '../dto';
+import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni } from '../../domain/business-rules';
-import { getAuth, getEffectiveOrganizationId, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
@@ -115,6 +116,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     await clientRepository.create(client);
+    scheduleStatsRecompute(organizationId);
     res.status(201).json(client);
   } catch (err) {
     next(err);
@@ -127,78 +129,67 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const include = req.query.include as string;
     const subscriptionStatus = req.query.subscriptionStatus as string;
     const hasOverdue = req.query.hasOverdue as string;
-    const limit = parseInt(req.query.limit as string) || 50;
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
     const offset = parseInt(req.query.offset as string) || 0;
-    const organizationId = getEffectiveOrganizationId(req);
+    const cursor = req.query.cursor as string | undefined;
+    const organizationId = requireOrganizationId(req);
 
-    let clients = await clientRepository.listByField('organizationId', organizationId, 500);
+    const shouldIncludeSubscriptions =
+      include === 'subscriptions' || Boolean(subscriptionStatus) || hasOverdue !== undefined;
 
     if (search) {
-      const searchLower = search.toLowerCase();
-      clients = clients.filter(
-        (c) =>
-          c.firstName.toLowerCase().includes(searchLower) ||
-          c.lastName.toLowerCase().includes(searchLower) ||
-          `${c.firstName} ${c.lastName}`.toLowerCase().includes(searchLower) ||
-          c.phone.includes(search) ||
-          c.dni?.toLowerCase().includes(searchLower) ||
-          c.email?.toLowerCase().includes(searchLower)
-      );
-    }
-
-    const shouldIncludeSubscriptions = include === 'subscriptions' || subscriptionStatus || hasOverdue;
-
-    const canUseServerSidePage = !search && !subscriptionStatus && hasOverdue === undefined;
-    if (canUseServerSidePage) {
-      const page = await clientRepository.listPage({
-        organizationId,
-        limit,
-        offset,
-        orderBy: 'createdAt',
-        direction: 'asc',
-        requireTotal: true,
-      });
-      const paginatedClients = shouldIncludeSubscriptions
-        ? await enrichClients(page.items, organizationId, include === 'subscriptions')
-        : page.items;
+      const matched = await clientRepository.searchBounded(organizationId, search, limit);
+      let clients: any[] = matched;
+      if (shouldIncludeSubscriptions) {
+        clients = await enrichClients(clients, organizationId, include === 'subscriptions');
+      }
+      if (subscriptionStatus) {
+        clients = clients.filter((c) => c.subscriptionStatus === subscriptionStatus);
+      }
+      if (hasOverdue !== undefined) {
+        const wantOverdue = hasOverdue === 'true';
+        clients = clients.filter((c) => c.hasDebt === wantOverdue);
+      }
+      const total = clients.length;
+      const paginated = clients.slice(offset, offset + limit);
       return res.json({
-        clients: paginatedClients,
-        pagination: {
-          total: page.total,
-          limit,
-          offset,
-          hasMore: page.hasMore,
-        },
+        clients: paginated,
+        pagination: { total, limit, offset, hasMore: offset + limit < total },
       });
     }
 
-    let enrichedClients: any[];
+    const page = await clientRepository.listPage({
+      organizationId,
+      limit,
+      offset,
+      cursor,
+      orderBy: 'createdAt',
+      direction: 'asc',
+      requireTotal: !cursor,
+    });
 
+    let pageClients: any[] = page.items;
     if (shouldIncludeSubscriptions) {
-      enrichedClients = await enrichClients(clients, organizationId, include === 'subscriptions');
-    } else {
-      enrichedClients = clients;
+      pageClients = await enrichClients(page.items, organizationId, include === 'subscriptions');
     }
 
     if (subscriptionStatus) {
-      enrichedClients = enrichedClients.filter((c) => c.subscriptionStatus === subscriptionStatus);
+      pageClients = pageClients.filter((c) => c.subscriptionStatus === subscriptionStatus);
     }
 
     if (hasOverdue !== undefined) {
       const wantOverdue = hasOverdue === 'true';
-      enrichedClients = enrichedClients.filter((c) => c.hasDebt === wantOverdue);
+      pageClients = pageClients.filter((c) => c.hasDebt === wantOverdue);
     }
 
-    const total = enrichedClients.length;
-    const paginatedClients = enrichedClients.slice(offset, offset + limit);
-
-    res.json({
-      clients: paginatedClients,
+    return res.json({
+      clients: pageClients,
       pagination: {
-        total,
+        total: page.total,
         limit,
         offset,
-        hasMore: offset + limit < total,
+        hasMore: page.hasMore,
+        nextCursor: page.nextCursor,
       },
     });
   } catch (err) {
@@ -208,7 +199,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const client = await clientRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!client) {
@@ -216,30 +207,39 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     const subscriptions = await subscriptionRepository.listByClientId(req.params.id, organizationId);
-    
-    const subscriptionsWithDetails = await Promise.all(
-      subscriptions.map(async (sub: any) => {
-        const [plan, periods] = await Promise.all([
-          planRepository.getByIdScoped(sub.planId, organizationId),
-          billingPeriodRepository.listBySubscriptionId(sub.id, organizationId),
-        ]);
-        const sortedPeriods = periods.sort((a: any, b: any) => b.startDate.getTime() - a.startDate.getTime());
-        const currentPeriod = sortedPeriods[0];
-        const overduePeriods = periods.filter((p: any) => p.status === 'OVERDUE');
-        const pendingPeriods = periods.filter((p: any) => p.status === 'PENDING');
-        const overdueCount = overduePeriods.length;
 
-        return {
-          ...sub,
-          plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
-          currentPeriod,
-          totalPeriods: periods.length,
-          overduePeriods: overdueCount,
-          pendingPeriods: pendingPeriods.length,
-          hasDebt: overdueCount > 0,
-        };
-      })
-    );
+    const [plans, allPeriods] = await Promise.all([
+      planRepository.listByIds(subscriptions.map((sub) => sub.planId), organizationId),
+      billingPeriodRepository.listBySubscriptionIds(subscriptions.map((sub) => sub.id), organizationId),
+    ]);
+
+    const plansById = new Map(plans.map((plan) => [plan.id, plan]));
+    const periodsBySubscriptionId = new Map<string, any[]>();
+    for (const period of allPeriods) {
+      const list = periodsBySubscriptionId.get(period.subscriptionId) || [];
+      list.push(period);
+      periodsBySubscriptionId.set(period.subscriptionId, list);
+    }
+
+    const subscriptionsWithDetails = subscriptions.map((sub) => {
+      const plan = plansById.get(sub.planId);
+      const periods = (periodsBySubscriptionId.get(sub.id) || []).slice();
+      periods.sort((a, b) => b.startDate.getTime() - a.startDate.getTime());
+      const currentPeriod = periods[0];
+      const overduePeriods = periods.filter((p) => p.status === 'OVERDUE');
+      const pendingPeriods = periods.filter((p) => p.status === 'PENDING');
+      const overdueCount = overduePeriods.length;
+
+      return {
+        ...sub,
+        plan: plan ? { id: plan.id, name: plan.name, price: plan.price } : null,
+        currentPeriod,
+        totalPeriods: periods.length,
+        overduePeriods: overdueCount,
+        pendingPeriods: pendingPeriods.length,
+        hasDebt: overdueCount > 0,
+      };
+    });
 
     const totalOverdue = subscriptionsWithDetails.reduce((sum, s) => sum + s.overduePeriods, 0);
 
@@ -262,7 +262,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: UpdateClientDto = req.body;
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await clientRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
@@ -292,6 +292,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     await clientRepository.update(updated);
+    scheduleStatsRecompute(organizationId);
     res.json(updated);
   } catch (err) {
     next(err);
@@ -300,7 +301,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = getEffectiveOrganizationId(req);
+    const organizationId = requireOrganizationId(req);
     const existing = await clientRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!existing) {
@@ -318,6 +319,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     await clientRepository.delete(req.params.id);
+    scheduleStatsRecompute(organizationId);
     res.status(204).send();
   } catch (err) {
     next(err);

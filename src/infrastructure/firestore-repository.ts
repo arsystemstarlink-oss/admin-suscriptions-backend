@@ -1,6 +1,13 @@
 import { getFirestore, admin } from './firebase';
 import { Identifiable } from '../domain/in-memory-repository';
-import { getRequestContext } from '../api/middleware/request-id';
+import { BusinessError } from '../domain/entities';
+import {
+  getRequestContext,
+  recordAggregation,
+  recordDocReads,
+  recordQuery,
+  recordWrite,
+} from '../api/middleware/request-id';
 
 export type QueryFilter = [
   field: string | FirebaseFirestore.FieldPath,
@@ -16,10 +23,13 @@ export interface ListQueryOptions {
 
 export interface ListPageParams {
   organizationId?: string;
+  filters?: QueryFilter[];
   orderBy?: string;
   direction?: 'asc' | 'desc';
   limit: number;
-  offset: number;
+  /** @deprecated usar cursor. Firestore factura los documentos saltados. */
+  offset?: number;
+  cursor?: string;
   requireTotal?: boolean;
 }
 
@@ -29,6 +39,39 @@ export interface ListPageResult<T> {
   limit: number;
   offset: number;
   hasMore: boolean;
+  nextCursor?: string;
+}
+
+export function encodeCursor(values: any[], id: string): string {
+  const normalize = (value: any): any => {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    if (value && typeof value.toDate === 'function') {
+      return value.toDate().toISOString();
+    }
+    return value;
+  };
+  const normalized = values.map(normalize);
+  return Buffer.from(JSON.stringify({ v: normalized, id }), 'utf8').toString('base64url');
+}
+
+export function decodeCursor(cursor: string): { values: any[]; id: string } | undefined {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+    if (!parsed || typeof parsed.id !== 'string' || !Array.isArray(parsed.v)) {
+      return undefined;
+    }
+    const values = parsed.v.map((value: any) => {
+      if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(value)) {
+        return new Date(value);
+      }
+      return value;
+    });
+    return { values, id: parsed.id };
+  } catch {
+    return undefined;
+  }
 }
 
 export class FirestoreRepository<T extends Identifiable> {
@@ -86,18 +129,21 @@ export class FirestoreRepository<T extends Identifiable> {
 
   async create(entity: T): Promise<void> {
     this.logOperation('WRITE', entity.id);
+    recordWrite();
     const docRef = this.db.collection(this.collectionName).doc(entity.id);
     await docRef.set(this.serialize(entity));
   }
 
   async update(entity: T): Promise<void> {
     this.logOperation('WRITE', entity.id);
+    recordWrite();
     const docRef = this.db.collection(this.collectionName).doc(entity.id);
     await docRef.update(this.serialize(entity));
   }
 
   async getById(id: string): Promise<T | undefined> {
     this.logOperation('READ', id);
+    recordDocReads();
     const docRef = this.db.collection(this.collectionName).doc(id);
     const doc = await docRef.get();
 
@@ -111,12 +157,17 @@ export class FirestoreRepository<T extends Identifiable> {
   async list(): Promise<T[]> {
     this.logOperation('LIST');
     const snapshot = await this.db.collection(this.collectionName).get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
-  async listByOrganization(organizationId?: string): Promise<T[]> {
+  async listByOrganization(organizationId: string): Promise<T[]> {
     if (!organizationId) {
-      return this.list();
+      throw new BusinessError(
+        'INVALID_QUERY',
+        `listByOrganization requiere organizationId (${this.collectionName}).`
+      );
     }
     return this.listByField('organizationId', organizationId);
   }
@@ -129,35 +180,62 @@ export class FirestoreRepository<T extends Identifiable> {
       query = query.where('organizationId', '==', params.organizationId);
     }
 
+    for (const [field, op, value] of params.filters ?? []) {
+      if (value === undefined) continue;
+      query = query.where(field as any, op, value);
+    }
+
     const orderByField = params.orderBy || 'createdAt';
     const direction: FirebaseFirestore.OrderByDirection = params.direction === 'asc' ? 'asc' : 'desc';
-    query = query.orderBy(orderByField, direction).offset(params.offset).limit(params.limit);
+    query = query
+      .orderBy(orderByField, direction)
+      .orderBy(admin.firestore.FieldPath.documentId(), direction);
 
-    const snapshot = await query.get();
-    const items = snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+    const decoded = params.cursor ? decodeCursor(params.cursor) : undefined;
+    if (decoded && decoded.values.length > 0) {
+      query = query.startAfter(...decoded.values, decoded.id);
+    } else if (params.offset) {
+      query = query.offset(params.offset);
+    }
+
+    const fetchLimit = params.limit + 1;
+    const snapshot = await query.limit(fetchLimit).get();
+    recordQuery();
+    recordDocReads(snapshot.size);
+
+    const hasExtra = snapshot.docs.length > params.limit;
+    const docs = hasExtra ? snapshot.docs.slice(0, params.limit) : snapshot.docs;
+    const items = docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
 
     let total: number | undefined;
-    let hasMore = false;
-
     if (params.requireTotal) {
       this.logOperation('COUNT');
-      const countSnapshot = await this.buildQuery(
-        params.organizationId ? [['organizationId', '==', params.organizationId]] : []
-      )
+      const countSnapshot = await this.buildQuery([
+        ...(params.organizationId ? [['organizationId', '==', params.organizationId] as QueryFilter] : []),
+        ...(params.filters ?? []),
+      ])
         .count()
         .get();
+      recordAggregation();
       total = countSnapshot.data().count;
-      hasMore = params.offset + items.length < total;
-    } else {
-      hasMore = items.length >= params.limit;
     }
+
+    const lastDoc = docs[docs.length - 1];
+    const nextCursor =
+      hasExtra && lastDoc ? encodeCursor([lastDoc.get(orderByField)], lastDoc.id) : undefined;
+
+    const hasMore =
+      total !== undefined && !decoded
+        ? (params.offset ?? 0) + items.length < total
+        : hasExtra;
 
     return {
       items,
       total,
       limit: params.limit,
-      offset: params.offset,
+      offset: params.offset ?? 0,
       hasMore,
+      nextCursor,
     };
   }
 
@@ -174,19 +252,25 @@ export class FirestoreRepository<T extends Identifiable> {
 
   async delete(id: string): Promise<void> {
     this.logOperation('DELETE', id);
+    recordWrite();
     await this.db.collection(this.collectionName).doc(id).delete();
   }
 
   async listByField(field: string, value: any, limit?: number): Promise<T[]> {
     this.logOperation('QUERY');
     if (value === undefined) {
-      return this.list();
+      throw new BusinessError(
+        'INVALID_QUERY',
+        `listByField requiere un valor definido para "${field}" (${this.collectionName}).`
+      );
     }
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName).where(field, '==', value);
     if (limit) {
       query = query.limit(limit);
     }
     const snapshot = await query.get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
@@ -194,7 +278,10 @@ export class FirestoreRepository<T extends Identifiable> {
     this.logOperation('QUERY');
     const validFields = fields.filter(([, value]) => value !== undefined);
     if (validFields.length === 0) {
-      return this.list();
+      throw new BusinessError(
+        'INVALID_QUERY',
+        `listByFields requiere al menos un filtro definido (${this.collectionName}).`
+      );
     }
     let query: FirebaseFirestore.Query = this.db.collection(this.collectionName);
     validFields.forEach(([field, value]) => {
@@ -206,6 +293,8 @@ export class FirestoreRepository<T extends Identifiable> {
     }
 
     const snapshot = await query.get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
@@ -221,6 +310,7 @@ export class FirestoreRepository<T extends Identifiable> {
   async countWhere(filters: QueryFilter[]): Promise<number> {
     this.logOperation('COUNT');
     const snapshot = await this.buildQuery(filters).count().get();
+    recordAggregation();
     return snapshot.data().count;
   }
 
@@ -229,24 +319,31 @@ export class FirestoreRepository<T extends Identifiable> {
     const snapshot = await this.buildQuery(filters)
       .aggregate({ total: admin.firestore.AggregateField.sum(field) })
       .get();
+    recordAggregation();
     const total = snapshot.data().total;
     return typeof total === 'number' ? total : 0;
   }
 
   async listWhere(filters: QueryFilter[], options: ListQueryOptions = {}): Promise<T[]> {
     this.logOperation('QUERY');
+    if (!options.limit) {
+      throw new BusinessError(
+        'INVALID_QUERY',
+        `listWhere requiere un límite explícito (${this.collectionName}).`
+      );
+    }
     let query = this.buildQuery(filters);
     if (options.orderBy) {
       query = query.orderBy(options.orderBy, options.direction === 'asc' ? 'asc' : 'desc');
     }
-    if (options.limit) {
-      query = query.limit(options.limit);
-    }
+    query = query.limit(options.limit);
     const snapshot = await query.get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
-  async listByIds(ids: string[]): Promise<T[]> {
+  async listByIds(ids: string[], organizationId?: string): Promise<T[]> {
     const unique = [...new Set(ids.filter(Boolean))];
     if (unique.length === 0) {
       return [];
@@ -262,11 +359,16 @@ export class FirestoreRepository<T extends Identifiable> {
         .collection(this.collectionName)
         .where(admin.firestore.FieldPath.documentId(), 'in', chunk)
         .get();
+      recordQuery();
+      recordDocReads(snapshot.size);
       snapshot.docs.forEach((doc) =>
         results.push(this.deserialize({ id: doc.id, ...doc.data() }))
       );
     }
 
+    if (organizationId) {
+      return results.filter((item) => (item as any).organizationId === organizationId);
+    }
     return results;
   }
 
@@ -278,6 +380,8 @@ export class FirestoreRepository<T extends Identifiable> {
       .collection(this.collectionName)
       .where(field, '==', value)
       .get();
+    recordQuery();
+    recordDocReads(snapshot.size);
 
     await this.deleteSnapshotInChunks(snapshot);
     return snapshot.size;
@@ -294,6 +398,8 @@ export class FirestoreRepository<T extends Identifiable> {
     });
 
     const snapshot = await query.get();
+    recordQuery();
+    recordDocReads(snapshot.size);
 
     await this.deleteSnapshotInChunks(snapshot);
     return snapshot.size;
@@ -310,6 +416,7 @@ export class FirestoreRepository<T extends Identifiable> {
         batch.delete(doc.ref);
       });
       await batch.commit();
+      recordWrite(chunk.length);
     }
   }
 }

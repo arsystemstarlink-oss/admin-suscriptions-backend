@@ -87,6 +87,7 @@ export interface Subscription {
   radarRank?: number;
   pendingPeriods?: number;
   overduePeriods?: number;
+  overdueAmount?: number;
   hasDebt?: boolean;
   nearestPendingDate?: Date | null;
   closestOverdueDate?: Date | null;
@@ -103,6 +104,8 @@ export interface BillingPeriod {
   id: string;
   organizationId: string;
   subscriptionId: string;
+  clientId?: string;
+  planId?: string;
   periodLabel: string;
   startDate: Date;
   endDate: Date;
@@ -133,8 +136,23 @@ export interface PaymentReport {
   reviewNotes?: string;
 }
 
-export interface SchedulerConfig {
-  id: string;
+export interface OrganizationStats {
+  organizationId: string;
+  clients: { total: number };
+  plans: { total: number; active: number };
+  subscriptions: { total: number; active: number; suspended: number };
+  billingPeriods: { total: number; paid: number; pending: number; overdue: number };
+  financial: {
+    monthlyIncome: number;
+    totalIncome: number;
+    totalPending: number;
+    totalOverdue: number;
+    totalDebt: number;
+  };
+  updatedAt: Date;
+}
+
+export interface SchedulerConfig {  id: string;
   enabled: boolean;
   cronSchedule: string;
   lastRun?: Date;

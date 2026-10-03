@@ -169,9 +169,20 @@ async function main(): Promise<void> {
   if (allFromB) ok('super-admin ve SOLO suscripciones de org_B');
   else fail('super-admin recibió datos fuera de org_B');
 
-  log('10. SUPER-ADMIN sin filtro (todas)');
+  log('10. SUPER-ADMIN sin filtro (ahora debe fallar: organizationId obligatorio)');
   const allSubs = await request('GET', '/subscriptions', undefined, superToken);
-  expectStatus(allSubs.status, 200, 'GET /subscriptions (super-admin sin filtro)');
+  expectStatus(allSubs.status, 400, 'GET /subscriptions (super-admin sin filtro)');
+  if (allSubs.status === 400) ok(`Código: ${allSubs.data?.error?.code}`);
+
+  const summaryNoOrg = await request('GET', '/dashboard/summary', undefined, superToken);
+  expectStatus(summaryNoOrg.status, 400, 'GET /dashboard/summary (super-admin sin filtro)');
+
+  const clientsNoOrg = await request('GET', '/clients', undefined, superToken);
+  expectStatus(clientsNoOrg.status, 400, 'GET /clients (super-admin sin filtro)');
+
+  log('10b. SUPER-ADMIN con organizationId opera solo sobre esa org');
+  const summaryOrgA = await request('GET', `/dashboard/summary?organizationId=${orgA}`, undefined, superToken);
+  expectStatus(summaryOrgA.status, 200, 'GET /dashboard/summary?organizationId=org_A (super-admin)');
 
   log('11. admin_A1 GET /subscriptions/:id de client_B (directo)');
   const clientBDetail = await request('GET', `/clients/${clientB}`, undefined, adminAToken);

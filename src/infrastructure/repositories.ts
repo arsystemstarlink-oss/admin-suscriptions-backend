@@ -1,7 +1,14 @@
-import { FirestoreRepository, QueryFilter } from './firestore-repository';
+import { FirestoreRepository, QueryFilter, decodeCursor, encodeCursor } from './firestore-repository';
 import { getFirestore, admin } from './firebase';
-import { createId } from '../domain/business-rules';
+import { createId, normalizeDni } from '../domain/business-rules';
 import {
+  recordAggregation,
+  recordDocReads,
+  recordQuery,
+  recordWrite,
+} from '../api/middleware/request-id';
+import {
+  BusinessError,
   Client,
   Plan,
   Subscription,
@@ -104,6 +111,68 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
       ['dni', dni],
     ]);
   }
+
+  async searchBounded(organizationId: string, term: string, limit: number): Promise<Client[]> {
+    if (!organizationId) {
+      throw new BusinessError('INVALID_QUERY', 'searchBounded requiere organizationId.');
+    }
+    const trimmed = term.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const results = new Map<string, Client>();
+    const push = (items: Client[]) => items.forEach((item) => results.set(item.id, item));
+
+    const dni = normalizeDni(trimmed);
+    const exactQueries: Array<Promise<Client[]>> = [
+      this.listByFields(
+        [
+          ['organizationId', organizationId],
+          ['phone', trimmed],
+        ],
+        limit
+      ).catch(() => [] as Client[]),
+    ];
+    if (dni) {
+      exactQueries.push(
+        this.listByFields(
+          [
+            ['organizationId', organizationId],
+            ['dni', dni],
+          ],
+          limit
+        ).catch(() => [] as Client[])
+      );
+    }
+    for (const items of await Promise.all(exactQueries)) {
+      push(items);
+    }
+
+    if (results.size < limit) {
+      const upper = `${trimmed}\uf8ff`;
+      const prefix = async (field: 'firstName' | 'lastName'): Promise<Client[]> => {
+        const snapshot = await this.db
+          .collection(this.collectionName)
+          .where('organizationId', '==', organizationId)
+          .where(field, '>=', trimmed)
+          .where(field, '<=', upper)
+          .orderBy(field)
+          .limit(limit)
+          .get();
+        recordQuery();
+        recordDocReads(snapshot.size);
+        return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+      };
+      const prefixResults = await Promise.all([prefix('firstName'), prefix('lastName')]);
+      for (const items of prefixResults) {
+        if (results.size >= limit) break;
+        push(items);
+      }
+    }
+
+    return [...results.values()].slice(0, limit);
+  }
 }
 
 export class PlanFirestoreRepository extends FirestoreRepository<Plan> {
@@ -152,6 +221,8 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
         filters.unshift(['organizationId', '==', organizationId]);
       }
       const snapshot = await this.buildQuery(filters).get();
+      recordQuery();
+      recordDocReads(snapshot.size);
       snapshot.docs.forEach((doc) =>
         results.push(this.deserialize({ id: doc.id, ...doc.data() }))
       );
@@ -159,39 +230,88 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     return results;
   }
 
+  async searchByKitNumberBounded(
+    organizationId: string,
+    term: string,
+    limit: number
+  ): Promise<Subscription[]> {
+    const trimmed = term.trim().toUpperCase();
+    if (!trimmed) {
+      return [];
+    }
+    const snapshot = await this.db
+      .collection(this.collectionName)
+      .where('organizationId', '==', organizationId)
+      .where('kitNumber', '>=', trimmed)
+      .where('kitNumber', '<=', `${trimmed}\uf8ff`)
+      .orderBy('kitNumber')
+      .limit(limit)
+      .get();
+    recordQuery();
+    recordDocReads(snapshot.size);
+    return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+  }
+
   async listRadarPage(params: {
     organizationId: string;
-    status: 'ACTIVE' | 'SUSPENDED';
+    status?: 'ACTIVE' | 'SUSPENDED';
+    clientId?: string;
+    hasDebt?: boolean;
     limit: number;
-    offset: number;
+    offset?: number;
+    cursor?: string;
     requireTotal?: boolean;
-  }): Promise<{ items: Subscription[]; total?: number; hasMore: boolean }> {
-    const filters: QueryFilter[] = [
-      ['organizationId', '==', params.organizationId],
-      ['status', '==', params.status],
-    ];
+  }): Promise<{ items: Subscription[]; total?: number; hasMore: boolean; nextCursor?: string }> {
+    const filters: QueryFilter[] = [['organizationId', '==', params.organizationId]];
+    if (params.status) {
+      filters.push(['status', '==', params.status]);
+    }
+    if (params.clientId) {
+      filters.push(['clientId', '==', params.clientId]);
+    }
+    if (params.hasDebt !== undefined) {
+      filters.push(['hasDebt', '==', params.hasDebt]);
+    }
 
-    const snapshot = await this.buildQuery(filters)
-      .orderBy('radarRank', 'asc')
-      .orderBy('nearestPendingDate', 'asc')
-      .orderBy('closestOverdueDate', 'desc')
-      .orderBy('createdAt', 'desc')
-      .offset(params.offset)
-      .limit(params.limit)
-      .get();
+    const orderByFields = ['createdAt'];
+    let query = this.buildQuery(filters)
+      .orderBy(orderByFields[0], 'desc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
 
-    const items = snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
+    const decoded = params.cursor ? decodeCursor(params.cursor) : undefined;
+    if (decoded && decoded.values.length === orderByFields.length) {
+      query = query.startAfter(...decoded.values, decoded.id) as any;
+    } else if (params.offset) {
+      query = query.offset(params.offset) as any;
+    }
+
+    const snapshot = await (query as FirebaseFirestore.Query).limit(params.limit + 1).get();
+    recordQuery();
+    recordDocReads(snapshot.size);
+
+    const hasExtra = snapshot.docs.length > params.limit;
+    const docs = hasExtra ? snapshot.docs.slice(0, params.limit) : snapshot.docs;
+    const items = docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
 
     let total: number | undefined;
     if (params.requireTotal) {
       const countSnapshot = await this.buildQuery(filters).count().get();
+      recordAggregation();
       total = countSnapshot.data().count;
     }
 
-    const hasMore =
-      total !== undefined ? params.offset + items.length < total : items.length >= params.limit;
+    const lastDoc = docs[docs.length - 1];
+    const nextCursor =
+      hasExtra && lastDoc
+        ? encodeCursor(orderByFields.map((field) => lastDoc.get(field)), lastDoc.id)
+        : undefined;
 
-    return { items, total, hasMore };
+    const hasMore =
+      total !== undefined && !decoded
+        ? (params.offset ?? 0) + items.length < total
+        : hasExtra;
+
+    return { items, total, hasMore, nextCursor };
   }
 }
 
@@ -208,6 +328,19 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
       ['organizationId', organizationId],
       ['subscriptionId', subscriptionId],
     ]);
+  }
+
+  async listByOrganizationAndStatus(
+    organizationId: string,
+    status: BillingPeriod['status']
+  ): Promise<BillingPeriod[]> {
+    return this.listWhere(
+      [
+        ['organizationId', '==', organizationId],
+        ['status', '==', status],
+      ],
+      { limit: 5000 }
+    );
   }
 
   async deleteBySubscriptionId(subscriptionId: string, organizationId?: string): Promise<number> {
@@ -238,6 +371,8 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
         filters.unshift(['organizationId', '==', organizationId]);
       }
       const snapshot = await this.buildQuery(filters).get();
+      recordQuery();
+      recordDocReads(snapshot.size);
       snapshot.docs.forEach((doc) =>
         results.push(this.deserialize({ id: doc.id, ...doc.data() }))
       );
@@ -275,6 +410,8 @@ export class RefreshTokenSessionFirestoreRepository extends FirestoreRepository<
       .collection(this.collectionName)
       .where('userId', '==', userId)
       .get();
+    recordQuery();
+    recordDocReads(snapshot.size);
 
     const now = new Date();
     const batch = this.db.batch();
@@ -283,6 +420,7 @@ export class RefreshTokenSessionFirestoreRepository extends FirestoreRepository<
     });
 
     await batch.commit();
+    recordWrite(snapshot.size);
     return snapshot.size;
   }
 }
@@ -331,6 +469,8 @@ export class SchedulerLogFirestoreRepository extends FirestoreRepository<Schedul
       .orderBy('startedAt', 'desc')
       .limit(limit)
       .get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
@@ -364,6 +504,43 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     ]);
   }
 
+  async listByPhonePage(params: {
+    organizationId: string;
+    phone: string;
+    limit: number;
+    offset?: number;
+    cursor?: string;
+  }): Promise<{ items: WhatsAppMessage[]; hasMore: boolean; nextCursor?: string }> {
+    const filters: QueryFilter[] = [
+      ['organizationId', '==', params.organizationId],
+      ['phone', '==', params.phone],
+    ];
+    let query = this.buildQuery(filters)
+      .orderBy('createdAt', 'desc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
+
+    const decoded = params.cursor ? decodeCursor(params.cursor) : undefined;
+    if (decoded && decoded.values.length > 0) {
+      query = query.startAfter(...decoded.values, decoded.id);
+    } else if (params.offset) {
+      query = query.offset(params.offset);
+    }
+
+    const snapshot = await query.limit(params.limit + 1).get();
+    recordQuery();
+    recordDocReads(snapshot.size);
+
+    const hasExtra = snapshot.docs.length > params.limit;
+    const docs = hasExtra ? snapshot.docs.slice(0, params.limit) : snapshot.docs;
+    const lastDoc = docs[docs.length - 1];
+    return {
+      items: docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() })),
+      hasMore: hasExtra,
+      nextCursor:
+        hasExtra && lastDoc ? encodeCursor([lastDoc.get('createdAt')], lastDoc.id) : undefined,
+    };
+  }
+
   async deleteByPhone(phone: string, organizationId?: string): Promise<number> {
     if (!organizationId) {
       return this.deleteByField('phone', phone);
@@ -380,21 +557,18 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
   }
 
   async updateStatusByMessageSid(
-    messageSid: string,
+    message: WhatsAppMessage,
     status: MessageStatus,
     errorMessage?: string
   ): Promise<void> {
-    const results = await this.listByField('messageSid', messageSid);
-    for (const message of results) {
-      await this.update({
-        ...message,
-        status,
-        ...(errorMessage ? { errorMessage } : {}),
-      });
-    }
+    await this.update({
+      ...message,
+      status,
+      ...(errorMessage ? { errorMessage } : {}),
+    });
   }
 
-  async listConversations(organizationId?: string): Promise<WhatsAppConversation[]> {
+  async listConversations(organizationId: string): Promise<WhatsAppConversation[]> {
     const messages = await this.listByOrganization(organizationId);
 
     const byPhone = new Map<string, WhatsAppConversation>();
@@ -505,6 +679,8 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
       .orderBy('updatedAt', 'desc')
       .limit(this.maxConversations)
       .get();
+    recordQuery();
+    recordDocReads(snapshot.size);
     const items = snapshot.docs.map((doc) => this.toRecord(doc.data(), doc.id));
     this.sortByLastMessage(items);
     this.cache.set(key, { items, loadedAt: Date.now() });
@@ -517,6 +693,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     const now = new Date();
 
     const record = await this.db.runTransaction(async (tx) => {
+      recordDocReads();
       const doc = await tx.get(docRef);
       const incomingAt = toDate(message.createdAt)?.getTime() ?? now.getTime();
 
@@ -532,6 +709,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
           createdAt: now,
           updatedAt: now,
         };
+        recordWrite();
         tx.set(docRef, this.serialize(created));
         return created;
       }
@@ -548,6 +726,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
         messageCount: existing.messageCount + 1,
         updatedAt: existing.updatedAt.getTime() >= now.getTime() ? existing.updatedAt : now,
       };
+      recordWrite();
       tx.set(docRef, this.serialize(updated));
       return updated;
     });
@@ -564,6 +743,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
   ): Promise<void> {
     const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
     const docRef = this.db.collection(this.collectionName).doc(id);
+    recordDocReads();
     const doc = await docRef.get();
     if (!doc.exists) {
       return;
@@ -581,12 +761,14 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     };
     record.updatedAt = new Date();
 
+    recordWrite();
     await docRef.set(this.serialize(record));
     this.upsertInCaches(record);
   }
 
   async deleteByPhone(organizationId: string, phone: string): Promise<void> {
     const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    recordWrite();
     await this.db.collection(this.collectionName).doc(id).delete();
     this.removeFromCaches(organizationId, phone);
   }
@@ -695,6 +877,7 @@ export class JobLockFirestoreRepository {
 
     try {
       await this.db.runTransaction(async (tx) => {
+        recordDocReads();
         const doc = await tx.get(lockRef);
         if (doc.exists) {
           const data = doc.data() as { expiresAt?: number } | undefined;
@@ -702,6 +885,7 @@ export class JobLockFirestoreRepository {
             throw new Error('JOB_LOCKED');
           }
         }
+        recordWrite();
         tx.set(lockRef, { instanceId, lockedAt: now, expiresAt: now + ttlMs });
       });
       return true;
@@ -715,8 +899,10 @@ export class JobLockFirestoreRepository {
 
   async release(organizationId: string, instanceId: string): Promise<void> {
     const lockRef = this.db.collection(this.collectionName).doc(organizationId);
+    recordDocReads();
     const doc = await lockRef.get();
     if (doc.exists && doc.data()?.instanceId === instanceId) {
+      recordWrite();
       await lockRef.delete();
     }
   }

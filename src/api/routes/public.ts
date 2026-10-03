@@ -109,7 +109,7 @@ router.post('/org/:slug/lookup', async (req: Request, res: Response, next: NextF
       allReports.filter((r) => r.status === 'PENDING').map((r) => r.billingPeriodId)
     );
 
-    const plans = await planRepository.listByIds(subscriptions.map((s) => s.planId));
+    const plans = await planRepository.listByIds(subscriptions.map((s) => s.planId), org.id);
     const plansById = new Map(plans.map((p) => [p.id, p]));
 
     const publicPeriods = allPeriods

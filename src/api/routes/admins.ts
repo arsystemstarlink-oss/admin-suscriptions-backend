@@ -8,7 +8,7 @@ import { authService } from '../../domain/auth-service';
 import { BusinessError, User, UserRole } from '../../domain/entities';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { AuthenticatedRequest } from '../middleware/auth';
-import { getAuth, getEffectiveOrganizationId } from '../middleware/tenant';
+import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 import {
   EMAIL_REGEX,
@@ -24,17 +24,18 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const search = req.query.search as string;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
-    const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
+    const cursor = req.query.cursor as string | undefined;
+    const organizationId = requireOrganizationId(req);
 
     if (!search) {
         const page = await userRepository.listPage({
           organizationId,
           limit,
           offset,
+          cursor,
           orderBy: 'createdAt',
           direction: 'asc',
-          requireTotal: true,
+          requireTotal: !cursor,
         });
       return res.json({
         admins: page.items.map(toUserDto),
@@ -43,16 +44,12 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           limit,
           offset,
           hasMore: page.hasMore,
+          nextCursor: page.nextCursor,
         },
       });
     }
 
-    let admins: User[];
-    if (isSuperAdmin(auth) && !organizationId) {
-      admins = await userRepository.list();
-    } else {
-      admins = await userRepository.listByOrganization(organizationId || auth.organizationId || '');
-    }
+    let admins: User[] = await userRepository.listByOrganization(organizationId);
 
     if (search) {
       const searchLower = search.toLowerCase();
@@ -86,8 +83,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = getAuth(req);
-    const organizationId = getEffectiveOrganizationId(req);
-    const user = await userRepository.getByIdScoped(req.params.id, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
+    const organizationId = requireOrganizationId(req);
+    const user = await userRepository.getByIdScoped(req.params.id, organizationId);
 
     if (!user) {
       throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
@@ -251,13 +248,14 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     const targetId = req.params.id;
     const actor = getAuth(req);
     const actorId = actor.userId;
+    const organizationId = requireOrganizationId(req);
 
     if (targetId === actorId) {
       throw new BusinessError('CANNOT_DELETE_SELF', 'No puedes eliminar tu propio usuario.');
     }
 
     const user = await userRepository.getById(targetId);
-    if (!user) {
+    if (!user || user.organizationId !== organizationId) {
       throw new BusinessError('NOT_FOUND', 'Administrador no encontrado.');
     }
 
@@ -272,14 +270,8 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
       throw new BusinessError('FORBIDDEN', 'No puedes eliminar otro super-admin.');
     }
 
-    let adminCount: number;
-    if (isSuperAdmin(actor)) {
-      const allAdmins = await userRepository.list();
-      adminCount = allAdmins.filter((u) => u.role === 'admin').length;
-    } else {
-      const orgAdmins = await userRepository.listByOrganization(actor.organizationId || '');
-      adminCount = orgAdmins.filter((u) => u.role === 'admin').length;
-    }
+    const orgAdmins = await userRepository.listByOrganization(organizationId);
+    const adminCount = orgAdmins.filter((u) => u.role === 'admin').length;
 
     if (adminCount <= 1) {
       throw new BusinessError('LAST_ADMIN', 'No se puede eliminar el único administrador del sistema.');

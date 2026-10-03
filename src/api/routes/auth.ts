@@ -314,8 +314,8 @@ router.post('/setup', async (req: Request, res: Response, next: NextFunction) =>
       throw new BusinessError('INVALID_SETUP_KEY', 'Clave de setup inválida.');
     }
 
-    const existingAdmins = await userRepository.list();
-    if (existingAdmins.length > 0) {
+    const existingAdmins = await userRepository.countWhere([]);
+    if (existingAdmins > 0) {
       throw new BusinessError('SETUP_DISABLED', 'Ya existe un administrador. Usa POST /auth/register.');
     }
 

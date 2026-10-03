@@ -14,6 +14,10 @@
     "migrate:tenant": "ts-node scripts/migrate-tenant.ts",
     "backfill:conversations": "ts-node scripts/backfill-conversations.ts",
     "backfill:radar": "ts-node scripts/backfill-subscription-radar.ts",
+    "backfill:billing-periods": "ts-node scripts/backfill-billing-period-fields.ts",
+    "rebuild:stats": "ts-node scripts/rebuild-stats.ts",
+    "verify:backfills": "ts-node scripts/verify-backfills.ts",
+    "measure:endpoints": "ts-node scripts/measure-endpoints.ts",
     "test:endpoints": "ts-node scripts/test-endpoints.ts",
     "smoke:tenant": "ts-node scripts/smoke-tenant.ts"
   },

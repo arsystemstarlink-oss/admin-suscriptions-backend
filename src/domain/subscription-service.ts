@@ -91,7 +91,7 @@ export class SubscriptionBusinessService {
         payments,
         subscription.maxOverduePeriods,
         new Date()
-      );
+      ).map((period) => ({ ...period, clientId, planId: plan.id }));
       subscription.status = this.evaluateInitialSubscriptionStatus(subscription, billingPeriods);
     } else {
       const { startDate, endDate, periodLabel } = getBillingPeriodRange(registrationDate, billingDay);
@@ -100,6 +100,8 @@ export class SubscriptionBusinessService {
         id: createId(),
         organizationId,
         subscriptionId: subscription.id,
+        clientId,
+        planId: plan.id,
         periodLabel,
         startDate,
         endDate,
@@ -307,6 +309,8 @@ export class SubscriptionBusinessService {
       id: createId(),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
+      clientId: subscription.clientId,
+      planId: plan.id,
       periodLabel: buildPeriodLabel(nextStartDate, nextEndDate),
       startDate: nextStartDate,
       endDate: nextEndDate,
@@ -350,6 +354,8 @@ export class SubscriptionBusinessService {
       id: createId(),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
+      clientId: subscription.clientId,
+      planId: plan.id,
       periodLabel: buildPeriodLabel(nextStartDate, nextEndDate),
       startDate: nextStartDate,
       endDate: nextEndDate,
@@ -379,6 +385,8 @@ export class SubscriptionBusinessService {
       id: createId(),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
+      clientId: subscription.clientId,
+      planId: plan.id,
       periodLabel,
       startDate,
       endDate,

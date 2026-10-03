@@ -131,8 +131,8 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
         );
       }
 
-      const allAdmins = await userRepository.list();
-      const validAdminIds = allAdmins.filter((u) => u.role === 'admin').map((u) => u.id);
+      const targetAdmins = await userRepository.listByIds(adminIds);
+      const validAdminIds = targetAdmins.filter((u) => u.role === 'admin').map((u) => u.id);
       const targets = adminIds.filter((id: string) => validAdminIds.includes(id));
 
       sent = await pushService.sendToAdmins(targets, { title, body, data });
