@@ -41,8 +41,24 @@ try {
 }
 
 app.use(helmet());
+const rawCorsOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+// La libreria cors interpreta un arreglo como lista literal de origenes:
+// ['*'] nunca coincide. Detectamos '*' y reflejamos el origen solicitado.
+const allowAllOrigins = rawCorsOrigins.includes('*');
+const allowedOrigins = rawCorsOrigins.filter((o) => o !== '*');
+
+if (allowAllOrigins) {
+  console.warn(
+    '[CORS] CORS_ORIGIN incluye "*": se refleja cualquier origen. En produccion configura dominios explicitos (ej: https://arsystem.org).'
+  );
+}
+console.log(`[CORS] Origenes permitidos: ${allowAllOrigins ? 'todos (reflect)' : allowedOrigins.join(', ')}`);
+
 app.use(cors({
-  origin: (process.env.CORS_ORIGIN || 'http://localhost:5173').split(',').map((o) => o.trim()).filter(Boolean),
+  origin: allowAllOrigins ? true : allowedOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
