@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { BusinessError } from '../../domain/entities';
 import { extractTwilioError } from '../../infrastructure/whatsapp-service';
-import { isFirestoreQuotaError } from '../../infrastructure/firestore-error';
+import { isFirestoreQuotaError, isFirestoreIndexError, getFirestoreIndexLink } from '../../infrastructure/firestore-error';
 
 const STATUS_BY_CODE: Record<string, number> = {
   UNAUTHORIZED: 401,
@@ -74,6 +74,18 @@ export function errorHandler(
       error: {
         code: 'DATABASE_UNAVAILABLE',
         message: 'La base de datos alcanzó su límite diario de uso. Intenta más tarde.',
+      },
+    });
+    return;
+  }
+
+  if (isFirestoreIndexError(err)) {
+    console.error('Firestore index missing:', err);
+    res.status(503).json({
+      error: {
+        code: 'DATABASE_INDEX_BUILDING',
+        message: 'La base de datos está creando un índice necesario. Reintenta en unos minutos o habilítalo con el enlace de Firebase.',
+        moreInfo: getFirestoreIndexLink(err),
       },
     });
     return;

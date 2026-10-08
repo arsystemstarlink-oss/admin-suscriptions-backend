@@ -9,12 +9,30 @@ export interface OrganizationTwilioConfig {
   enabled?: boolean;
 }
 
+export interface OrganizationWhatsAppRules {
+  reminderDaysBefore: number[];
+  dueDateWarningEnabled: boolean;
+  suspensionNoticeEnabled: boolean;
+}
+
+export interface OrganizationWhatsAppTemplates {
+  reminder?: string;
+  dueDateWarning?: string;
+  suspensionNotice?: string;
+}
+
+export interface OrganizationWhatsAppConfig {
+  rules: OrganizationWhatsAppRules;
+  templates: OrganizationWhatsAppTemplates;
+}
+
 export interface Organization {
   id: string;
   name: string;
   slug?: string;
   active: boolean;
   twilio?: OrganizationTwilioConfig;
+  whatsappNotifications?: OrganizationWhatsAppConfig;
   createdAt: Date;
   createdBy?: string;
 }

@@ -15,6 +15,7 @@ import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
+import { isFirestoreIndexError } from '../../infrastructure/firestore-error';
 
 const router = Router();
 
@@ -254,10 +255,13 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
 
     const page = await whatsappMessageRepository.listByPhonePage({
       organizationId,
-      phone,
+      phone: normalizePhoneNumber(phone),
       limit,
       offset,
       cursor,
+    }).catch((err) => {
+      if (isFirestoreIndexError(err)) console.error('[WhatsApp] Índice en construcción listByPhonePage:', (err as Error).message);
+      throw err;
     });
 
     res.json({

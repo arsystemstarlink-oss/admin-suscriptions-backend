@@ -1,117 +1,58 @@
 # WhatsApp Templates - Documentacion
 
-## Templates Disponibles
+## Configuración por organización
 
-### 1. Recordatorio de Pago (3 dias antes del vencimiento)
+Cada organización configura sus credenciales, Content SID y reglas desde
+`GET/PUT /api/whatsapp/config`. La configuración queda guardada en su documento de organización;
+el Auth Token nunca se devuelve en la respuesta (solo `authTokenConfigured`). El
+administrador solo puede modificar la configuración de su propia organización.
 
-**Nombre del Template:**
-```
-subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b
-```
+El scheduler es independiente: sigue ejecutando las reglas de suscripciones y pagos
+aunque Twilio esté deshabilitado o incompleto. En ese caso no se envía WhatsApp y
+`readiness` indica los requisitos pendientes.
 
-**Variables:**
-- `{1}` = Nombre del cliente (string)
-- `{2}` = Fecha de vencimiento (formato: YYYY-MM-DD)
+Configuración inicial del comportamiento:
 
-**Ejemplo de mensaje generado:**
-```
-Hola Adrianfer, te recordamos que tu suscripcion de Starlink vence el 2026-02-29. 📅
+- Recordatorio de pago: 3 días antes.
+- Aviso de vencimiento: habilitado para el día de corte.
+- Aviso de suspensión: habilitado al pasar de `ACTIVE` a `SUSPENDED`.
 
-Para evitar la suspension del servicio, te recomendamos realizar el pago antes de la fecha indicada.
+Estas reglas se pueden cambiar por organización. `reminderDaysBefore` acepta una
+lista de días entre 1 y 30; una lista vacía desactiva los recordatorios previos.
 
-Si ya realizaste el pago, por favor ignora este mensaje.
+### Plantillas disponibles
 
-A|R System
-> Este es un mensaje automatico de notificacion, no es necesario responder.
-```
+Los Content SID de las plantillas se configuran por organización; deben corresponder
+a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización.
 
-**Cuando se envia:**
-- Suscripcion `ACTIVE` + periodo `PENDING` o `PAID` + exactamente 3 dias antes del vencimiento
-- Tipo de notificacion: `reminder`
+#### Recordatorio de pago
 
----
+Variables: `{1}` nombre completo del cliente, `{2}` fecha de vencimiento (`YYYY-MM-DD`).
 
-### 2. Advertencia de Vencimiento (dia exacto del vencimiento)
+#### Aviso de vencimiento
 
-**Nombre del Template:**
-```
-subscription_suspension_warning_1day_2v_hxfcc8ae438db9df662a0e1f7d801e946b
-```
+Variables: `{1}` nombre completo, `{2}` kit, `{3}` fecha de vencimiento (`YYYY-MM-DD`).
 
-**Variables:**
-- `{1}` = Nombre del cliente (string)
-- `{2}` = Numero de KIT (string, ej: "KIT29JD9M291")
-- `{3}` = Fecha de vencimiento (formato: YYYY-MM-DD)
+#### Aviso de suspensión
 
-**Ejemplo de mensaje generado:**
-```
-Hola Adrianfer, te informamos que tu suscripcion de Starlink KIT29JD9M291 vence hoy 2026-02-29. ⏰
-
-Para evitar la suspension del servicio, te recomendamos realizar el pago antes de la hora de corte establecida.
-
-Si ya realizaste el pago, por favor ignora este mensaje.
-
-A|R System
-> Este es un mensaje automatico de notificacion, no es necesario responder.
-```
-
-**Cuando se envia:**
-- Suscripcion `ACTIVE` + periodo `PENDING` + dia exacto del vencimiento (0 dias)
-- Tipo de notificacion: `suspension-warning`
-
----
-
-### 3. Aviso de Suspension
-
-**Nombre del Template:**
-```
-subscription_suspended_notice_2v_hx9954143348c57d5cfb1daf4b5ab8ee6b
-```
-
-**Variables:**
-- `{1}` = Nombre del cliente (string)
-- `{2}` = Numero de KIT (string, ej: "KIT28J720NS8")
-
-**Ejemplo de mensaje generado:**
-```
-Hola Adrianfer, te informamos que tu suscripcion de Starlink KIT28J720NS8 fue suspendida por falta de pago. ⚠️
-
-Para reactivar el servicio, te recomendamos realizar el pago pendiente o contactar a soporte para mayor informacion.
-
-A|R System
-> Este es un mensaje automatico de notificacion, no es necesario responder.
-```
-
-**Cuando se envia:**
-- Cuando la suscripcion cambia de `ACTIVE` a `SUSPENDED`
-- Tipo de notificacion: `suspended-notice`
-
----
+- Variables: `{1}` nombre completo, `{2}` kit.
 
 ## Resumen de Logica de Notificaciones
 
 | Condicion | Tipo | Template | Variables |
 |---|---|---|---|
-| `ACTIVE` + `PENDING`/`PAID` + ≤7 días | — | Dashboard `expiringSoon` | `{1}` nombre, `{2}` fecha |
-| `ACTIVE` + `PENDING`/`PAID` + 3 dias exactos | `reminder` | `PAYMENT_REMINDER` | `{1}` nombre, `{2}` fecha |
-| `ACTIVE` + `PENDING`/`PAID` + 0 dias (hoy) | `suspension-warning` | `SUSPENSION_WARNING` | `{1}` nombre, `{2}` kit, `{3}` fecha |
-| Cambio a `SUSPENDED` | `suspended-notice` | `REMINDER_TODAY` | `{1}` nombre, `{2}` kit |
+| `ACTIVE` + `PENDING` + uno de los días configurados | `reminder` | Recordatorio de pago | `{1}` nombre, `{2}` fecha |
+| `ACTIVE` + `PENDING` + vencimiento hoy | `suspension-warning` | Aviso de vencimiento | `{1}` nombre, `{2}` kit, `{3}` fecha |
+| Cambio a `SUSPENDED` | `suspended-notice` | Aviso de suspensión | `{1}` nombre, `{2}` kit |
 | `SUSPENDED` (sin cambio) | — | Silencio | — |
 
 ---
 
 ## Uso en el Codigo
 
-### Variables de Entorno
-
-Configurar en `.env`:
-```env
-TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V=HX...
-TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V=HX...
-TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
-```
-
-> Nota: los templates son globales. Las credenciales Twilio (accountSid, authToken, phoneNumber) son POR ORGANIZACIÓN en `organizations/{id}.twilio`; cada content SID debe existir en la cuenta Twilio de la organización.
+Las variables de entorno antiguas `TWILIO_TEMPLATE_*` se leen como compatibilidad para
+organizaciones que todavía no han guardado configuración de notificaciones. Al guardar
+reglas o plantillas, la configuración queda explícita por organización.
 
 ### Enviar Template Manualmente
 
@@ -122,7 +63,7 @@ TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 ```json
 {
   "to": "+584123456789",
-  "templateName": "subscription_reminder_3days_2v_hxfcc8ae438db9df662a0e1f7d801e946b",
+  "templateName": "HX_REMINDER_CONTENT_SID",
   "variables": {
     "1": "Adrianfer",
     "2": "2026-02-29"
@@ -134,7 +75,7 @@ TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 ```json
 {
   "to": "+584123456789",
-  "templateName": "subscription_suspended_notice_2v_hx9954143348c57d5cfb1daf4b5ab8ee6b",
+  "templateName": "HX_SUSPENSION_CONTENT_SID",
   "variables": {
     "1": "Adrianfer",
     "2": "KIT28J720NS8"
@@ -156,7 +97,7 @@ TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V=HX...
 El scheduler (`src/infrastructure/scheduler.ts`) envia automaticamente los templates:
 
 ```typescript
-// Recordatorio (1-3 dias antes)
+// Recordatorio (los días previos definidos en reminderDaysBefore)
 await sendWhatsAppNotification(client, subscription, currentPeriod, 'reminder');
 
 // Advertencia de vencimiento (dia exacto)

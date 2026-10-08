@@ -100,19 +100,20 @@ function isRetryableTwilioError(error: unknown): boolean {
 }
 
 export class WhatsAppService {
-  private clients = new Map<string, twilio.Twilio>();
+  private clients = new Map<string, { authToken: string; client: twilio.Twilio }>();
 
   private getClient(credentials: TwilioCredentials): twilio.Twilio {
-    let client = this.clients.get(credentials.accountSid);
-    if (!client) {
-      client = twilio(credentials.accountSid, credentials.authToken, {
+    const cached = this.clients.get(credentials.accountSid);
+    if (!cached || cached.authToken !== credentials.authToken) {
+      const client = twilio(credentials.accountSid, credentials.authToken, {
         maxRetries: MAX_RETRIES,
         maxRetryDelay: 30000,
         timeout: 30000,
       });
-      this.clients.set(credentials.accountSid, client);
+      this.clients.set(credentials.accountSid, { authToken: credentials.authToken, client });
+      return client;
     }
-    return client;
+    return cached.client;
   }
 
   private async createMessageWithRetry(

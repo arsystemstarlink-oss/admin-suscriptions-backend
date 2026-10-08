@@ -19,3 +19,21 @@ export function isFirestoreQuotaError(error: unknown): boolean {
     /quota exceeded/i.test(message)
   );
 }
+
+export function isFirestoreIndexError(error: unknown): boolean {
+  if (!isFirestoreError(error)) return false;
+  const candidate = error as Record<string, unknown>;
+  const message = typeof candidate.message === 'string' ? candidate.message : '';
+  return (
+    candidate.code === 9 ||
+    /FAILED_PRECONDITION/i.test(message) ||
+    /requires an index/i.test(message)
+  );
+}
+
+export function getFirestoreIndexLink(error: unknown): string | undefined {
+  if (!isFirestoreIndexError(error)) return undefined;
+  const message = (error as Record<string, unknown>).message as string;
+  const match = message.match(/https:\/\/console\.firebase\.google\.com[^\s]*/);
+  return match?.[0];
+}

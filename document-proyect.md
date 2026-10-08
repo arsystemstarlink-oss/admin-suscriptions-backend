@@ -590,6 +590,9 @@ Alcance por rol
 
 Daily Job
 
+- El canal WhatsApp se configura independientemente en `GET/PUT /api/whatsapp/config`: cada org define credenciales Twilio, Content SID, días de recordatorio (1-30), aviso el día de corte y aviso al suspender. Los defaults conservan el comportamiento de 3 días, aviso de vencimiento y aviso de suspensión.
+- Si Twilio o una plantilla requerida no está configurada, el Daily Job sigue procesando períodos y estados; se omite solo el envío afectado y `readiness` explica los requisitos pendientes.
+
 El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infrastructure/scheduler.ts`) se lista cada organización activa y se registra un `cron.schedule` **individual** con la expresión `cronSchedule` propia de cada org (`schedulerConfig/{orgId}`) y el timezone de `SCHEDULER_TIMEZONE`. Cada tick ejecuta `runDailyJobForOrganization(orgId)` de forma aislada, escaneando solo los datos de esa org y enviando notificaciones (WhatsApp/Push) dentro de la org. Se respeta el `enabled` de cada org: si una org está desactivada (`enabled=false`) o su expresión cron es inválida, no se programa cron para ella. Los cambios en `PUT /scheduler/config` reprograman el cron de la org en caliente (sin reiniciar). El run manual (`POST /scheduler/run`) ejecuta por org sin importar `enabled`. La configuración del scheduler **siempre es por organización**: no existe una configuración global y `POST /scheduler/run` requiere indicar la org destino (`?organizationId=org_X`), devolviendo `TENANT_REQUIRED` si falta.
 
 Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`.

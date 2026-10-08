@@ -825,6 +825,63 @@ El scheduler es siempre por organización: no existe una configuración global n
 
 | Metodo | Path | Auth | Descripcion |
 |--------|------|------|-------------|
+| GET | /api/whatsapp/config | ****** | Obtener configuración Twilio, plantillas, reglas y estado de preparación de la organización |
+| PUT | /api/whatsapp/config | ****** | Actualizar parcialmente la configuración WhatsApp de la organización |
+
+**GET /api/whatsapp/config**
+```typescript
+// El super-admin indica ?organizationId=org_X; el admin usa su organización.
+{
+  organizationId: string;
+  twilio: {
+    accountSid?: string;
+    phoneNumber?: string;
+    enabled?: boolean;
+    authTokenConfigured: boolean; // El secreto nunca se devuelve.
+  };
+  rules: {
+    reminderDaysBefore: number[]; // Enteros únicos entre 1 y 30; [] desactiva recordatorios previos.
+    dueDateWarningEnabled: boolean;
+    suspensionNoticeEnabled: boolean;
+  };
+  templates: {
+    reminder?: string;
+    dueDateWarning?: string;
+    suspensionNotice?: string;
+  };
+  readiness: { ready: boolean; missing: string[]; usingLegacyTemplates: boolean };
+}
+```
+
+**PUT /api/whatsapp/config**
+```typescript
+{
+  twilio?: {
+    accountSid?: string;
+    authToken?: string | null; // Omitido conserva el existente; null o "" lo elimina.
+    phoneNumber?: string | null;
+    enabled?: boolean;
+  };
+  templates?: {
+    reminder?: string | null;
+    dueDateWarning?: string | null;
+    suspensionNotice?: string | null;
+  };
+  rules?: {
+    reminderDaysBefore?: number[];
+    dueDateWarningEnabled?: boolean;
+    suspensionNoticeEnabled?: boolean;
+  };
+}
+```
+
+Actualización parcial por organización. Content SID vacío o null elimina esa plantilla.
+La respuesta incluye el mismo estado `readiness` que GET. La configuración WhatsApp
+es independiente de `scheduler/config`: si Twilio o una plantilla no están listos, el
+Daily Job continúa procesando períodos y estados, pero no envía los mensajes afectados.
+
+| Metodo | Path | Auth | Descripcion |
+|--------|------|------|-------------|
 | POST | /api/whatsapp/send | Bearer admin | Enviar mensaje (texto o template) |
 | GET | /api/whatsapp/conversations | Bearer admin | Conversaciones agrupadas por teléfono (incluye números sin cliente) |
 | GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
@@ -1078,12 +1135,15 @@ Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `
 
 ## WhatsApp por Organización (Twilio multi-tenant)
 
+- `GET/PUT /api/whatsapp/config` permite al administrador administrar las credenciales, Content SID de plantillas y reglas de recordatorio/vencimiento/suspensión de su propia organización. La respuesta nunca incluye `authToken`.
+- Defaults: recordatorio a 3 días, aviso de vencimiento habilitado y aviso de suspensión habilitado. Los Content SID de entorno antiguos se usan solo como fallback hasta que la organización guarde su configuración.
+- `readiness.ready` y `readiness.missing` describen los requisitos activos pendientes. La falta de configuración WhatsApp no detiene el cron ni el ciclo de negocio.
 - Cada organización debe tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`. No existe configuración Twilio global de servidor.
 - Resolución de credenciales: solo se usan las credenciales de la organización; si la config está incompleta o `enabled === false`, no hay credenciales (`WHATSAPP_NOT_CONFIGURED`).
 - `POST /whatsapp/send` usa las credenciales de la organización efectiva. Requiere contexto de organización (`TENANT_REQUIRED` si un super-admin no indica `?organizationId=`).
 - Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Si la org no se resuelve, no hay credenciales para validar y el webhook se rechaza. Fallback histórico: match por teléfono del cliente (solo con validación desactivada en development).
-- El `authToken` nunca se retorna en la API (solo `authTokenSet: boolean`).
-- Los templates (`TWILIO_TEMPLATE_*`) son variables de entorno globales; para cuentas Twilio propias por org, los templates deben existir en esa cuenta.
+- El `authToken` nunca se retorna en la API (solo `authTokenSet` / `authTokenConfigured: boolean`).
+- Los Content SID deben existir en la cuenta Twilio de la organización y sus variables deben coincidir con el contrato de cada tipo de notificación.
 
 ## Multi-Tenant: Reglas de Alcance por Endpoint
 

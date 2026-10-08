@@ -1,5 +1,5 @@
 import { runDailyJobForOrganization } from '../infrastructure/scheduler';
-import { Plan, Subscription, BillingPeriod } from '../domain/entities';
+import { Plan, Subscription, BillingPeriod, Organization } from '../domain/entities';
 
 jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
@@ -79,8 +79,10 @@ import {
   schedulerConfigRepository,
   clientRepository,
   jobLockRepository,
+  organizationRepository,
 } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
+import { whatsappService } from '../infrastructure/whatsapp-service';
 
 const mockedBillingPeriods = billingPeriodRepository as jest.Mocked<typeof billingPeriodRepository>;
 const mockedSubscriptions = subscriptionRepository as jest.Mocked<typeof subscriptionRepository>;
@@ -89,6 +91,8 @@ const mockedSchedulerConfig = schedulerConfigRepository as jest.Mocked<typeof sc
 const mockedClients = clientRepository as jest.Mocked<typeof clientRepository>;
 const mockedJobLock = jobLockRepository as jest.Mocked<typeof jobLockRepository>;
 const mockedPush = pushService as jest.Mocked<typeof pushService>;
+const mockedOrganizations = organizationRepository as jest.Mocked<typeof organizationRepository>;
+const mockedWhatsApp = whatsappService as jest.Mocked<typeof whatsappService>;
 
 function makePlan(orgId: string, id = `plan_${orgId}`): Plan {
   return {
@@ -365,5 +369,69 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(result.notifications).toBe(0);
     expect(result.errors).toHaveLength(0);
     expect(mockedBillingPeriods.create).not.toHaveBeenCalled();
+  });
+
+  it('envía recordatorios en los días configurados por la organización', async () => {
+    const orgA = 'org_A';
+    const subA = {
+      ...makeSubscription(orgA),
+      currentPeriodId: 'period_reminder',
+    };
+    const period = {
+      ...makePeriod(orgA, subA.id, 'period_reminder'),
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 15)),
+    };
+    const organization: Organization = {
+      id: orgA,
+      name: 'Org A',
+      active: true,
+      twilio: {
+        accountSid: 'AC_org_A',
+        authToken: 'token_org_A',
+        phoneNumber: '+584111111111',
+      },
+      whatsappNotifications: {
+        rules: {
+          reminderDaysBefore: [5, 3],
+          dueDateWarningEnabled: true,
+          suspensionNoticeEnabled: true,
+        },
+        templates: { reminder: 'HX_org_A_reminder' },
+      },
+      createdAt: new Date(),
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+    mockedBillingPeriods.getByIdScoped.mockResolvedValue(period);
+    mockedSubscriptions.listByOrganization.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: `client_${orgA}`,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedSchedulerConfig.updateConfig.mockResolvedValue({
+      id: orgA,
+      enabled: true,
+      cronSchedule: '0 0 * * *',
+      updatedAt: new Date(),
+    });
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+    mockedWhatsApp.sendTemplate.mockResolvedValue('SM_reminder');
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(1);
+    expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateName: 'HX_org_A_reminder' }),
+      organization
+    );
   });
 });

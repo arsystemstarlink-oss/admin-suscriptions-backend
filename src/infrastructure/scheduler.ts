@@ -20,6 +20,7 @@ import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
 import { flushStatsRecompute } from './stats-service';
 import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
+import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
 
 const businessService = new SubscriptionBusinessService();
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -305,7 +306,10 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       suspendedCount++;
 
       const client = clients.find((c) => c.id === subscription.clientId);
-      if (client) {
+      const notificationConfig = organization
+        ? resolveWhatsAppNotificationConfig(organization)
+        : undefined;
+      if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
         const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
         if (result.sent) {
           notificationCount++;
@@ -373,14 +377,20 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          if (daysUntilDue === 3) {
+          const notificationConfig = organization
+            ? resolveWhatsAppNotificationConfig(organization)
+            : undefined;
+          if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
             const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'reminder', organizationId, organization);
             if (result.sent) {
               notificationCount++;
             } else {
               notificationErrors.push(result.error);
             }
-          } else if (daysUntilDue === 0) {
+          } else if (
+            daysUntilDue === 0 &&
+            notificationConfig?.rules.dueDateWarningEnabled
+          ) {
             const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
             if (result.sent) {
               notificationCount++;
@@ -525,16 +535,17 @@ async function sendWhatsAppNotification(
     },
   });
 
-  const templateMap: Record<string, string | undefined> = {
-    'reminder': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V,
-    'suspension-warning': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V,
-    'suspended-notice': process.env.TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V,
-  };
-
-  const templateName = templateMap[type];
+  const notificationConfig = organization
+    ? resolveWhatsAppNotificationConfig(organization)
+    : undefined;
+  const templateName = type === 'reminder'
+    ? notificationConfig?.templates.reminder
+    : type === 'suspension-warning'
+      ? notificationConfig?.templates.dueDateWarning
+      : notificationConfig?.templates.suspensionNotice;
 
   if (!templateName) {
-    return failure(`Template no configurado para la notificación ${type} (revisa las variables de entorno TWILIO_TEMPLATE_*).`);
+    return failure(`Plantilla no configurada para la notificación ${type} en la configuración de WhatsApp de la organización.`);
   }
 
   if (!resolveTwilioCredentials(organization)) {
