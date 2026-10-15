@@ -138,13 +138,6 @@
       "collectionGroup": "subscriptions",
       "fields": [
         { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "planId", "order": "ASCENDING" }
       ]
     },
@@ -153,17 +146,6 @@
       "fields": [
         { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "radarRank", "order": "ASCENDING" },
-        { "fieldPath": "nearestPendingDate", "order": "ASCENDING" },
-        { "fieldPath": "closestOverdueDate", "order": "DESCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {
@@ -232,55 +214,6 @@
         { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "endDate", "order": "ASCENDING" },
         { "fieldPath": "startDate", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "clientId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "clientId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "hasDebt", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "subscriptions",
-      "fields": [
-        { "fieldPath": "organizationId", "order": "ASCENDING" },
-        { "fieldPath": "hasDebt", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     },
     {
