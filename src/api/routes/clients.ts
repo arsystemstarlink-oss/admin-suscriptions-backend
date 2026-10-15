@@ -8,7 +8,7 @@ import {
 import { CreateClientDto, UpdateClientDto } from '../dto';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { BusinessError, Client } from '../../domain/entities';
-import { createId, normalizeDni, isValidDni } from '../../domain/business-rules';
+import { createId, normalizeDni, isValidDni, buildClientName, buildClientSortName } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
@@ -291,7 +291,18 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       }
     }
 
+    const nameChanged =
+      updated.firstName !== existing.firstName || updated.lastName !== existing.lastName;
+
     await clientRepository.update(updated);
+    if (nameChanged) {
+      await subscriptionRepository.updateClientNameByClientId(
+        updated.id,
+        organizationId,
+        buildClientName(updated.firstName, updated.lastName),
+        buildClientSortName(updated.firstName, updated.lastName)
+      );
+    }
     scheduleStatsRecompute(organizationId);
     res.json(updated);
   } catch (err) {

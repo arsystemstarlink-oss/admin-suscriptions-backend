@@ -92,6 +92,10 @@ export interface Subscription {
   id: string;
   organizationId: string;
   clientId: string;
+  /** Nombre del cliente denormalizado para ordenar y mostrar sin join. */
+  clientName?: string;
+  /** Clave normalizada (minúsculas, sin acentos) para orden alfabético. */
+  clientSortName?: string;
   planId: string;
   kitNumber: string;
   accountNumber?: string;

@@ -530,9 +530,12 @@ interface DebtorItem {
 | DELETE | /subscriptions/:id | Eliminar suscripcion |
 
 **GET /subscriptions**
+
+Lista por defecto todas las suscripciones de la organización, ordenadas alfabéticamente por el nombre del cliente (campo denormalizado `clientSortName`, con desempate por `createdAt`). El orden por nombre también aplica cuando se envía `search`.
+
 ```typescript
 // Query params
-{ clientId?: string; status?: SubscriptionStatus; search?: string; hasOverduePeriods?: boolean; limit?: number; offset?: number }
+{ clientId?: string; status?: SubscriptionStatus; search?: string; hasOverduePeriods?: boolean; limit?: number; offset?: number; cursor?: string }
 // Response 200
 { subscriptions: SubscriptionWithDetails[]; pagination }
 ```

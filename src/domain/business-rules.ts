@@ -43,6 +43,17 @@ export function createId(): string {
   return `id_${Math.random().toString(36).slice(2, 10)}_${Date.now()}`;
 }
 
+export function buildClientName(firstName?: string, lastName?: string): string {
+  return `${firstName ?? ''} ${lastName ?? ''}`.replace(/\s+/g, ' ').trim();
+}
+
+export function buildClientSortName(firstName?: string, lastName?: string): string {
+  return buildClientName(firstName, lastName)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 function formatMonthName(date: Date): string {
   return MONTH_NAMES_ES[date.getUTCMonth()];
 }

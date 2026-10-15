@@ -10,7 +10,7 @@ import { CreateSubscriptionDto, RegisterAdvancePaymentDto, UpdateSubscriptionDto
 import { BusinessError, Subscription } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
-import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { parseDateOnly, isValidDateString, createId, buildClientName, buildClientSortName } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
@@ -21,37 +21,22 @@ import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 const router = Router();
 const businessService = new SubscriptionBusinessService();
 
-function radarRank(subscription: any): number {
-  if ((subscription.pendingPeriods ?? 0) > 0) return 1;
-  if (subscription.hasDebt) return 2;
-  return 3;
-}
-
 function toTime(value?: Date | string | null): number | undefined {
   if (!value) return undefined;
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? undefined : time;
 }
 
-function compareSubscriptionsForRadar(a: any, b: any): number {
-  const rankA = radarRank(a);
-  const rankB = radarRank(b);
-  if (rankA !== rankB) return rankA - rankB;
+function clientSortKey(subscription: any): string {
+  if (subscription.clientSortName != null) return subscription.clientSortName;
+  const client = subscription.client;
+  return buildClientSortName(client?.firstName, client?.lastName) || '\uffff';
+}
 
-  if (rankA === 1) {
-    const aDate = toTime(a.nearestPendingDate);
-    const bDate = toTime(b.nearestPendingDate);
-    if (aDate !== undefined && bDate !== undefined && aDate !== bDate) return aDate - bDate;
-    if (aDate === undefined && bDate !== undefined) return 1;
-    if (bDate === undefined && aDate !== undefined) return -1;
-  } else if (rankA === 2) {
-    const aDate = toTime(a.closestOverdueDate);
-    const bDate = toTime(b.closestOverdueDate);
-    if (aDate !== undefined && bDate !== undefined && aDate !== bDate) return bDate - aDate;
-    if (aDate === undefined && bDate !== undefined) return 1;
-    if (bDate === undefined && aDate !== undefined) return -1;
-  }
-
+function compareSubscriptionsByClientName(a: any, b: any): number {
+  const keyA = clientSortKey(a);
+  const keyB = clientSortKey(b);
+  if (keyA !== keyB) return keyA < keyB ? -1 : 1;
   return (toTime(b.createdAt) ?? 0) - (toTime(a.createdAt) ?? 0);
 }
 
@@ -192,6 +177,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const scopedSubscription = {
       ...subscription,
       ...buildSubscriptionRadarFields(scopedPeriods),
+      clientName: buildClientName(client.firstName, client.lastName),
+      clientSortName: buildClientSortName(client.firstName, client.lastName),
       organizationId,
       createdByUserId: auth.userId,
       createdByRole: auth.role,
@@ -275,7 +262,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       }
 
       const enriched = await enrichRadarSubscriptions(subscriptions, organizationId);
-      const sorted = [...enriched].sort(compareSubscriptionsForRadar);
+      const sorted = [...enriched].sort(compareSubscriptionsByClientName);
       const total = sorted.length;
       const paginated = sorted.slice(offset, offset + limit);
       return res.json({
@@ -284,7 +271,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    const page = await subscriptionRepository.listRadarPage({
+    const page = await subscriptionRepository.listByClientNamePage({
       organizationId,
       status: parsedStatus,
       clientId,

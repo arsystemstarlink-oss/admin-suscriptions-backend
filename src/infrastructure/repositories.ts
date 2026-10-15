@@ -252,7 +252,37 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     return snapshot.docs.map((doc) => this.deserialize({ id: doc.id, ...doc.data() }));
   }
 
-  async listRadarPage(params: {
+  async updateClientNameByClientId(
+    clientId: string,
+    organizationId: string | undefined,
+    clientName: string,
+    clientSortName: string
+  ): Promise<number> {
+    const subscriptions = await this.listByClientId(clientId, organizationId);
+    if (subscriptions.length === 0) {
+      return 0;
+    }
+
+    const db = getFirestore();
+    const BATCH_SIZE = 400;
+    let updated = 0;
+    for (let i = 0; i < subscriptions.length; i += BATCH_SIZE) {
+      const chunk = subscriptions.slice(i, i + BATCH_SIZE);
+      const batch = db.batch();
+      for (const sub of chunk) {
+        batch.update(db.collection(this.collectionName).doc(sub.id), {
+          clientName,
+          clientSortName,
+        });
+      }
+      await batch.commit();
+      recordWrite(chunk.length);
+      updated += chunk.length;
+    }
+    return updated;
+  }
+
+  async listByClientNamePage(params: {
     organizationId: string;
     status?: 'ACTIVE' | 'SUSPENDED';
     clientId?: string;
@@ -273,10 +303,10 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
       filters.push(['hasDebt', '==', params.hasDebt]);
     }
 
-    const orderByFields = ['createdAt'];
+    const orderByFields = ['clientSortName'];
     let query = this.buildQuery(filters)
-      .orderBy(orderByFields[0], 'desc')
-      .orderBy(admin.firestore.FieldPath.documentId(), 'desc');
+      .orderBy(orderByFields[0], 'asc')
+      .orderBy(admin.firestore.FieldPath.documentId(), 'asc');
 
     const decoded = params.cursor ? decodeCursor(params.cursor) : undefined;
     if (decoded && decoded.values.length === orderByFields.length) {
