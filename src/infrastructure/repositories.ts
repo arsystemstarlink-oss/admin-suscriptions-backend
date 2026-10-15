@@ -1,6 +1,6 @@
 import { FirestoreRepository, QueryFilter, decodeCursor, encodeCursor } from './firestore-repository';
 import { getFirestore, admin } from './firebase';
-import { createId, normalizeDni } from '../domain/business-rules';
+import { createId, getClientNameUpdateFields, normalizeDni } from '../domain/business-rules';
 import {
   recordAggregation,
   recordDocReads,
@@ -254,23 +254,38 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     clientSortName: string
   ): Promise<number> {
     const subscriptions = await this.listByClientId(clientId, organizationId);
-    if (subscriptions.length === 0) {
-      return 0;
-    }
+    const updates = subscriptions
+      .map((subscription) => ({
+        id: subscription.id,
+        fields: getClientNameUpdateFields(subscription, { clientName, clientSortName }),
+      }))
+      .filter(
+        (entry): entry is { id: string; fields: { clientName?: string; clientSortName?: string } } =>
+          entry.fields !== undefined
+      );
+    if (updates.length === 0) return 0;
 
-    const db = getFirestore();
+    const db = this.db;
     const BATCH_SIZE = 400;
     let updated = 0;
-    for (let i = 0; i < subscriptions.length; i += BATCH_SIZE) {
-      const chunk = subscriptions.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+      const chunk = updates.slice(i, i + BATCH_SIZE);
       const batch = db.batch();
-      for (const sub of chunk) {
-        batch.update(db.collection(this.collectionName).doc(sub.id), {
-          clientName,
-          clientSortName,
-        });
+      for (const entry of chunk) {
+        batch.update(db.collection(this.collectionName).doc(entry.id), entry.fields);
       }
-      await batch.commit();
+      try {
+        await batch.commit();
+      } catch (error) {
+        console.error('[Subscriptions] Error propagando nombre denormalizado del cliente.', {
+          clientId,
+          organizationId,
+          updatedBeforeFailure: updated,
+          failedBatchSize: chunk.length,
+          remainingAfterFailedBatch: updates.length - i,
+        }, error);
+        throw error;
+      }
       recordWrite(chunk.length);
       updated += chunk.length;
     }

@@ -54,6 +54,20 @@ export function buildClientSortName(firstName?: string, lastName?: string): stri
     .toLowerCase();
 }
 
+export function getClientNameUpdateFields(
+  current: { clientName?: string; clientSortName?: string },
+  expected: { clientName: string; clientSortName: string }
+): { clientName?: string; clientSortName?: string } | undefined {
+  const updates: { clientName?: string; clientSortName?: string } = {};
+  if (current.clientName !== expected.clientName) {
+    updates.clientName = expected.clientName;
+  }
+  if (current.clientSortName !== expected.clientSortName) {
+    updates.clientSortName = expected.clientSortName;
+  }
+  return Object.keys(updates).length > 0 ? updates : undefined;
+}
+
 function formatMonthName(date: Date): string {
   return MONTH_NAMES_ES[date.getUTCMonth()];
 }

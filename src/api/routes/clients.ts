@@ -296,12 +296,21 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     await clientRepository.update(updated);
     if (nameChanged) {
-      await subscriptionRepository.updateClientNameByClientId(
-        updated.id,
-        organizationId,
-        buildClientName(updated.firstName, updated.lastName),
-        buildClientSortName(updated.firstName, updated.lastName)
-      );
+      try {
+        await subscriptionRepository.updateClientNameByClientId(
+          updated.id,
+          organizationId,
+          buildClientName(updated.firstName, updated.lastName),
+          buildClientSortName(updated.firstName, updated.lastName)
+        );
+      } catch (error) {
+        console.error(
+          '[Clients] El cliente fue actualizado, pero falló la propagación del nombre a sus suscripciones. Ejecuta npm run backfill:client-name para reparar.',
+          { clientId: updated.id, organizationId },
+          error
+        );
+        throw error;
+      }
     }
     scheduleStatsRecompute(organizationId);
     res.json(updated);

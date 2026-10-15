@@ -1,6 +1,10 @@
 import dotenv from 'dotenv';
 import { initializeFirebase, getFirestore, admin } from '../src/infrastructure/firebase';
-import { buildClientName, buildClientSortName } from '../src/domain/business-rules';
+import {
+  buildClientName,
+  buildClientSortName,
+  getClientNameUpdateFields,
+} from '../src/domain/business-rules';
 
 dotenv.config();
 
@@ -51,8 +55,9 @@ async function backfill(): Promise<void> {
   const clients = await loadClients(db);
   console.log(`Clientes cargados: ${clients.size}`);
 
-  let processed = 0;
+  let scanned = 0;
   let updated = 0;
+  let missingClients = 0;
   let lastDoc: FirebaseFirestore.QueryDocumentSnapshot | undefined;
 
   for (;;) {
@@ -69,30 +74,53 @@ async function backfill(): Promise<void> {
       break;
     }
 
-    const batch = db.batch();
+    const updates: Array<{
+      ref: FirebaseFirestore.DocumentReference;
+      clientId: string;
+      fields: { clientName?: string; clientSortName?: string };
+    }> = [];
     for (const doc of snapshot.docs) {
       const data = doc.data();
       const client = clients.get(data.clientId);
-      const clientName =
-        buildClientName(client?.firstName, client?.lastName) ||
-        data.clientName ||
-        'Cliente no encontrado';
-      const clientSortName = client
-        ? buildClientSortName(client.firstName, client.lastName)
-        : data.clientSortName || '\uffff';
-
-      batch.update(doc.ref, { clientName, clientSortName });
-      updated++;
+      if (!client) {
+        missingClients++;
+        console.warn(
+          `[Backfill client-name] Suscripción ${doc.id}: cliente ${data.clientId || '(sin clientId)'} no encontrado; se omite.`
+        );
+        continue;
+      }
+      const fields = getClientNameUpdateFields(data, {
+        clientName: buildClientName(client.firstName, client.lastName),
+        clientSortName: buildClientSortName(client.firstName, client.lastName),
+      });
+      if (fields) updates.push({ ref: doc.ref, clientId: data.clientId, fields });
     }
-    await batch.commit();
 
+    for (let i = 0; i < updates.length; i += BATCH_SIZE) {
+      const chunk = updates.slice(i, i + BATCH_SIZE);
+      const batch = db.batch();
+      for (const update of chunk) {
+        batch.update(update.ref, update.fields);
+      }
+      try {
+        await batch.commit();
+      } catch (error) {
+        console.error('[Backfill client-name] Falló la escritura de un lote; puedes volver a ejecutar el script.', {
+          committedBeforeFailure: updated,
+          failedBatchSize: chunk.length,
+          sampleSubscriptionIds: chunk.slice(0, 10).map((update) => update.ref.id),
+        }, error);
+        throw error;
+      }
+      updated += chunk.length;
+    }
     lastDoc = snapshot.docs[snapshot.docs.length - 1];
-    processed += snapshot.docs.length;
-    console.log(`  Actualizadas ${processed} suscripción(es)...`);
+    scanned += snapshot.docs.length;
+    console.log(`  Revisadas ${scanned}; reparadas ${updated} suscripción(es)...`);
   }
 
   console.log(
-    `Backfill de nombre de cliente completado. ${updated} suscripción(es) actualizadas.`
+    `Reparación de nombre de cliente completada. Revisadas: ${scanned}; actualizadas: ${updated}; sin cliente asociado: ${missingClients}.`
   );
 }
 
