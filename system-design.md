@@ -1,4 +1,4 @@
-Documento de Diseño - Sistema de Gestión de Suscripciones
+# Diseño del sistema de gestión de suscripciones
 
 > **Anexo Multi-Tenant (2026):** el sistema soporta múltiples organizaciones aisladas.
 > Ver sección "13. Multi-Tenant por Organización" al final.
@@ -600,3 +600,7 @@ Histórico de ejecuciones: cada ejecución (programada o manual) se registra en 
 Migración
 
 npm run migrate:tenant crea organizations/org_default, asigna organizationId a todos los documentos existentes y valida que no queden huérfanos. Con --promote-super-admin promueve al primer admin a super-admin.
+
+## Estado de implementación
+
+El backend incluye operaciones CRUD para las entidades principales, automatización de períodos y pagos, autenticación y aislamiento multi-tenant. Las pruebas automatizadas se ejecutan con `npm test`; el contrato de endpoints está en `api-contract.md`, las instrucciones de despliegue en `deployment.md`, y las integraciones de WhatsApp y los requisitos de notificaciones push tienen guías propias.

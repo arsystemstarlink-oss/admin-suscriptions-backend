@@ -1,4 +1,4 @@
-# WhatsApp Templates - Documentacion
+# Integración de WhatsApp: plantillas y notificaciones
 
 ## Configuración por organización
 

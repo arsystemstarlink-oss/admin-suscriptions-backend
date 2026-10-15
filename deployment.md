@@ -1,4 +1,4 @@
-# Checklist de Despliegue
+# Despliegue
 
 ## Variables de Entorno
 
@@ -358,6 +358,6 @@ npm run build
 
 Para problemas o preguntas:
 1. Revisar `api-contract.md` para documentación de endpoints
-2. Revisar `plan.md` para arquitectura y reglas de negocio
-3. Revisar `document-proyect.md` para requisitos del sistema
-4. Revisar `WHATSAPP_TEMPLATES.md` para integración de WhatsApp
+2. Revisar `system-design.md` para arquitectura y reglas de negocio
+3. Revisar `whatsapp-templates.md` para la integración de WhatsApp
+4. Revisar `push-notifications.md` para notificaciones push

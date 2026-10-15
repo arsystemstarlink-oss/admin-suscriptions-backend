@@ -1,4 +1,4 @@
-# Requisitos del Backend: Notificaciones Push (Web Push)
+# Notificaciones push (Web Push)
 
 El frontend (PWA) ya implementa el lado del cliente: suscripción del navegador, service worker con
 handlers `push` / `notificationclick`, página de activación en `Config → Notificaciones` y
