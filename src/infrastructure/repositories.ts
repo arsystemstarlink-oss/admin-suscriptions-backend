@@ -17,7 +17,6 @@ import {
   SchedulerConfig,
   SchedulerLog,
   WhatsAppMessage,
-  WhatsAppConversation,
   WhatsAppConversationRecord,
   MessageStatus,
   RefreshTokenSession,
@@ -50,10 +49,6 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
   async findByTwilioPhoneNumber(phoneNumber: string): Promise<Organization | undefined> {
     const results = await this.listByField('twilio.phoneNumber', phoneNumber);
     return results.find((org) => org.twilio?.phoneNumber === phoneNumber);
-  }
-
-  async listActive(): Promise<Organization[]> {
-    return this.listByField('active', true);
   }
 
   async updateOrganization(organization: Organization): Promise<void> {
@@ -360,19 +355,6 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
     ]);
   }
 
-  async listByOrganizationAndStatus(
-    organizationId: string,
-    status: BillingPeriod['status']
-  ): Promise<BillingPeriod[]> {
-    return this.listWhere(
-      [
-        ['organizationId', '==', organizationId],
-        ['status', '==', status],
-      ],
-      { limit: 5000 }
-    );
-  }
-
   /**
    * Consulta accionable del daily job: solo PENDING ya vencidos
    * (endDate <= now). Acotada con límite + orden por endDate para no
@@ -534,16 +516,6 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     super('whatsappMessages');
   }
 
-  async listByClientId(clientId: string, organizationId?: string): Promise<WhatsAppMessage[]> {
-    if (!organizationId) {
-      return this.listByField('clientId', clientId);
-    }
-    return this.listByFields([
-      ['organizationId', organizationId],
-      ['clientId', clientId],
-    ]);
-  }
-
   async listByPhone(phone: string, organizationId?: string): Promise<WhatsAppMessage[]> {
     if (!organizationId) {
       return this.listByField('phone', phone);
@@ -618,34 +590,6 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     });
   }
 
-  async listConversations(organizationId: string): Promise<WhatsAppConversation[]> {
-    const messages = await this.listByOrganization(organizationId);
-
-    const byPhone = new Map<string, WhatsAppConversation>();
-    for (const message of messages) {
-      const existing = byPhone.get(message.phone);
-
-      if (!existing) {
-        byPhone.set(message.phone, {
-          phone: message.phone,
-          clientId: message.clientId,
-          profileName: message.profileName,
-          lastMessage: message,
-          messageCount: 1,
-        });
-        continue;
-      }
-
-      existing.messageCount += 1;
-      if (message.createdAt.getTime() > existing.lastMessage.createdAt.getTime()) {
-        existing.lastMessage = message;
-        existing.clientId = message.clientId ?? existing.clientId;
-        existing.profileName = message.profileName ?? existing.profileName;
-      }
-    }
-
-    return [...byPhone.values()];
-  }
 }
 
 export class WhatsAppConversationFirestoreRepository extends FirestoreRepository<WhatsAppConversationRecord> {
@@ -904,13 +848,6 @@ export class PaymentReportFirestoreRepository extends FirestoreRepository<Paymen
           ];
     const results = await this.listByFields(filters, 1);
     return results[0];
-  }
-
-  async listPendingByOrganization(organizationId: string): Promise<PaymentReport[]> {
-    return this.listByFields([
-      ['organizationId', organizationId],
-      ['status', 'PENDING'],
-    ]);
   }
 }
 

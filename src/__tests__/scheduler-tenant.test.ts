@@ -4,7 +4,6 @@ import { Plan, Subscription, BillingPeriod, Organization } from '../domain/entit
 jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
     listByOrganization: jest.fn(),
-    listByOrganizationAndStatus: jest.fn(),
     listPendingOverdueCandidates: jest.fn(),
     listBySubscriptionIds: jest.fn(),
     getByIdScoped: jest.fn(),
@@ -139,9 +138,6 @@ function setPeriods(periods: BillingPeriod[]): void {
     periods.filter((p) => p.status === 'PENDING')
   );
   mockedBillingPeriods.listBySubscriptionIds.mockImplementation(async () => periods);
-  mockedBillingPeriods.listByOrganizationAndStatus.mockImplementation(
-    async (_org: string, status: string) => periods.filter((p) => p.status === status)
-  );
 }
 
 describe('runDailyJobForOrganization (aislamiento por organización)', () => {
