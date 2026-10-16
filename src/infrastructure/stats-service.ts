@@ -6,11 +6,16 @@ import {
   billingPeriodRepository,
 } from './repositories';
 import { QueryFilter } from './firestore-repository';
+import { TtlMemoryCache } from './memory-cache';
 import { OrganizationStats } from '../domain/entities';
 import { recordDocReads, recordWrite } from '../api/middleware/request-id';
 
 const STATS_COLLECTION = 'organizationStats';
 const RECOMPUTE_DEBOUNCE_MS = Number(process.env.STATS_RECOMPUTE_DEBOUNCE_MS || 2000);
+const STATS_CACHE_TTL_MS = Number(process.env.STATS_CACHE_TTL_MS || 30000);
+
+/** Caché de `organizationStats` por organización (evita lecturas repetidas). */
+const statsCache = new TtlMemoryCache(STATS_CACHE_TTL_MS);
 
 const pendingRecomputes = new Map<string, NodeJS.Timeout>();
 
@@ -93,12 +98,14 @@ export async function persistOrganizationStats(organizationId: string): Promise<
   const stats = await computeOrganizationStats(organizationId);
   recordWrite();
   await getFirestore().collection(STATS_COLLECTION).doc(organizationId).set(stats);
+  statsCache.set(organizationId, stats);
   return stats;
 }
 
 export async function deleteOrganizationStats(organizationId: string): Promise<void> {
   recordWrite();
   await getFirestore().collection(STATS_COLLECTION).doc(organizationId).delete();
+  statsCache.delete(organizationId);
 }
 
 export function scheduleStatsRecompute(organizationId: string): void {
@@ -146,38 +153,40 @@ function toStatsNumber(value: unknown): number {
 }
 
 export async function getOrganizationStats(organizationId: string): Promise<OrganizationStats> {
-  recordDocReads();
-  const doc = await getFirestore().collection(STATS_COLLECTION).doc(organizationId).get();
-  if (doc.exists) {
-    const data = doc.data() as Partial<OrganizationStats> & { updatedAt?: unknown };
-    // Normalizar Timestamps de Firestore a Date para que el contrato JSON sea estable.
-    return {
-      organizationId,
-      clients: { total: toStatsNumber(data.clients?.total) },
-      plans: {
-        total: toStatsNumber(data.plans?.total),
-        active: toStatsNumber(data.plans?.active),
-      },
-      subscriptions: {
-        total: toStatsNumber(data.subscriptions?.total),
-        active: toStatsNumber(data.subscriptions?.active),
-        suspended: toStatsNumber(data.subscriptions?.suspended),
-      },
-      billingPeriods: {
-        total: toStatsNumber(data.billingPeriods?.total),
-        paid: toStatsNumber(data.billingPeriods?.paid),
-        pending: toStatsNumber(data.billingPeriods?.pending),
-        overdue: toStatsNumber(data.billingPeriods?.overdue),
-      },
-      financial: {
-        monthlyIncome: toStatsNumber(data.financial?.monthlyIncome),
-        totalIncome: toStatsNumber(data.financial?.totalIncome),
-        totalPending: toStatsNumber(data.financial?.totalPending),
-        totalOverdue: toStatsNumber(data.financial?.totalOverdue),
-        totalDebt: toStatsNumber(data.financial?.totalDebt),
-      },
-      updatedAt: toStatsDate(data.updatedAt),
-    };
-  }
-  return persistOrganizationStats(organizationId);
+  return statsCache.getOrLoad<OrganizationStats>(organizationId, async () => {
+    recordDocReads();
+    const doc = await getFirestore().collection(STATS_COLLECTION).doc(organizationId).get();
+    if (doc.exists) {
+      const data = doc.data() as Partial<OrganizationStats> & { updatedAt?: unknown };
+      // Normalizar Timestamps de Firestore a Date para que el contrato JSON sea estable.
+      return {
+        organizationId,
+        clients: { total: toStatsNumber(data.clients?.total) },
+        plans: {
+          total: toStatsNumber(data.plans?.total),
+          active: toStatsNumber(data.plans?.active),
+        },
+        subscriptions: {
+          total: toStatsNumber(data.subscriptions?.total),
+          active: toStatsNumber(data.subscriptions?.active),
+          suspended: toStatsNumber(data.subscriptions?.suspended),
+        },
+        billingPeriods: {
+          total: toStatsNumber(data.billingPeriods?.total),
+          paid: toStatsNumber(data.billingPeriods?.paid),
+          pending: toStatsNumber(data.billingPeriods?.pending),
+          overdue: toStatsNumber(data.billingPeriods?.overdue),
+        },
+        financial: {
+          monthlyIncome: toStatsNumber(data.financial?.monthlyIncome),
+          totalIncome: toStatsNumber(data.financial?.totalIncome),
+          totalPending: toStatsNumber(data.financial?.totalPending),
+          totalOverdue: toStatsNumber(data.financial?.totalOverdue),
+          totalDebt: toStatsNumber(data.financial?.totalDebt),
+        },
+        updatedAt: toStatsDate(data.updatedAt),
+      };
+    }
+    return persistOrganizationStats(organizationId);
+  });
 }

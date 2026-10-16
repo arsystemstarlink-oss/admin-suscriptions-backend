@@ -19,6 +19,8 @@ export interface ListQueryOptions {
   orderBy?: string;
   direction?: 'asc' | 'desc';
   limit?: number;
+  /** Campos a proyectar; los usados en orderBy/inequalities deben incluirse. */
+  select?: string[];
 }
 
 export interface ListPageParams {
@@ -31,6 +33,8 @@ export interface ListPageParams {
   offset?: number;
   cursor?: string;
   requireTotal?: boolean;
+  /** Campos a proyectar; los usados en orderBy/inequalities deben incluirse. */
+  select?: string[];
 }
 
 export interface ListPageResult<T> {
@@ -209,6 +213,10 @@ export class FirestoreRepository<T extends Identifiable> {
       .orderBy(orderByField, direction)
       .orderBy(admin.firestore.FieldPath.documentId(), direction);
 
+    if (params.select && params.select.length > 0) {
+      query = query.select(...params.select);
+    }
+
     const decoded = params.cursor ? decodeCursor(params.cursor) : undefined;
     if (decoded && decoded.values.length > 0) {
       query = query.startAfter(...decoded.values, decoded.id);
@@ -353,6 +361,9 @@ export class FirestoreRepository<T extends Identifiable> {
     let query = this.buildQuery(filters);
     if (options.orderBy) {
       query = query.orderBy(options.orderBy, options.direction === 'asc' ? 'asc' : 'desc');
+    }
+    if (options.select && options.select.length > 0) {
+      query = query.select(...options.select);
     }
     query = query.limit(options.limit);
     const snapshot = await query.get();

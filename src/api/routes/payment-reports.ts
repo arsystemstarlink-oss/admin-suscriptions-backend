@@ -12,6 +12,7 @@ import { applyRadarToSubscription } from '../../infrastructure/subscription-rada
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
+import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { getFirestore } from '../../infrastructure/firebase';
 import { stripUndefined } from '../../infrastructure/serialization';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
@@ -174,6 +175,7 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
 
       await batch.commit();
       scheduleStatsRecompute(organizationId);
+      invalidateBadges(organizationId);
 
       const [enriched] = await enrichReports([rejected], organizationId);
       return res.json({ report: enriched });
@@ -280,6 +282,7 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
 
     await batch.commit();
     scheduleStatsRecompute(organizationId);
+    invalidateBadges(organizationId);
 
     const [enriched] = await enrichReports([approved], organizationId);
     res.json({

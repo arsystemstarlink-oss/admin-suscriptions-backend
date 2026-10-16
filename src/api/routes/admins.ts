@@ -36,6 +36,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           orderBy: 'createdAt',
           direction: 'asc',
           requireTotal: !cursor,
+          select: ['name', 'email', 'phone', 'role', 'organizationId', 'lastLoginAt', 'createdAt'],
         });
       return res.json({
         admins: page.items.map(toUserDto),

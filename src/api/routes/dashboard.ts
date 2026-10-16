@@ -9,8 +9,18 @@ import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { requireOrganizationId } from '../middleware/tenant';
 import { BillingPeriod, Client, Subscription } from '../../domain/entities';
 import { getOrganizationStats } from '../../infrastructure/stats-service';
+import { TtlMemoryCache } from '../../infrastructure/memory-cache';
 
 const router = Router();
+
+/**
+ * Caché de /dashboard/alerts por organización. El resumen (/summary) ya se sirve
+ * desde organizationStats; aquí se evita repetir las consultas de alertas cuando
+ * varios admins abren el dashboard dentro de la ventana TTL.
+ */
+const alertsCache = new TtlMemoryCache(
+  Number(process.env.DASHBOARD_ALERTS_CACHE_TTL_MS || 30000)
+);
 
 function orgFilters(organizationId: string | undefined): QueryFilter[] {
   return organizationId ? [['organizationId', '==', organizationId]] : [];
@@ -34,11 +44,9 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
   }
 });
 
-router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const organizationId = requireOrganizationId(req);
-    const org = orgFilters(organizationId);
-    const now = new Date();
+async function computeAlerts(organizationId: string) {
+  const org = orgFilters(organizationId);
+  const now = new Date();
     // Ventana inclusiva [now, now+7d] en UTC día para no excluir vencimientos de hoy
     // por diferencia horaria entre el servidor y el cálculo del endDate.
     const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -52,12 +60,18 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
       billingPeriodRepository.listWhere(
         [...org, ['endDate', '>=', startOfTodayUtc], ['endDate', '<=', in7Days]],
-        { orderBy: 'endDate', direction: 'asc', limit: EXPIRING_LIMIT + 1 }
+        {
+          orderBy: 'endDate',
+          direction: 'asc',
+          limit: EXPIRING_LIMIT + 1,
+          select: ['periodLabel', 'status', 'amount', 'endDate', 'subscriptionId'],
+        }
       ),
       billingPeriodRepository.listWhere([...org, ['status', '==', 'OVERDUE']], {
         orderBy: 'endDate',
         direction: 'asc',
         limit: OVERDUE_LIMIT + 1,
+        select: ['periodLabel', 'status', 'amount', 'endDate', 'subscriptionId'],
       }),
     ]);
 
@@ -152,7 +166,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
         };
       });
 
-    res.json({
+    return {
       generatedAt: now,
       expiringSoon: {
         count: expiringSoon.length,
@@ -183,7 +197,14 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
           'Top 5 clientes con más períodos vencidos, del vencido más antiguo al más reciente (solo suscripciones ACTIVAS)',
         items: topDebtors,
       },
-    });
+    };
+}
+
+router.get('/alerts', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const organizationId = requireOrganizationId(req);
+    const payload = await alertsCache.getOrLoad(organizationId, () => computeAlerts(organizationId));
+    res.json(payload);
   } catch (err) {
     next(err);
   }

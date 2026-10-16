@@ -18,6 +18,7 @@ import {
   validateReportPaidAt,
 } from '../../domain/payment-reports';
 import { createId } from '../../domain/business-rules';
+import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
 import {
   createCaptchaVerifier,
@@ -231,6 +232,7 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
     };
 
     await paymentReportRepository.create(report);
+    invalidateBadges(org.id);
 
     try {
       await domainEventRepository.create({

@@ -1,5 +1,6 @@
 import { FirestoreRepository, QueryFilter, decodeCursor, encodeCursor } from './firestore-repository';
 import { getFirestore, admin } from './firebase';
+import { invalidateBadges } from './badge-cache';
 import { createId, getClientNameUpdateFields, normalizeDni } from '../domain/business-rules';
 import {
   recordAggregation,
@@ -685,7 +686,7 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
 }
 
 export class WhatsAppConversationFirestoreRepository extends FirestoreRepository<WhatsAppConversationRecord> {
-  private cacheTtlMs = Number(process.env.CONVERSATION_CACHE_TTL_MS || 600000);
+  private cacheTtlMs = Number(process.env.CONVERSATION_CACHE_TTL_MS || 60000);
   private maxConversations = Number(process.env.CONVERSATION_LIST_LIMIT || 500);
   private cache = new Map<string, { items: WhatsAppConversationRecord[]; loadedAt: number }>();
 
@@ -826,6 +827,9 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     });
 
     this.upsertInCaches(record);
+    if (record.hasUnread) {
+      invalidateBadges(organizationId);
+    }
   }
 
   /**
@@ -852,6 +856,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     recordWrite();
     await docRef.set(this.serialize(record));
     this.upsertInCaches(record);
+    invalidateBadges(organizationId);
     return true;
   }
 
@@ -907,6 +912,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     recordWrite();
     await this.db.collection(this.collectionName).doc(id).delete();
     this.removeFromCaches(organizationId, phone);
+    invalidateBadges(organizationId);
   }
 }
 
