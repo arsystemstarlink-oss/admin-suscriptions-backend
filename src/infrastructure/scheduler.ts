@@ -19,7 +19,15 @@ import { whatsappService, resolveTwilioCredentials, extractTwilioError } from '.
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
 import { flushStatsRecompute } from './stats-service';
-import { WhatsAppMessage, DomainEventType, Organization, SchedulerLog } from '../domain/entities';
+import {
+  BillingPeriod,
+  WhatsAppMessage,
+  DomainEventType,
+  Organization,
+  OrganizationWhatsAppConfig,
+  SchedulerLog,
+  Subscription,
+} from '../domain/entities';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
 
 const businessService = new SubscriptionBusinessService();
@@ -168,32 +176,62 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
   const organization = await organizationRepository.getById(organizationId);
-  // Los OVERDUE existentes solo se necesitan para evaluar suspensión/generación
-  // de las suscripciones tocadas, no de toda la org.
-  const pendingCandidates = await billingPeriodRepository.listPendingOverdueCandidates(
-    organizationId,
-    now,
-    500
-  );
-  const touchedSubscriptionIds = [...new Set(pendingCandidates.map((p) => p.subscriptionId))];
+  const notificationConfig = organization
+    ? resolveWhatsAppNotificationConfig(organization)
+    : undefined;
+
+  // Ventana de recordatorios en días UTC. Incluye el día 0 para que el aviso de
+  // corte siga funcionando aunque reminderDaysBefore esté vacío.
+  const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const reminderDays = notificationConfig?.rules.reminderDaysBefore ?? [];
+  const maxReminderDays = reminderDays.length > 0 ? Math.max(...reminderDays) : 0;
+  const reminderWindowEnd = new Date(startOfTodayUtc);
+  reminderWindowEnd.setUTCDate(reminderWindowEnd.getUTCDate() + Math.max(maxReminderDays, 0));
+  const shouldQueryReminders =
+    reminderDays.length > 0 || notificationConfig?.rules.dueDateWarningEnabled === true;
+
+  // Conjuntos de acción dirigidos por organización:
+  // 1) PENDING vencidos -> marcar OVERDUE + evaluar suspensión.
+  // 2) PENDING por vencer -> recordatorios / aviso de corte.
+  // 3) ACTIVE con período actual terminado (PAID/OVERDUE) -> generar ciclo.
+  // La unión de estas suscripciones es el alcance real del job; así una
+  // suscripción SUSPENDED con un PENDING pasado no deja fuera al resto.
+  const [overdueCandidates, reminderCandidates, generationCandidates] = await Promise.all([
+    billingPeriodRepository.listPendingOverdueCandidates(organizationId, now, 500),
+    shouldQueryReminders
+      ? billingPeriodRepository.listReminderWindowCandidates(
+          organizationId,
+          startOfTodayUtc,
+          reminderWindowEnd,
+          500
+        )
+      : Promise.resolve([] as BillingPeriod[]),
+    subscriptionRepository.listGenerationCandidates(organizationId, now, 500),
+  ]);
+
+  const actionSubscriptionIds = new Set<string>([
+    ...overdueCandidates.map((p) => p.subscriptionId),
+    ...reminderCandidates.map((p) => p.subscriptionId),
+    ...generationCandidates.map((s) => s.id),
+  ]);
+  const touchedSubscriptionIds = [...actionSubscriptionIds];
+
   const [overdueForTouched, subscriptions, clients, allPlans] = await Promise.all([
     touchedSubscriptionIds.length > 0
       ? billingPeriodRepository.listBySubscriptionIds(touchedSubscriptionIds, organizationId)
-      : Promise.resolve([] as typeof pendingCandidates),
+      : Promise.resolve([] as BillingPeriod[]),
     touchedSubscriptionIds.length > 0
       ? subscriptionRepository.listByIds(touchedSubscriptionIds, organizationId)
-      : subscriptionRepository.listByOrganization(organizationId),
+      : Promise.resolve([] as Subscription[]),
     clientRepository.listByOrganization(organizationId),
     planRepository.listByOrganization(organizationId),
   ]);
-  // PENDING futuros (para generación de ciclo y recordatorios) solo de las
-  // suscripciones tocadas; el resto no acciona hoy.
-  // pendingCandidates ya son PENDING vencidos; overdueForTouched trae el resto
-  // de períodos (PENDING futuros + OVERDUE) de esas suscripciones.
-  const pendingPeriods = overdueForTouched.filter((p) => p.status === 'PENDING');
-  const overduePeriods = overdueForTouched.filter((p) => p.status === 'OVERDUE');
+  // overdueForTouched trae todos los períodos (PAID/PENDING/OVERDUE) de las
+  // suscripciones accionables; se conservan completos para que la generación de
+  // ciclo vea el período actual aunque esté PAID. Los candidatos vencidos se
+  // incluyen de forma defensiva por si la lectura por lotes no los devuelve.
   const seenPeriodIds = new Set<string>();
-  const allPeriods = [...pendingPeriods, ...pendingCandidates, ...overduePeriods].filter((p) =>
+  const allPeriods = [...overdueForTouched, ...overdueCandidates].filter((p) =>
     seenPeriodIds.has(p.id) ? false : (seenPeriodIds.add(p.id), true)
   );
 
@@ -306,15 +344,21 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       suspendedCount++;
 
       const client = clients.find((c) => c.id === subscription.clientId);
-      const notificationConfig = organization
-        ? resolveWhatsAppNotificationConfig(organization)
-        : undefined;
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
-        const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspended-notice', organizationId, organization);
-        if (result.sent) {
+        const outcome = await sendNotificationWithThrottleAndDedup(
+          client,
+          subscription,
+          currentPeriod,
+          'suspended-notice',
+          organizationId,
+          organization,
+          notificationConfig,
+          startOfTodayUtc
+        );
+        if (outcome.status === 'sent') {
           notificationCount++;
-        } else {
-          notificationErrors.push(result.error);
+        } else if (outcome.status === 'failed') {
+          notificationErrors.push(outcome.error);
         }
       }
 
@@ -377,25 +421,40 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
-          const notificationConfig = organization
-            ? resolveWhatsAppNotificationConfig(organization)
-            : undefined;
           if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
-            const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'reminder', organizationId, organization);
-            if (result.sent) {
+            const outcome = await sendNotificationWithThrottleAndDedup(
+              client,
+              subscription,
+              currentPeriod,
+              'reminder',
+              organizationId,
+              organization,
+              notificationConfig,
+              startOfTodayUtc
+            );
+            if (outcome.status === 'sent') {
               notificationCount++;
-            } else {
-              notificationErrors.push(result.error);
+            } else if (outcome.status === 'failed') {
+              notificationErrors.push(outcome.error);
             }
           } else if (
             daysUntilDue === 0 &&
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
-            const result = await sendNotificationWithThrottle(client, subscription, currentPeriod, 'suspension-warning', organizationId, organization);
-            if (result.sent) {
+            const outcome = await sendNotificationWithThrottleAndDedup(
+              client,
+              subscription,
+              currentPeriod,
+              'suspension-warning',
+              organizationId,
+              organization,
+              notificationConfig,
+              startOfTodayUtc
+            );
+            if (outcome.status === 'sent') {
               notificationCount++;
-            } else {
-              notificationErrors.push(result.error);
+            } else if (outcome.status === 'failed') {
+              notificationErrors.push(outcome.error);
             }
           }
         }
@@ -514,11 +573,56 @@ export function stopScheduler(): void {
   scheduledTasks.clear();
 }
 
+type NotificationType = 'reminder' | 'suspension-warning' | 'suspended-notice';
+
+function resolveNotificationTemplateName(
+  type: NotificationType,
+  config?: OrganizationWhatsAppConfig
+): string | undefined {
+  if (type === 'reminder') return config?.templates.reminder;
+  if (type === 'suspension-warning') return config?.templates.dueDateWarning;
+  return config?.templates.suspensionNotice;
+}
+
+function buildNotificationVariables(
+  type: NotificationType,
+  client: { firstName: string; lastName: string },
+  subscription: { kitNumber: string },
+  period: { endDate: Date }
+): Record<string, string> {
+  const clientFullName = `${client.firstName} ${client.lastName}`;
+  const endDateStr = period.endDate.toISOString().split('T')[0];
+  if (type === 'suspended-notice') {
+    return {
+      '1': clientFullName,
+      '2': subscription.kitNumber,
+    };
+  }
+  if (type === 'suspension-warning') {
+    return {
+      '1': clientFullName,
+      '2': subscription.kitNumber,
+      '3': endDateStr,
+    };
+  }
+  return {
+    '1': clientFullName,
+    '2': endDateStr,
+  };
+}
+
+function buildNotificationMessageBody(
+  templateName: string,
+  variables: Record<string, string>
+): string {
+  return `[Template: ${templateName}] Variables: ${JSON.stringify(variables)}`;
+}
+
 async function sendWhatsAppNotification(
   client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
   period: { endDate: Date },
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice',
+  type: NotificationType,
   organizationId: string,
   organization?: Organization
 ): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
@@ -538,11 +642,7 @@ async function sendWhatsAppNotification(
   const notificationConfig = organization
     ? resolveWhatsAppNotificationConfig(organization)
     : undefined;
-  const templateName = type === 'reminder'
-    ? notificationConfig?.templates.reminder
-    : type === 'suspension-warning'
-      ? notificationConfig?.templates.dueDateWarning
-      : notificationConfig?.templates.suspensionNotice;
+  const templateName = resolveNotificationTemplateName(type, notificationConfig);
 
   if (!templateName) {
     return failure(`Plantilla no configurada para la notificación ${type} en la configuración de WhatsApp de la organización.`);
@@ -552,26 +652,7 @@ async function sendWhatsAppNotification(
     return failure('La organización no tiene credenciales de Twilio configuradas o están deshabilitadas.');
   }
 
-  const endDateStr = period.endDate.toISOString().split('T')[0];
-
-  let variables: Record<string, string>;
-  if (type === 'suspended-notice') {
-    variables = {
-      '1': clientFullName,
-      '2': subscription.kitNumber,
-    };
-  } else if (type === 'suspension-warning') {
-    variables = {
-      '1': clientFullName,
-      '2': subscription.kitNumber,
-      '3': endDateStr,
-    };
-  } else {
-    variables = {
-      '1': clientFullName,
-      '2': endDateStr,
-    };
-  }
+  const variables = buildNotificationVariables(type, client, subscription, period);
 
   try {
     const messageSid = await whatsappService.sendTemplate({
@@ -587,7 +668,7 @@ async function sendWhatsAppNotification(
       phone: client.phone,
       direction: 'OUTBOUND',
       messageSid,
-      body: `[Template: ${templateName}] Variables: ${JSON.stringify(variables)}`,
+      body: buildNotificationMessageBody(templateName, variables),
       templateName,
       status: 'SENT',
       createdAt: new Date(),
@@ -615,7 +696,7 @@ async function sendNotificationWithThrottle(
   client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
   period: { endDate: Date },
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice',
+  type: NotificationType,
   organizationId: string,
   organization?: Organization
 ): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
@@ -628,4 +709,48 @@ async function sendNotificationWithThrottle(
   }
 
   return sendWhatsAppNotification(client, subscription, period, type, organizationId, organization);
+}
+
+type NotificationOutcome =
+  | { status: 'sent' }
+  | { status: 'duplicate' }
+  | { status: 'failed'; error: NotificationFailure };
+
+async function sendNotificationWithThrottleAndDedup(
+  client: { id: string; firstName: string; lastName: string; phone: string },
+  subscription: { kitNumber: string },
+  period: { endDate: Date },
+  type: NotificationType,
+  organizationId: string,
+  organization: Organization | undefined,
+  notificationConfig: OrganizationWhatsAppConfig | undefined,
+  since: Date
+): Promise<NotificationOutcome> {
+  const templateName = resolveNotificationTemplateName(type, notificationConfig);
+  if (templateName) {
+    const body = buildNotificationMessageBody(
+      templateName,
+      buildNotificationVariables(type, client, subscription, period)
+    );
+    const alreadySent = await whatsappMessageRepository.existsOutboundMessageSince({
+      organizationId,
+      phone: client.phone,
+      body,
+      since,
+    });
+    if (alreadySent) {
+      console.log(`[WhatsApp] Notificación ${type} ya enviada hoy a ${client.phone}. Skipping.`);
+      return { status: 'duplicate' };
+    }
+  }
+
+  const result = await sendNotificationWithThrottle(
+    client,
+    subscription,
+    period,
+    type,
+    organizationId,
+    organization
+  );
+  return result.sent ? { status: 'sent' } : { status: 'failed', error: result.error };
 }

@@ -141,6 +141,15 @@
       ]
     },
     {
+      "collectionGroup": "subscriptions",
+      "fields": [
+        { "fieldPath": "organizationId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "currentPeriodStatus", "order": "ASCENDING" },
+        { "fieldPath": "currentPeriodEndDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "users",
       "fields": [
         { "fieldPath": "organizationId", "order": "ASCENDING" },

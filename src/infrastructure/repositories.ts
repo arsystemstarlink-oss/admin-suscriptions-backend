@@ -13,6 +13,7 @@ import {
   Plan,
   Subscription,
   BillingPeriod,
+  BillingPeriodStatus,
   User,
   SchedulerConfig,
   SchedulerLog,
@@ -292,6 +293,34 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     return updated;
   }
 
+  /**
+   * Consulta accionable del daily job: suscripciones ACTIVE cuyo período
+   * actual ya terminó (PAID u OVERDUE) y corresponde generar el siguiente
+   * ciclo. Se apoya en el radar denormalizado (currentPeriodStatus /
+   * currentPeriodEndDate) para no escanear todo el historial.
+   */
+  async listGenerationCandidates(
+    organizationId: string,
+    referenceDate: Date,
+    limit = 500
+  ): Promise<Subscription[]> {
+    const statuses: BillingPeriodStatus[] = ['PAID', 'OVERDUE'];
+    const results = await Promise.all(
+      statuses.map((currentPeriodStatus) =>
+        this.listWhere(
+          [
+            ['organizationId', '==', organizationId],
+            ['status', '==', 'ACTIVE'],
+            ['currentPeriodStatus', '==', currentPeriodStatus],
+            ['currentPeriodEndDate', '<=', referenceDate],
+          ],
+          { orderBy: 'currentPeriodEndDate', direction: 'asc', limit }
+        )
+      )
+    );
+    return results.flat();
+  }
+
   async listByClientNamePage(params: {
     organizationId: string;
     status?: 'ACTIVE' | 'SUSPENDED';
@@ -385,6 +414,28 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
         ['organizationId', '==', organizationId],
         ['status', '==', 'PENDING'],
         ['endDate', '<=', referenceDate],
+      ],
+      { orderBy: 'endDate', direction: 'asc', limit }
+    );
+  }
+
+  /**
+   * Consulta accionable del daily job: PENDING por vencer dentro de la ventana
+   * de recordatorio [startDate, endDate] (día UTC). Alimenta recordatorios y el
+   * aviso de corte del día 0. Reutiliza el índice (organizationId, status, endDate).
+   */
+  async listReminderWindowCandidates(
+    organizationId: string,
+    startDate: Date,
+    endDate: Date,
+    limit = 500
+  ): Promise<BillingPeriod[]> {
+    return this.listWhere(
+      [
+        ['organizationId', '==', organizationId],
+        ['status', '==', 'PENDING'],
+        ['endDate', '>=', startDate],
+        ['endDate', '<=', endDate],
       ],
       { orderBy: 'endDate', direction: 'asc', limit }
     );
@@ -591,6 +642,32 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
   async findByMessageSid(messageSid: string): Promise<WhatsAppMessage | undefined> {
     const results = await this.listByField('messageSid', messageSid);
     return results[0];
+  }
+
+  /**
+   * Idempotencia del daily job: indica si ya se envió exactamente el mismo
+   * mensaje saliente (mismo body serializado = mismo template + período) al
+   * teléfono desde `since`. Evita reenviar si el job corre más de una vez al día.
+   * Usa el índice (organizationId, phone, createdAt) y filtra direction/body en memoria.
+   */
+  async existsOutboundMessageSince(params: {
+    organizationId: string;
+    phone: string;
+    body: string;
+    since: Date;
+    limit?: number;
+  }): Promise<boolean> {
+    const results = await this.listWhere(
+      [
+        ['organizationId', '==', params.organizationId],
+        ['phone', '==', params.phone],
+        ['createdAt', '>=', params.since],
+      ],
+      { orderBy: 'createdAt', direction: 'desc', limit: params.limit ?? 100 }
+    );
+    return results.some(
+      (message) => message.direction === 'OUTBOUND' && message.body === params.body
+    );
   }
 
   async updateStatusByMessageSid(
