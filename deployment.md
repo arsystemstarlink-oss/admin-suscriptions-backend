@@ -55,6 +55,18 @@ TWILIO_WEBHOOK_VALIDATION=true
 VAPID_PUBLIC_KEY=
 VAPID_PRIVATE_KEY=
 VAPID_SUBJECT=mailto:admin@tu-dominio.com
+
+# Portal publico /consulta: limite por cedula con bloqueo progresivo
+# (ademas del limite por IP de 60 req / 15 min).
+PUBLIC_DNI_MAX_ATTEMPTS=5
+PUBLIC_DNI_WINDOW_MS=900000
+PUBLIC_DNI_BASE_BLOCK_MS=300000
+PUBLIC_DNI_MAX_BLOCK_MS=3600000
+
+# Cloudflare Turnstile (CAPTCHA del portal publico). Si se define, /api/public
+# exige un turnstileToken valido. Configurar junto con VITE_TURNSTILE_SITE_KEY
+# en el frontend. Sin secreto, el CAPTCHA se omite (recomendado solo en dev).
+TURNSTILE_SECRET_KEY=
 ```
 
 ### Generar JWT_SECRET seguro

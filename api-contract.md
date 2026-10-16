@@ -661,11 +661,17 @@ interface PaymentReport {
 | POST | /public/org/:slug/lookup | Consulta con cedula+telefono: detalle completo + totales + reportes en verificacion |
 | POST | /public/org/:slug/reports | Crear reporte de pago (monto = `period.amount`; periodo sigue PENDING/OVERDUE hasta aprobacion) |
 
+**Protecciones del portal publico (lookup y reports)**
+- Limite por IP: 60 solicitudes / 15 min (`RATE_LIMITED`).
+- Limite por cedula con bloqueo progresivo: intentos configurados via `PUBLIC_DNI_MAX_ATTEMPTS` (default 5) por `PUBLIC_DNI_WINDOW_MS` (default 15 min); al superarlo responde `429 RATE_LIMITED` con `Retry-After` y bloquea 5 min, duplicando en cada reincidencia hasta `PUBLIC_DNI_MAX_BLOCK_MS` (default 1 h).
+- CAPTCHA Cloudflare Turnstile: si el backend define `TURNSTILE_SECRET_KEY`, ambos endpoints exigen `turnstileToken` valido (accion `public_consulta`). Sin el token: `CAPTCHA_REQUIRED`; token invalido: `CAPTCHA_FAILED`; fallo de sitio/red: `CAPTCHA_UNAVAILABLE`. Si no hay secreto configurado, no se exige.
+
 **POST /public/org/:slug/lookup**
 ```typescript
 // Request
-{ dni: string; phone: string }
+{ dni: string; phone: string; turnstileToken?: string }
 // dni: formato V-/J- + 7-9 digitos (se normaliza); phone: se compara normalizando ambos lados (legacy no-E.164)
+// turnstileToken: obligatorio solo cuando el backend tiene TURNSTILE_SECRET_KEY configurado
 // Response 200
 {
   organization: { id: string; name: string; slug?: string };
@@ -676,17 +682,18 @@ interface PaymentReport {
   pendingReports: { id: string; billingPeriodId: string; amount: number; status: PaymentReportStatus; createdAt: string }[];
   totals: { totalDebt: number; pendingCount: number; overdueCount: number; pendingVerificationCount: number; pendingVerificationAmount: number };
 }
-// Errors: 404 NOT_FOUND (generico) | 404 ORGANIZATION_NOT_FOUND
+// Errors: 404 NOT_FOUND (generico) | 404 ORGANIZATION_NOT_FOUND | 429 RATE_LIMITED | 403 CAPTCHA_REQUIRED | 403 CAPTCHA_FAILED | 503 CAPTCHA_UNAVAILABLE
 ```
 
 **POST /public/org/:slug/reports**
 ```typescript
 // Request
-{ dni: string; phone: string; billingPeriodId: string; paymentMethod: PaymentMethod (sin INITIAL_PAYMENT); paidAt: string; notes?: string }
+{ dni: string; phone: string; billingPeriodId: string; paymentMethod: PaymentMethod (sin INITIAL_PAYMENT); paidAt: string; notes?: string; turnstileToken?: string }
 // paidAt formato YYYY-MM-DD, >= startDate del periodo, no futura
+// turnstileToken: obligatorio solo cuando el backend tiene TURNSTILE_SECRET_KEY configurado
 // Response 201
 { report: { id: string; billingPeriodId: string; amount: number; paymentMethod: PaymentMethod; paidAt: string; status: PaymentReportStatus; createdAt: string } }
-// Errors: 404 NOT_FOUND (generico, credenciales o periodo ajeno) | 400 INVALID_PAYMENT_METHOD | 400 INVALID_DATE_FORMAT | 400 INVALID_PAYMENT_DATE | 400 PERIOD_ALREADY_PAID | 409 PAYMENT_REPORT_ALREADY_EXISTS (ya hay reporte PENDING para ese periodo)
+// Errors: 404 NOT_FOUND (generico, credenciales o periodo ajeno) | 400 INVALID_PAYMENT_METHOD | 400 INVALID_DATE_FORMAT | 400 INVALID_PAYMENT_DATE | 400 PERIOD_ALREADY_PAID | 409 PAYMENT_REPORT_ALREADY_EXISTS (ya hay reporte PENDING para ese periodo) | 429 RATE_LIMITED | 403 CAPTCHA_REQUIRED | 403 CAPTCHA_FAILED | 503 CAPTCHA_UNAVAILABLE
 ```
 
 ---

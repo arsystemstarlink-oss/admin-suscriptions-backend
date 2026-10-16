@@ -90,6 +90,7 @@ export interface SendWhatsAppDto {
 export interface PublicLookupDto {
   dni: string;
   phone: string;
+  turnstileToken?: string;
 }
 
 export interface CreatePaymentReportDto {
@@ -99,6 +100,7 @@ export interface CreatePaymentReportDto {
   paymentMethod: string;
   paidAt: string;
   notes?: string;
+  turnstileToken?: string;
 }
 
 export interface ReviewPaymentReportDto {

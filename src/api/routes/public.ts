@@ -19,8 +19,20 @@ import {
 } from '../../domain/payment-reports';
 import { createId } from '../../domain/business-rules';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
+import {
+  createCaptchaVerifier,
+  createDniRateLimiter,
+  createPublicDniLimiterFromEnv,
+} from '../middleware/public-protection';
 
 const router = Router();
+
+// Protección del portal público: límite por cédula con bloqueo progresivo y
+// verificación CAPTCHA (Cloudflare Turnstile) cuando TURNSTILE_SECRET_KEY está
+// configurada. Ambas se aplican a lookup y reports porque ambos validan
+// cédula + teléfono y por tanto servirían como oráculo de fuerza bruta.
+const dniRateLimit = createDniRateLimiter(createPublicDniLimiterFromEnv());
+const verifyCaptcha = createCaptchaVerifier({ action: 'public_consulta' });
 
 function notFoundGeneric(): BusinessError {
   return new BusinessError('NOT_FOUND', 'No encontramos registros con esos datos. Verifica e intenta de nuevo.');
@@ -80,7 +92,7 @@ router.get('/org/:slug', async (req: Request, res: Response, next: NextFunction)
   }
 });
 
-router.post('/org/:slug/lookup', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/org/:slug/lookup', dniRateLimit, verifyCaptcha, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: PublicLookupDto = req.body;
     const org = await resolveOrgBySlug(req.params.slug);
@@ -163,7 +175,7 @@ router.post('/org/:slug/lookup', async (req: Request, res: Response, next: NextF
   }
 });
 
-router.post('/org/:slug/reports', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const dto: CreatePaymentReportDto = req.body;
     const org = await resolveOrgBySlug(req.params.slug);
