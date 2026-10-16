@@ -51,7 +51,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     const [suspendedCount, rawExpiring, rawOverdue] = await Promise.all([
       subscriptionRepository.countWhere([...org, ['status', '==', 'SUSPENDED']]),
       billingPeriodRepository.listWhere(
-        [...org, ['status', '==', 'PENDING'], ['endDate', '>=', startOfTodayUtc], ['endDate', '<=', in7Days]],
+        [...org, ['endDate', '>=', startOfTodayUtc], ['endDate', '<=', in7Days]],
         { orderBy: 'endDate', direction: 'asc', limit: EXPIRING_LIMIT + 1 }
       ),
       billingPeriodRepository.listWhere([...org, ['status', '==', 'OVERDUE']], {
@@ -76,10 +76,19 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
     );
     const clientsById = new Map<string, Client>(clients.map((c) => [c.id, c]));
 
-    // rawExpiring ya viene filtrado por Firestore a PENDING en la ventana;
-    // aquí solo se exige suscripción ACTIVE (los PAID adelantados jamás entran).
+    // La ventana ya limita por endDate. Aquí se exige suscripción ACTIVE, se toma
+    // un solo ciclo por suscripción (el que vence primero) y se corta al límite.
+    // Inclusión intencional: cuentan los ciclos PENDING y también los PAID que
+    // vencen en ≤7 días (pagados en fecha); los ciclos futuros adelantados quedan
+    // fuera porque su endDate cae más allá de la ventana.
+    const seenExpiringSubs = new Set<string>();
     const expiringSoon = rawExpiring
       .filter((p) => activeSubIds.has(p.subscriptionId))
+      .filter((p) => {
+        if (seenExpiringSubs.has(p.subscriptionId)) return false;
+        seenExpiringSubs.add(p.subscriptionId);
+        return true;
+      })
       .slice(0, EXPIRING_LIMIT);
 
     const overdueDebt = rawOverdue
@@ -93,6 +102,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       return {
         periodId: period.id,
         periodLabel: period.periodLabel,
+        status: period.status,
         amount: period.amount,
         endDate: period.endDate,
         subscriptionId: sub?.id,
@@ -146,7 +156,7 @@ router.get('/alerts', async (req: Request, res: Response, next: NextFunction) =>
       generatedAt: now,
       expiringSoon: {
         count: expiringSoon.length,
-        description: 'Suscripciones ACTIVAS con período PENDING por vencer en los próximos 7 días',
+        description: 'Suscripciones ACTIVAS con un ciclo por vencer en los próximos 7 días',
         hasMore: rawExpiring.length > expiringSoon.length,
         items: expiringSoon.map(enrichPeriod),
       },
