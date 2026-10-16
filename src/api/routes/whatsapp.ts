@@ -199,7 +199,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
         organizationId,
         title: 'Nuevo mensaje de WhatsApp',
         body: client ? `${client.firstName} ${client.lastName}` : parsed.profileName || parsed.from,
-        data: { url: '/chats' },
+        data: { url: '/chats', topic: 'chats' },
       }).catch((error) => {
         console.error('[Push] Error notificando mensaje entrante:', error);
       });
@@ -207,7 +207,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       pushService.sendBroadcast({
         title: 'Nuevo mensaje de WhatsApp',
         body: parsed.profileName || parsed.from,
-        data: { url: '/chats' },
+        data: { url: '/chats', topic: 'chats' },
       }).catch((error) => {
         console.error('[Push] Error notificando mensaje entrante:', error);
       });

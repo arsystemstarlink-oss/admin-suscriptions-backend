@@ -505,22 +505,43 @@ export class RefreshTokenSessionFirestoreRepository extends FirestoreRepository<
   }
 
   async revokeAllForUser(userId: string): Promise<number> {
-    const snapshot = await this.db
-      .collection(this.collectionName)
-      .where('userId', '==', userId)
-      .get();
-    recordQuery();
-    recordDocReads(snapshot.size);
+    return this.revokeAllForUsers([userId]);
+  }
 
+  async revokeAllForUsers(userIds: string[]): Promise<number> {
+    const unique = [...new Set(userIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return 0;
+    }
+
+    const MAX_IN_FILTER = 30;
     const now = new Date();
-    const batch = this.db.batch();
-    snapshot.docs.forEach((doc) => {
-      batch.update(doc.ref, { revokedAt: now });
-    });
+    let revoked = 0;
 
-    await batch.commit();
-    recordWrite(snapshot.size);
-    return snapshot.size;
+    for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
+      const chunk = unique.slice(i, i + MAX_IN_FILTER);
+      const snapshot = await this.db
+        .collection(this.collectionName)
+        .where('userId', 'in', chunk)
+        .get();
+      recordQuery();
+      recordDocReads(snapshot.size);
+
+      const docs = snapshot.docs;
+      const BATCH_SIZE = 400;
+      for (let j = 0; j < docs.length; j += BATCH_SIZE) {
+        const chunkDocs = docs.slice(j, j + BATCH_SIZE);
+        const batch = this.db.batch();
+        chunkDocs.forEach((doc) => {
+          batch.update(doc.ref, { revokedAt: now });
+        });
+        await batch.commit();
+        recordWrite(chunkDocs.length);
+        revoked += chunkDocs.length;
+      }
+    }
+
+    return revoked;
   }
 }
 
@@ -928,6 +949,26 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
 
   async listByAdminId(adminId: string): Promise<PushSubscription[]> {
     return this.listByField('adminId', adminId);
+  }
+
+  async listByAdminIds(adminIds: string[]): Promise<PushSubscription[]> {
+    const unique = [...new Set(adminIds.filter(Boolean))];
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const MAX_IN_FILTER = 30;
+    const results: PushSubscription[] = [];
+    for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
+      const chunk = unique.slice(i, i + MAX_IN_FILTER);
+      const snapshot = await this.buildQuery([['adminId', 'in', chunk]]).get();
+      recordQuery();
+      recordDocReads(snapshot.size);
+      snapshot.docs.forEach((doc) =>
+        results.push(this.deserialize({ id: doc.id, ...doc.data() }))
+      );
+    }
+    return results;
   }
 
   async listByOrganization(organizationId: string): Promise<PushSubscription[]> {

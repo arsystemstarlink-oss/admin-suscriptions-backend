@@ -270,6 +270,31 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
   const updatedPeriods = businessService.markPendingPeriodsOverdue(eligiblePeriods, now, activationPeriodIds);
 
+  const updatedPeriodsBySubId = new Map<string, BillingPeriod[]>();
+  for (const period of updatedPeriods) {
+    const list = updatedPeriodsBySubId.get(period.subscriptionId) || [];
+    list.push(period);
+    updatedPeriodsBySubId.set(period.subscriptionId, list);
+  }
+
+  // Rehidratación del período actual (radar) para suscripciones sin períodos
+  // visibles: se lotea con listByIds en vez de un getById por suscripción.
+  const missingCurrentPeriodIds = new Set<string>();
+  for (const subscription of subscriptions) {
+    if (subscription.status === 'SUSPENDED' || !subscription.currentPeriodId) continue;
+    const subPeriods = updatedPeriodsBySubId.get(subscription.id) || [];
+    if (!subPeriods.some((p) => p.id === subscription.currentPeriodId)) {
+      missingCurrentPeriodIds.add(subscription.currentPeriodId);
+    }
+  }
+  const currentFromRadarById = new Map<string, BillingPeriod>();
+  if (missingCurrentPeriodIds.size > 0) {
+    const fetched = await billingPeriodRepository.listByIds([...missingCurrentPeriodIds], organizationId);
+    for (const period of fetched) {
+      currentFromRadarById.set(period.id, period);
+    }
+  }
+
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
     if (original && original.status !== period.status) {
@@ -294,25 +319,16 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
     if (subscriptionPeriods.length === 0) {
       // Sin períodos visibles para esta suscripción: rehidratar solo el actual
-      // desde el radar (currentPeriodId) en vez de leer todo su historial.
-      if (subscription.currentPeriodId) {
-        const currentFromRadar = await billingPeriodRepository.getByIdScoped(
-          subscription.currentPeriodId,
-          organizationId
-        );
-        if (currentFromRadar) {
-          subscriptionPeriods = [currentFromRadar];
-        }
+      // desde el radar (currentPeriodId), ya precargado por lotes.
+      const currentFromRadar = subscription.currentPeriodId
+        ? currentFromRadarById.get(subscription.currentPeriodId)
+        : undefined;
+      if (currentFromRadar) {
+        subscriptionPeriods = [currentFromRadar];
       }
       if (subscriptionPeriods.length === 0) continue;
-    } else if (
-      subscription.currentPeriodId &&
-      !subscriptionPeriods.some((p) => p.id === subscription.currentPeriodId)
-    ) {
-      const currentFromRadar = await billingPeriodRepository.getByIdScoped(
-        subscription.currentPeriodId,
-        organizationId
-      );
+    } else if (subscription.currentPeriodId) {
+      const currentFromRadar = currentFromRadarById.get(subscription.currentPeriodId);
       if (currentFromRadar) {
         subscriptionPeriods = [currentFromRadar, ...subscriptionPeriods].sort(
           (a, b) => b.endDate.getTime() - a.endDate.getTime()
@@ -483,7 +499,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         organizationId,
         title: 'Resumen diario',
         body: summaryParts.join(' · '),
-        data: { url: '/dashboard' },
+        data: { url: '/dashboard', topic: 'subscriptions' },
       });
       console.log(`[Daily Job] Push de resumen enviado a los admins de ${organizationId}.`);
     } catch (error) {

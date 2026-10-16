@@ -297,8 +297,8 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     const orgId = existing.id;
 
     const users = await userRepository.listByOrganization(orgId);
+    await refreshTokenSessionRepository.revokeAllForUsers(users.map((user) => user.id));
     for (const user of users) {
-      await refreshTokenSessionRepository.revokeAllForUser(user.id);
       try {
         await admin.auth().deleteUser(user.id);
       } catch (firebaseError: any) {

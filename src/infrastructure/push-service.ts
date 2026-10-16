@@ -15,10 +15,12 @@ export interface PushRegistrationInput {
   userAgent?: string;
 }
 
+export type PushTopic = 'chats' | 'payment-reports' | 'subscriptions';
+
 export interface PushPayload {
   title: string;
   body: string;
-  data?: { url?: string; [key: string]: unknown };
+  data?: { url?: string; topic?: PushTopic; [key: string]: unknown };
 }
 
 export class PushService {
@@ -95,11 +97,7 @@ export class PushService {
       );
     }
 
-    const subscriptions: PushSubscription[] = [];
-    for (const adminId of adminIds) {
-      const adminSubs = await pushSubscriptionRepository.listByAdminId(adminId);
-      subscriptions.push(...adminSubs);
-    }
+    const subscriptions = await pushSubscriptionRepository.listByAdminIds(adminIds);
 
     let sent = 0;
     for (const subscription of subscriptions) {

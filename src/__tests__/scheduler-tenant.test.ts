@@ -7,6 +7,7 @@ jest.mock('../infrastructure/repositories', () => ({
     listPendingOverdueCandidates: jest.fn(),
     listReminderWindowCandidates: jest.fn(),
     listBySubscriptionIds: jest.fn(),
+    listByIds: jest.fn(),
     getByIdScoped: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
@@ -153,6 +154,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     mockedJobLock.acquire.mockResolvedValue(true);
     mockedJobLock.release.mockResolvedValue();
     mockedBillingPeriods.getByIdScoped.mockResolvedValue(undefined);
+    mockedBillingPeriods.listByIds.mockResolvedValue([]);
     mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([]);
     mockedSubscriptions.listGenerationCandidates.mockResolvedValue([]);
     mockedWhatsAppMessages.existsOutboundMessageSince.mockResolvedValue(false);

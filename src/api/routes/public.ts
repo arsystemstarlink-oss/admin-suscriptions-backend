@@ -19,6 +19,7 @@ import {
 } from '../../domain/payment-reports';
 import { createId } from '../../domain/business-rules';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
+import { pushService } from '../../infrastructure/push-service';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
 import {
   createCaptchaVerifier,
@@ -233,6 +234,17 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
 
     await paymentReportRepository.create(report);
     invalidateBadges(org.id);
+
+    pushService
+      .sendBroadcastToOrganization({
+        organizationId: org.id,
+        title: 'Nuevo reporte de pago',
+        body: [`${client.firstName} ${client.lastName}`, period.periodLabel].filter(Boolean).join(' · '),
+        data: { url: '/payment-reports', topic: 'payment-reports' },
+      })
+      .catch((error) => {
+        console.error('[Push] Error notificando reporte de pago:', error);
+      });
 
     try {
       await domainEventRepository.create({
