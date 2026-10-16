@@ -226,6 +226,10 @@ export interface WhatsAppConversation {
 export interface WhatsAppConversationRecord extends WhatsAppConversation {
   id: string;
   organizationId: string;
+  /** true cuando el último mensaje entrante no ha sido leído por un admin. */
+  hasUnread?: boolean;
+  /** Última vez que un admin marcó la conversación como leída. */
+  lastReadAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }

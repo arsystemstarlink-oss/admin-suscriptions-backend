@@ -17,6 +17,7 @@ import pushRoutes from './routes/push';
 import organizationRoutes from './routes/organizations';
 import publicRoutes from './routes/public';
 import paymentReportRoutes from './routes/payment-reports';
+import badgesRoutes from './routes/badges';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
 import { initializeFirebase } from '../infrastructure/firebase';
@@ -133,6 +134,7 @@ app.get('/', (req, res) => {
       subscriptions: '/api/subscriptions',
       billingPeriods: '/api/billing-periods',
       paymentReports: '/api/payment-reports',
+      badges: '/api/badges',
       public: '/api/public',
       whatsapp: '/api/whatsapp',
       dashboard: '/api/dashboard',
@@ -164,6 +166,7 @@ app.use('/api/plans', authenticateAdmin, planRoutes);
 app.use('/api/subscriptions', authenticateAdmin, subscriptionRoutes);
 app.use('/api/billing-periods', authenticateAdmin, billingPeriodRoutes);
 app.use('/api/payment-reports', authenticateAdmin, paymentReportRoutes);
+app.use('/api/badges', authenticateAdmin, badgesRoutes);
 app.use('/api/scheduler', authenticateAdmin, schedulerRoutes);
 app.use('/api/whatsapp', whatsappConfigRoutes);
 app.use('/api/whatsapp', whatsappRoutes);

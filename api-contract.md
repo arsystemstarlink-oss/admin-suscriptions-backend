@@ -726,6 +726,30 @@ interface PaymentReport {
 
 ---
 
+### Badges (admin, con auth)
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| GET | /badges | Ambos contadores de la barra de navegacion en una sola llamada |
+
+**GET /badges** (requiere `Authorization: Bearer {accessToken}`)
+```typescript
+// Response 200
+{
+  unreadChats: number;    // conversaciones con entrantes sin leer (agregacion count())
+  pendingReports: number; // reportes de pago PENDING (agregacion count())
+  generatedAt: string;
+}
+// Error 400: TENANT_REQUIRED (el super-admin debe enviar ?organizationId=)
+```
+
+Se calcula con agregaciones `count()` de Firestore sobre `whatsappConversations`
+(campo `hasUnread`) y `paymentReports` (campo `status`), sin leer documentos.
+Reemplaza las llamadas separadas del frontend (`/payment-reports/count` +
+coleccion completa de conversaciones solo para contar).
+
+---
+
 ### Dashboard
 
 | Metodo | Path | Descripcion |
@@ -894,6 +918,7 @@ Daily Job continúa procesando períodos y estados, pero no envía los mensajes 
 |--------|------|------|-------------|
 | POST | /api/whatsapp/send | Bearer admin | Enviar mensaje (texto o template) |
 | GET | /api/whatsapp/conversations | Bearer admin | Conversaciones agrupadas por teléfono (incluye números sin cliente) |
+| POST | /api/whatsapp/conversations/:phone/read | Bearer admin | Marca la conversación como leída (actualiza el contador global de chats sin leer) |
 | GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
 | DELETE | /api/whatsapp/messages/:phone | Bearer admin | Eliminar todo el chat del teléfono (requiere `?organizationId=` si el rol no la tiene) |
 | POST | /communications/webhook | Firma Twilio | Webhook para recibir mensajes de Twilio |
@@ -1171,6 +1196,7 @@ Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `
 | GET/POST /public/org/:slug | **Público (sin auth)** por slug; solo org activa | N/A (sin auth) |
 | GET /payment-reports, /payment-reports/count, /payment-reports/:id | Solo su organización | Todas o filtradas |
 | POST /payment-reports/:id/review | Solo reportes de su organización | Todos o filtrados |
+| GET /badges | Solo su organización | Todas o filtradas (?organizationId=) |
 
 ## Migración (single-tenant → multi-tenant)
 

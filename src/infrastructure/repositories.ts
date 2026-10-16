@@ -713,6 +713,8 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
       profileName: data?.profileName,
       lastMessage,
       messageCount: data?.messageCount ?? 0,
+      hasUnread: data?.hasUnread === true,
+      lastReadAt: toDate(data?.lastReadAt),
       createdAt: toDate(data?.createdAt) ?? new Date(),
       updatedAt: toDate(data?.updatedAt) ?? new Date(),
     } as WhatsAppConversationRecord;
@@ -792,6 +794,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
           profileName: message.profileName,
           lastMessage: message,
           messageCount: 1,
+          hasUnread: message.direction === 'INBOUND',
           createdAt: now,
           updatedAt: now,
         };
@@ -803,6 +806,10 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
       const existing = this.toRecord(doc.data(), id);
       const existingLastAt = existing.lastMessage?.createdAt?.getTime() ?? 0;
       const isNewer = incomingAt >= existingLastAt;
+      // Un entrante nuevo siempre queda pendiente de lectura; un saliente no
+      // limpia el contador (el admin marca leído explícitamente al abrir el chat).
+      const hasUnread =
+        message.direction === 'INBOUND' ? true : existing.hasUnread === true;
 
       const updated: WhatsAppConversationRecord = {
         ...existing,
@@ -810,6 +817,7 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
         profileName: message.profileName ?? existing.profileName,
         lastMessage: isNewer ? message : existing.lastMessage,
         messageCount: existing.messageCount + 1,
+        hasUnread,
         updatedAt: existing.updatedAt.getTime() >= now.getTime() ? existing.updatedAt : now,
       };
       recordWrite();
@@ -818,6 +826,48 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     });
 
     this.upsertInCaches(record);
+  }
+
+  /**
+   * Marca una conversación como leída (estado compartido de la organización).
+   * No toca `updatedAt` para no reordenar el listado por una simple lectura.
+   */
+  async markRead(organizationId: string, phone: string, readAt: Date = new Date()): Promise<boolean> {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    const docRef = this.db.collection(this.collectionName).doc(id);
+    recordDocReads();
+    const doc = await docRef.get();
+    if (!doc.exists) {
+      return false;
+    }
+
+    const record = this.toRecord(doc.data(), id);
+    if (record.hasUnread !== true && record.lastReadAt) {
+      return true;
+    }
+
+    record.hasUnread = false;
+    record.lastReadAt = readAt;
+
+    recordWrite();
+    await docRef.set(this.serialize(record));
+    this.upsertInCaches(record);
+    return true;
+  }
+
+  /**
+   * Cuenta las conversaciones con mensajes entrantes sin leer de la
+   * organización. Usa una agregación `count()`: no lee documentos completos.
+   */
+  async countUnread(organizationId: string): Promise<number> {
+    const snapshot = await this.buildQuery([
+      ['organizationId', '==', organizationId],
+      ['hasUnread', '==', true],
+    ])
+      .count()
+      .get();
+    recordAggregation();
+    return snapshot.data().count;
   }
 
   async updateLastMessageStatus(

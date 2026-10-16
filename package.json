@@ -13,6 +13,7 @@
     "create-admin": "ts-node scripts/create-admin.ts",
     "migrate:tenant": "ts-node scripts/migrate-tenant.ts",
     "backfill:conversations": "ts-node scripts/backfill-conversations.ts",
+    "backfill:conversation-unread": "ts-node scripts/backfill-conversation-unread.ts",
     "backfill:radar": "ts-node scripts/backfill-subscription-radar.ts",
     "backfill:client-name": "ts-node scripts/backfill-subscription-client-name.ts",
     "backfill:billing-periods": "ts-node scripts/backfill-billing-period-fields.ts",

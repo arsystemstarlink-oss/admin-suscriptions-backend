@@ -245,6 +245,17 @@ router.get('/conversations', authenticateAdmin, async (req: Request, res: Respon
   }
 });
 
+router.post('/conversations/:phone/read', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const organizationId = requireOrganizationId(req);
+    const phone = normalizePhoneNumber(req.params.phone);
+    const marked = await whatsappConversationRepository.markRead(organizationId, phone);
+    res.json({ success: true, read: marked });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { phone } = req.params;
