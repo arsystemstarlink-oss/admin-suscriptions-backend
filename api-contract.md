@@ -920,7 +920,8 @@ Daily Job continúa procesando períodos y estados, pero no envía los mensajes 
 | GET | /api/whatsapp/conversations | Bearer admin | Conversaciones agrupadas por teléfono (incluye números sin cliente) |
 | POST | /api/whatsapp/conversations/:phone/read | Bearer admin | Marca la conversación como leída (actualiza el contador global de chats sin leer) |
 | GET | /api/whatsapp/messages/:phone | Bearer admin | Historial de mensajes por teléfono |
-| DELETE | /api/whatsapp/messages/:phone | Bearer admin | Eliminar todo el chat del teléfono (requiere `?organizationId=` si el rol no la tiene) |
+| DELETE | /api/whatsapp/messages/batch | Bearer admin | Eliminar hasta 100 chats, requiere contraseña actual |
+| DELETE | /api/whatsapp/messages/:phone | Bearer admin | Eliminar todo el chat, requiere contraseña actual |
 | POST | /communications/webhook | Firma Twilio | Webhook para recibir mensajes de Twilio |
 
 **POST /api/whatsapp/send** (requiere `Authorization: Bearer {accessToken}`)
@@ -968,6 +969,41 @@ Daily Job continúa procesando períodos y estados, pero no envía los mensajes 
   total: number;
 }
 // Error 401: UNAUTHORIZED
+```
+
+**DELETE /api/whatsapp/messages/batch** (requiere `Authorization: Bearer admin`)
+```typescript
+// Query (obligatorio para super-admin)
+{ organizationId?: string }
+
+// Request
+{
+  phones: string[]; // entre 1 y 100 números
+  password: string; // contraseña actual del usuario autenticado
+}
+
+// Response 200
+{
+  success: boolean;
+  deleted: number; // mensajes eliminados
+  chatsDeleted: number;
+  message: string;
+}
+// Error 401: INVALID_CREDENTIALS si la contraseña es incorrecta
+// Error 404: NOT_FOUND si alguno de los chats ya no existe
+```
+
+**DELETE /api/whatsapp/messages/:phone** (requiere `Authorization: Bearer admin`)
+```typescript
+// Query (obligatorio para super-admin)
+{ organizationId?: string }
+
+// Request
+{ password: string; } // contraseña actual del usuario autenticado
+
+// Response 200
+{ success: boolean; deleted: number; message: string; }
+// Error 401: INVALID_CREDENTIALS si la contraseña es incorrecta
 ```
 
 **POST /communications/webhook** (interno - Twilio)

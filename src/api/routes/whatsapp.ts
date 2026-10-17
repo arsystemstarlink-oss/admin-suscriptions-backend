@@ -9,7 +9,9 @@ import {
   whatsappConversationRepository,
   clientRepository,
   organizationRepository,
+  userRepository,
 } from '../../infrastructure/repositories';
+import { authService } from '../../domain/auth-service';
 import { pushService } from '../../infrastructure/push-service';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
@@ -18,6 +20,21 @@ import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isFirestoreIndexError } from '../../infrastructure/firestore-error';
 
 const router = Router();
+
+async function verifyDeletionPassword(userId: string, password: unknown): Promise<void> {
+  if (typeof password !== 'string' || !password) {
+    throw new BusinessError('INVALID_DATA', 'La contraseña actual es obligatoria.');
+  }
+
+  const user = await userRepository.getById(userId);
+  if (!user) {
+    throw new BusinessError('UNAUTHORIZED', 'Usuario no encontrado.');
+  }
+
+  if (!(await authService.comparePassword(password, user.password))) {
+    throw new BusinessError('INVALID_CREDENTIALS', 'La contraseña actual es incorrecta.');
+  }
+}
 
 router.post('/send', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -284,10 +301,68 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
   }
 });
 
+router.delete('/messages/batch', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = getAuth(req);
+    const organizationId = requireOrganizationId(req);
+    const { phones, password } = req.body ?? {};
+
+    if (!Array.isArray(phones) || phones.length === 0 || phones.length > 100) {
+      throw new BusinessError('INVALID_DATA', 'Debes indicar entre 1 y 100 números de teléfono.');
+    }
+
+    const normalizedPhones = [...new Set(phones.map((phone: unknown) => {
+      if (typeof phone !== 'string') {
+        throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
+      }
+      const normalizedPhone = normalizePhoneNumber(phone);
+      if (!/^\+?[1-9]\d{7,14}$/.test(normalizedPhone)) {
+        throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
+      }
+      return normalizedPhone;
+    }))];
+
+    await verifyDeletionPassword(auth.userId, password);
+
+    const chats = await Promise.all(
+      normalizedPhones.map(async (phone) => ({
+        phone,
+        hasMessages:
+          (await whatsappMessageRepository.listByPhonePage({
+            organizationId,
+            phone,
+            limit: 1,
+          })).items.length > 0,
+      }))
+    );
+
+    if (chats.some(({ hasMessages }) => !hasMessages)) {
+      throw new BusinessError('NOT_FOUND', 'Uno o más chats ya no están disponibles.');
+    }
+
+    let deleted = 0;
+    for (const { phone } of chats) {
+      deleted += await whatsappMessageRepository.deleteByPhone(phone, organizationId);
+      await whatsappConversationRepository.deleteByPhone(organizationId, phone);
+    }
+
+    res.json({
+      success: true,
+      deleted,
+      chatsDeleted: chats.length,
+      message: 'Chats de WhatsApp eliminados correctamente.',
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.delete('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const auth = getAuth(req);
     const { phone } = req.params;
     const organizationId = requireOrganizationId(req);
+    await verifyDeletionPassword(auth.userId, req.body?.password);
 
     const normalizedPhone = normalizePhoneNumber(phone);
     const existing = await whatsappMessageRepository.listByPhone(normalizedPhone, organizationId);
