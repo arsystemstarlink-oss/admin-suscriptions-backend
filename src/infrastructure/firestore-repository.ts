@@ -163,6 +163,36 @@ export class FirestoreRepository<T extends Identifiable> {
     await docRef.update(this.serialize(entity));
   }
 
+  async createMany(entities: T[]): Promise<void> {
+    if (entities.length === 0) return;
+    const maxBatchWrites = 400;
+    for (let i = 0; i < entities.length; i += maxBatchWrites) {
+      const chunk = entities.slice(i, i + maxBatchWrites);
+      const batch = this.db.batch();
+      chunk.forEach((entity) => {
+        this.logOperation('WRITE', entity.id);
+        recordWrite();
+        batch.set(this.db.collection(this.collectionName).doc(entity.id), this.serialize(entity));
+      });
+      await batch.commit();
+    }
+  }
+
+  async updateMany(entities: T[]): Promise<void> {
+    if (entities.length === 0) return;
+    const maxBatchWrites = 400;
+    for (let i = 0; i < entities.length; i += maxBatchWrites) {
+      const chunk = entities.slice(i, i + maxBatchWrites);
+      const batch = this.db.batch();
+      chunk.forEach((entity) => {
+        this.logOperation('WRITE', entity.id);
+        recordWrite();
+        batch.update(this.db.collection(this.collectionName).doc(entity.id), this.serialize(entity));
+      });
+      await batch.commit();
+    }
+  }
+
   async getById(id: string): Promise<T | undefined> {
     this.logOperation('READ', id);
     recordDocReads();

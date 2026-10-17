@@ -22,6 +22,7 @@ import { flushStatsRecompute } from './stats-service';
 import {
   BillingPeriod,
   WhatsAppMessage,
+  DomainEvent,
   DomainEventType,
   Organization,
   OrganizationWhatsAppConfig,
@@ -62,6 +63,14 @@ export interface NotificationFailure {
   errorMessage: string;
 }
 
+export interface PendingNotification {
+  client: { id: string; firstName: string; lastName: string; phone: string };
+  subscription: { kitNumber: string };
+  period: BillingPeriod;
+  type: NotificationType;
+  dedupBody?: string;
+}
+
 export interface DailyJobResult {
   overdue: number;
   generated: number;
@@ -71,26 +80,22 @@ export interface DailyJobResult {
   skipped?: boolean;
 }
 
-async function recordDomainEvent(
+function buildDomainEvent(
   type: DomainEventType,
   organizationId: string,
   entity: string,
   entityId: string,
   payload?: Record<string, unknown>
-): Promise<void> {
-  try {
-    await domainEventRepository.create({
-      id: createId(),
-      type,
-      organizationId,
-      entity,
-      entityId,
-      payload,
-      createdAt: new Date(),
-    });
-  } catch (error) {
-    console.error(`[DomainEvent] Error registrando ${type}:`, error);
-  }
+): DomainEvent {
+  return {
+    id: createId(),
+    type,
+    organizationId,
+    entity,
+    entityId,
+    payload,
+    createdAt: new Date(),
+  };
 }
 
 export async function runDailyJobForOrganization(
@@ -249,6 +254,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   let notificationCount = 0;
   const notificationErrors: NotificationFailure[] = [];
 
+  // Escrituras y lecturas agrupadas: se acumulan durante el procesamiento y se
+  // confirman en pocas operaciones por lote en lugar de una por una.
+  const pendingPeriodUpdates = new Map<string, BillingPeriod>();
+  const pendingPeriodCreates: BillingPeriod[] = [];
+  const pendingSubscriptionUpdates = new Map<string, Subscription>();
+  const pendingEvents: DomainEvent[] = [];
+  const pendingNotifications: PendingNotification[] = [];
+
   const suspendedSubscriptionIds = new Set(
     subscriptions.filter((s) => s.status === 'SUSPENDED').map((s) => s.id)
   );
@@ -298,14 +311,12 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
     if (original && original.status !== period.status) {
-      await billingPeriodRepository.update(period);
+      pendingPeriodUpdates.set(period.id, period);
       overdueCount++;
-      await recordDomainEvent(
-        'billing_period.overdue',
-        organizationId,
-        'billingPeriod',
-        period.id,
-        { subscriptionId: period.subscriptionId }
+      pendingEvents.push(
+        buildDomainEvent('billing_period.overdue', organizationId, 'billingPeriod', period.id, {
+          subscriptionId: period.subscriptionId,
+        })
       );
     }
   }
@@ -353,7 +364,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       finalSubscription.status !== subscription.status ||
       hasRadarChanged(subscription, finalSubscription)
     ) {
-      await subscriptionRepository.update(finalSubscription);
+      pendingSubscriptionUpdates.set(finalSubscription.id, finalSubscription);
     }
 
     if (finalSubscription.status !== subscription.status && finalSubscription.status === 'SUSPENDED') {
@@ -361,29 +372,15 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
 
       const client = clients.find((c) => c.id === subscription.clientId);
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
-        const outcome = await sendNotificationWithThrottleAndDedup(
-          client,
-          subscription,
-          currentPeriod,
-          'suspended-notice',
-          organizationId,
-          organization,
-          notificationConfig,
-          startOfTodayUtc
+        pendingNotifications.push(
+          buildPendingNotification('suspended-notice', client, subscription, currentPeriod, notificationConfig)
         );
-        if (outcome.status === 'sent') {
-          notificationCount++;
-        } else if (outcome.status === 'failed') {
-          notificationErrors.push(outcome.error);
-        }
       }
 
-      await recordDomainEvent(
-        'subscription.suspended',
-        organizationId,
-        'subscription',
-        subscription.id,
-        { kitNumber: subscription.kitNumber }
+      pendingEvents.push(
+        buildDomainEvent('subscription.suspended', organizationId, 'subscription', subscription.id, {
+          kitNumber: subscription.kitNumber,
+        })
       );
     }
 
@@ -408,7 +405,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
             });
 
             const scopedNextPeriod = { ...nextPeriod, organizationId };
-            await billingPeriodRepository.create(scopedNextPeriod);
+            pendingPeriodCreates.push(scopedNextPeriod);
             generatedCount++;
             const radarWithNextPeriod = applyRadarToSubscription(finalSubscription, [
               ...subscriptionPeriods,
@@ -417,13 +414,11 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
             if (subscription.totalPeriods !== undefined) {
               radarWithNextPeriod.totalPeriods = subscription.totalPeriods + 1;
             }
-            await subscriptionRepository.update(radarWithNextPeriod);
-            await recordDomainEvent(
-              'billing_period.generated',
-              organizationId,
-              'billingPeriod',
-              scopedNextPeriod.id,
-              { subscriptionId: subscription.id }
+            pendingSubscriptionUpdates.set(radarWithNextPeriod.id, radarWithNextPeriod);
+            pendingEvents.push(
+              buildDomainEvent('billing_period.generated', organizationId, 'billingPeriod', scopedNextPeriod.id, {
+                subscriptionId: subscription.id,
+              })
             );
           } catch (error) {
             console.error(`[Daily Job] Error generando período para suscripción ${subscription.id}:`, error);
@@ -438,45 +433,58 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
-            const outcome = await sendNotificationWithThrottleAndDedup(
-              client,
-              subscription,
-              currentPeriod,
-              'reminder',
-              organizationId,
-              organization,
-              notificationConfig,
-              startOfTodayUtc
+            pendingNotifications.push(
+              buildPendingNotification('reminder', client, subscription, currentPeriod, notificationConfig)
             );
-            if (outcome.status === 'sent') {
-              notificationCount++;
-            } else if (outcome.status === 'failed') {
-              notificationErrors.push(outcome.error);
-            }
           } else if (
             daysUntilDue === 0 &&
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
-            const outcome = await sendNotificationWithThrottleAndDedup(
-              client,
-              subscription,
-              currentPeriod,
-              'suspension-warning',
-              organizationId,
-              organization,
-              notificationConfig,
-              startOfTodayUtc
+            pendingNotifications.push(
+              buildPendingNotification('suspension-warning', client, subscription, currentPeriod, notificationConfig)
             );
-            if (outcome.status === 'sent') {
-              notificationCount++;
-            } else if (outcome.status === 'failed') {
-              notificationErrors.push(outcome.error);
-            }
           }
         }
       }
     }
   }
+
+  try {
+    if (pendingPeriodUpdates.size > 0) {
+      await billingPeriodRepository.updateMany([...pendingPeriodUpdates.values()]);
+    }
+  } catch (error) {
+    console.error('[Daily Job] Error persistiendo períodos actualizados:', error);
+  }
+  try {
+    if (pendingPeriodCreates.length > 0) {
+      await billingPeriodRepository.createMany(pendingPeriodCreates);
+    }
+  } catch (error) {
+    console.error('[Daily Job] Error persistiendo períodos generados:', error);
+  }
+  try {
+    if (pendingSubscriptionUpdates.size > 0) {
+      await subscriptionRepository.updateMany([...pendingSubscriptionUpdates.values()]);
+    }
+  } catch (error) {
+    console.error('[Daily Job] Error persistiendo suscripciones:', error);
+  }
+  try {
+    if (pendingEvents.length > 0) {
+      await domainEventRepository.createMany(pendingEvents);
+    }
+  } catch (error) {
+    console.error('[DomainEvent] Error registrando lote de eventos:', error);
+  }
+
+  notificationCount += await deliverPendingNotifications(
+    pendingNotifications,
+    organizationId,
+    organization,
+    startOfTodayUtc,
+    notificationErrors
+  );
 
   await schedulerConfigRepository.updateConfig({ lastRun: now }, organizationId);
   // Reconciliación diaria: el job es el punto que ve todas las mutaciones del
@@ -641,7 +649,7 @@ async function sendWhatsAppNotification(
   type: NotificationType,
   organizationId: string,
   organization?: Organization
-): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
+): Promise<{ sent: true; message: WhatsAppMessage } | { sent: false; error: NotificationFailure }> {
   const clientFullName = `${client.firstName} ${client.lastName}`;
 
   const failure = (errorMessage: string, errorCode?: number): { sent: false; error: NotificationFailure } => ({
@@ -690,14 +698,8 @@ async function sendWhatsAppNotification(
       createdAt: new Date(),
     };
 
-    await whatsappMessageRepository.create(whatsappMsg);
-    try {
-      await whatsappConversationRepository.upsertFromMessage(whatsappMsg, organizationId);
-    } catch (conversationError) {
-      console.error('[WhatsApp] Error actualizando conversación:', conversationError);
-    }
     console.log(`[WhatsApp] Notificación ${type} enviada a ${clientFullName} (${client.phone})`);
-    return { sent: true };
+    return { sent: true, message: whatsappMsg };
   } catch (error) {
     console.error(`[WhatsApp] Error enviando notificación ${type} a ${clientFullName}:`, error);
     const twilioError = extractTwilioError(error);
@@ -715,7 +717,7 @@ async function sendNotificationWithThrottle(
   type: NotificationType,
   organizationId: string,
   organization?: Organization
-): Promise<{ sent: true } | { sent: false; error: NotificationFailure }> {
+): Promise<{ sent: true; message: WhatsAppMessage } | { sent: false; error: NotificationFailure }> {
   const accountSid = organization?.twilio?.accountSid
     ? organization.twilio.accountSid.trim()
     : undefined;
@@ -727,46 +729,97 @@ async function sendNotificationWithThrottle(
   return sendWhatsAppNotification(client, subscription, period, type, organizationId, organization);
 }
 
-type NotificationOutcome =
-  | { status: 'sent' }
-  | { status: 'duplicate' }
-  | { status: 'failed'; error: NotificationFailure };
-
-async function sendNotificationWithThrottleAndDedup(
+function buildPendingNotification(
+  type: NotificationType,
   client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
-  period: { endDate: Date },
-  type: NotificationType,
+  period: BillingPeriod,
+  notificationConfig?: OrganizationWhatsAppConfig
+): PendingNotification {
+  const templateName = resolveNotificationTemplateName(type, notificationConfig);
+  const dedupBody = templateName
+    ? buildNotificationMessageBody(
+        templateName,
+        buildNotificationVariables(type, client, subscription, period)
+      )
+    : undefined;
+  return { client, subscription, period, type, dedupBody };
+}
+
+async function deliverPendingNotifications(
+  notifications: PendingNotification[],
   organizationId: string,
   organization: Organization | undefined,
-  notificationConfig: OrganizationWhatsAppConfig | undefined,
-  since: Date
-): Promise<NotificationOutcome> {
-  const templateName = resolveNotificationTemplateName(type, notificationConfig);
-  if (templateName) {
-    const body = buildNotificationMessageBody(
-      templateName,
-      buildNotificationVariables(type, client, subscription, period)
-    );
-    const alreadySent = await whatsappMessageRepository.existsOutboundMessageSince({
+  since: Date,
+  notificationErrors: NotificationFailure[]
+): Promise<number> {
+  if (notifications.length === 0) return 0;
+
+  let sentCount = 0;
+  const sentBodies = new Set<string>();
+  try {
+    const phones = [...new Set(notifications.map((notification) => notification.client.phone))];
+    const outbound = await whatsappMessageRepository.listOutboundSince({
       organizationId,
-      phone: client.phone,
-      body,
+      phones,
       since,
     });
-    if (alreadySent) {
-      console.log(`[WhatsApp] Notificación ${type} ya enviada hoy a ${client.phone}. Skipping.`);
-      return { status: 'duplicate' };
+    outbound.forEach((message) => {
+      if (message.body) {
+        sentBodies.add(message.body);
+      }
+    });
+  } catch (error) {
+    console.error('[WhatsApp] Error consultando mensajes salientes para deduplicar:', error);
+  }
+
+  const sentMessages: WhatsAppMessage[] = [];
+  const flushSent = async (): Promise<void> => {
+    if (sentMessages.length === 0) return;
+    const messages = sentMessages.splice(0, sentMessages.length);
+    try {
+      await whatsappMessageRepository.createMany(messages);
+    } catch (error) {
+      console.error('[WhatsApp] Error persistiendo notificaciones enviadas:', error);
+    }
+    try {
+      await whatsappConversationRepository.upsertManyFromMessages(messages, organizationId);
+    } catch (conversationError) {
+      console.error('[WhatsApp] Error actualizando conversaciones:', conversationError);
+    }
+  };
+
+  for (const notification of notifications) {
+    if (notification.dedupBody && sentBodies.has(notification.dedupBody)) {
+      console.log(
+        `[WhatsApp] Notificación ${notification.type} ya enviada hoy a ${notification.client.phone}. Skipping.`
+      );
+      continue;
+    }
+
+    const result = await sendNotificationWithThrottle(
+      notification.client,
+      notification.subscription,
+      notification.period,
+      notification.type,
+      organizationId,
+      organization
+    );
+
+    if (result.sent) {
+      sentCount++;
+      if (notification.dedupBody) {
+        sentBodies.add(notification.dedupBody);
+      }
+      sentMessages.push(result.message);
+      if (sentMessages.length >= 10) {
+        await flushSent();
+      }
+    } else {
+      notificationErrors.push(result.error);
     }
   }
 
-  const result = await sendNotificationWithThrottle(
-    client,
-    subscription,
-    period,
-    type,
-    organizationId,
-    organization
-  );
-  return result.sent ? { status: 'sent' } : { status: 'failed', error: result.error };
+  await flushSent();
+  return sentCount;
 }

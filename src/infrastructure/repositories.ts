@@ -672,6 +672,37 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
    * teléfono desde `since`. Evita reenviar si el job corre más de una vez al día.
    * Usa el índice (organizationId, phone, createdAt) y filtra direction/body en memoria.
    */
+  /**
+   * Lectura por lotes para idempotencia del daily job: trae en una sola
+   * consulta (por chunks de 30 telefonos, con `in`) los mensajes salientes
+   * enviados desde `since`, para no consultar teléfono por teléfono.
+   * Reutiliza el índice (organizationId, phone, createdAt).
+   */
+  async listOutboundSince(params: {
+    organizationId: string;
+    phones: string[];
+    since: Date;
+    limit?: number;
+  }): Promise<WhatsAppMessage[]> {
+    const phones = [...new Set(params.phones.filter(Boolean))];
+    if (phones.length === 0) return [];
+    const MAX_IN_FILTER = 30;
+    const results: WhatsAppMessage[] = [];
+    for (let i = 0; i < phones.length; i += MAX_IN_FILTER) {
+      const chunk = phones.slice(i, i + MAX_IN_FILTER);
+      const messages = await this.listWhere(
+        [
+          ['organizationId', '==', params.organizationId],
+          ['phone', 'in', chunk],
+          ['createdAt', '>=', params.since],
+        ],
+        { orderBy: 'createdAt', direction: 'desc', limit: params.limit ?? 500 }
+      );
+      results.push(...messages.filter((message) => message.direction === 'OUTBOUND'));
+    }
+    return results;
+  }
+
   async existsOutboundMessageSince(params: {
     organizationId: string;
     phone: string;
@@ -679,17 +710,13 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     since: Date;
     limit?: number;
   }): Promise<boolean> {
-    const results = await this.listWhere(
-      [
-        ['organizationId', '==', params.organizationId],
-        ['phone', '==', params.phone],
-        ['createdAt', '>=', params.since],
-      ],
-      { orderBy: 'createdAt', direction: 'desc', limit: params.limit ?? 100 }
-    );
-    return results.some(
-      (message) => message.direction === 'OUTBOUND' && message.body === params.body
-    );
+    const results = await this.listOutboundSince({
+      organizationId: params.organizationId,
+      phones: [params.phone],
+      since: params.since,
+      limit: params.limit ?? 100,
+    });
+    return results.some((message) => message.body === params.body);
   }
 
   async updateStatusByMessageSid(
@@ -797,6 +824,46 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     return items;
   }
 
+  private applyMessageToRecord(
+    existing: WhatsAppConversationRecord | undefined,
+    message: WhatsAppMessage,
+    id: string,
+    organizationId: string,
+    now: Date
+  ): WhatsAppConversationRecord {
+    const incomingAt = toDate(message.createdAt)?.getTime() ?? now.getTime();
+
+    if (!existing) {
+      return {
+        id,
+        organizationId,
+        phone: message.phone,
+        clientId: message.clientId,
+        profileName: message.profileName,
+        lastMessage: message,
+        messageCount: 1,
+        hasUnread: message.direction === 'INBOUND',
+        createdAt: now,
+        updatedAt: now,
+      };
+    }
+
+    const existingLastAt = existing.lastMessage?.createdAt?.getTime() ?? 0;
+    const isNewer = incomingAt >= existingLastAt;
+    const hasUnread =
+      message.direction === 'INBOUND' ? true : existing.hasUnread === true;
+
+    return {
+      ...existing,
+      clientId: message.clientId ?? existing.clientId,
+      profileName: message.profileName ?? existing.profileName,
+      lastMessage: isNewer ? message : existing.lastMessage,
+      messageCount: existing.messageCount + 1,
+      hasUnread,
+      updatedAt: existing.updatedAt.getTime() >= now.getTime() ? existing.updatedAt : now,
+    };
+  }
+
   async upsertFromMessage(message: WhatsAppMessage, organizationId: string): Promise<void> {
     const id = WhatsAppConversationFirestoreRepository.docId(organizationId, message.phone);
     const docRef = this.db.collection(this.collectionName).doc(id);
@@ -805,43 +872,13 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     const record = await this.db.runTransaction(async (tx) => {
       recordDocReads();
       const doc = await tx.get(docRef);
-      const incomingAt = toDate(message.createdAt)?.getTime() ?? now.getTime();
-
-      if (!doc.exists) {
-        const created: WhatsAppConversationRecord = {
-          id,
-          organizationId,
-          phone: message.phone,
-          clientId: message.clientId,
-          profileName: message.profileName,
-          lastMessage: message,
-          messageCount: 1,
-          hasUnread: message.direction === 'INBOUND',
-          createdAt: now,
-          updatedAt: now,
-        };
-        recordWrite();
-        tx.set(docRef, this.serialize(created));
-        return created;
-      }
-
-      const existing = this.toRecord(doc.data(), id);
-      const existingLastAt = existing.lastMessage?.createdAt?.getTime() ?? 0;
-      const isNewer = incomingAt >= existingLastAt;
-      // Un entrante nuevo siempre queda pendiente de lectura; un saliente no
-      // limpia el contador (el admin marca leído explícitamente al abrir el chat).
-      const hasUnread =
-        message.direction === 'INBOUND' ? true : existing.hasUnread === true;
-
-      const updated: WhatsAppConversationRecord = {
-        ...existing,
-        clientId: message.clientId ?? existing.clientId,
-        profileName: message.profileName ?? existing.profileName,
-        lastMessage: isNewer ? message : existing.lastMessage,
-        messageCount: existing.messageCount + 1,
-        hasUnread,
-        updatedAt: existing.updatedAt.getTime() >= now.getTime() ? existing.updatedAt : now,
-      };
+      const updated = this.applyMessageToRecord(
+        doc.exists ? this.toRecord(doc.data(), id) : undefined,
+        message,
+        id,
+        organizationId,
+        now
+      );
       recordWrite();
       tx.set(docRef, this.serialize(updated));
       return updated;
@@ -849,6 +886,71 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
 
     this.upsertInCaches(record);
     if (record.hasUnread) {
+      invalidateBadges(organizationId);
+    }
+  }
+
+  async upsertManyFromMessages(messages: WhatsAppMessage[], organizationId: string): Promise<void> {
+    if (messages.length === 0) return;
+
+    const messagesByPhone = new Map<string, WhatsAppMessage[]>();
+    for (const message of messages) {
+      const list = messagesByPhone.get(message.phone) || [];
+      list.push(message);
+      messagesByPhone.set(message.phone, list);
+    }
+
+    const phones = [...messagesByPhone.keys()];
+    const ids = phones.map((phone) =>
+      WhatsAppConversationFirestoreRepository.docId(organizationId, phone)
+    );
+    const docsById = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+    const MAX_GET_ALL = 300;
+    for (let i = 0; i < ids.length; i += MAX_GET_ALL) {
+      const chunk = ids.slice(i, i + MAX_GET_ALL);
+      const refs = chunk.map((id) => this.db.collection(this.collectionName).doc(id));
+      const docs = await this.db.getAll(...refs);
+      docs.forEach((doc, index) => {
+        recordDocReads();
+        docsById.set(chunk[index], doc);
+      });
+    }
+
+    const now = new Date();
+    const updatedRecords: WhatsAppConversationRecord[] = [];
+    for (const [phone, phoneMessages] of messagesByPhone) {
+      const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+      const doc = docsById.get(id);
+      let record = doc && doc.exists ? this.toRecord(doc.data(), id) : undefined;
+      for (const message of phoneMessages) {
+        record = this.applyMessageToRecord(record, message, id, organizationId, now);
+      }
+      if (record) {
+        updatedRecords.push(record);
+      }
+    }
+
+    if (updatedRecords.length === 0) return;
+
+    const maxBatchWrites = 400;
+    for (let i = 0; i < updatedRecords.length; i += maxBatchWrites) {
+      const chunk = updatedRecords.slice(i, i + maxBatchWrites);
+      const batch = this.db.batch();
+      chunk.forEach((record) => {
+        recordWrite();
+        batch.set(this.db.collection(this.collectionName).doc(record.id), this.serialize(record));
+      });
+      await batch.commit();
+    }
+
+    let hasUnread = false;
+    for (const record of updatedRecords) {
+      this.upsertInCaches(record);
+      if (record.hasUnread) {
+        hasUnread = true;
+      }
+    }
+    if (hasUnread) {
       invalidateBadges(organizationId);
     }
   }

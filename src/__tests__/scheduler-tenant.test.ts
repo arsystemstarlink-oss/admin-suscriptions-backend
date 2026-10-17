@@ -1,5 +1,5 @@
 import { runDailyJobForOrganization } from '../infrastructure/scheduler';
-import { Plan, Subscription, BillingPeriod, Organization } from '../domain/entities';
+import { Plan, Subscription, BillingPeriod, Organization, WhatsAppMessage } from '../domain/entities';
 
 jest.mock('../infrastructure/repositories', () => ({
   billingPeriodRepository: {
@@ -11,12 +11,15 @@ jest.mock('../infrastructure/repositories', () => ({
     getByIdScoped: jest.fn(),
     update: jest.fn(),
     create: jest.fn(),
+    updateMany: jest.fn(),
+    createMany: jest.fn(),
   },
   subscriptionRepository: {
     listByOrganization: jest.fn(),
     listByIds: jest.fn(),
     listGenerationCandidates: jest.fn(),
     update: jest.fn(),
+    updateMany: jest.fn(),
   },
   planRepository: {
     listByOrganization: jest.fn(),
@@ -31,16 +34,20 @@ jest.mock('../infrastructure/repositories', () => ({
   },
   whatsappMessageRepository: {
     create: jest.fn(),
+    createMany: jest.fn(),
     existsOutboundMessageSince: jest.fn(),
+    listOutboundSince: jest.fn(),
   },
   whatsappConversationRepository: {
     upsertFromMessage: jest.fn(),
+    upsertManyFromMessages: jest.fn(),
   },
   organizationRepository: {
     getById: jest.fn(),
   },
   domainEventRepository: {
     create: jest.fn(),
+    createMany: jest.fn(),
   },
   schedulerLogRepository: {
     create: jest.fn(),
@@ -158,6 +165,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([]);
     mockedSubscriptions.listGenerationCandidates.mockResolvedValue([]);
     mockedWhatsAppMessages.existsOutboundMessageSince.mockResolvedValue(false);
+    mockedWhatsAppMessages.listOutboundSince.mockResolvedValue([]);
     mockedSchedulerConfig.getConfig.mockResolvedValue({
       id: 'org_A',
       enabled: true,
@@ -203,12 +211,12 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(result.overdue).toBe(1);
     expect(result.generated).toBe(1);
 
-    const updated = mockedBillingPeriods.update.mock.calls[0][0];
+    const updated = mockedBillingPeriods.updateMany.mock.calls[0][0][0];
     expect(updated.id).toBe(periodA.id);
     expect(updated.organizationId).toBe('org_A');
     expect(updated.status).toBe('OVERDUE');
 
-    const created = mockedBillingPeriods.create.mock.calls[0][0];
+    const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
     expect(created.organizationId).toBe('org_A');
     expect(created.status).toBe('PENDING');
 
@@ -271,7 +279,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       'org_B'
     );
 
-    const orgBCreated = mockedBillingPeriods.create.mock.calls[1][0];
+    const orgBCreated = mockedBillingPeriods.createMany.mock.calls[1][0][0];
     expect(orgBCreated.organizationId).toBe('org_B');
   });
 
@@ -295,7 +303,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     await runDailyJobForOrganization('org_A');
 
-    const updates = mockedBillingPeriods.update.mock.calls.map((c) => c[0]);
+    const updates = mockedBillingPeriods.updateMany.mock.calls.flatMap((c) => c[0]);
     const overdueUpdates = updates.filter((u) => u.status === 'OVERDUE');
     expect(overdueUpdates).toHaveLength(1);
     expect(overdueUpdates[0].id).toBe('p1');
@@ -440,7 +448,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       expect.objectContaining({ templateName: 'HX_org_A_reminder' }),
       organization
     );
-    expect(mockedWhatsAppMessages.existsOutboundMessageSince).toHaveBeenCalledWith(
+    expect(mockedWhatsAppMessages.listOutboundSince).toHaveBeenCalledWith(
       expect.objectContaining({ organizationId: orgA })
     );
   });
@@ -544,7 +552,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const result = await runDailyJobForOrganization(orgA);
 
     expect(result.generated).toBe(1);
-    const created = mockedBillingPeriods.create.mock.calls[0][0];
+    const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
     expect(created.subscriptionId).toBe(subA.id);
     expect(created.status).toBe('PENDING');
   });
@@ -593,7 +601,20 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       updatedAt: new Date(),
     });
     mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
-    mockedWhatsAppMessages.existsOutboundMessageSince.mockResolvedValue(true);
+    mockedWhatsAppMessages.listOutboundSince.mockResolvedValue([
+      {
+        id: 'msg_sent',
+        organizationId: orgA,
+        clientId: subA.clientId,
+        phone: '+584123456789',
+        direction: 'OUTBOUND',
+        messageSid: 'SM_sent',
+        body: `[Template: HX_org_A_reminder] Variables: ${JSON.stringify({ '1': 'Ana López', '2': '2026-07-15' })}`,
+        templateName: 'HX_org_A_reminder',
+        status: 'SENT',
+        createdAt: new Date(),
+      } as WhatsAppMessage,
+    ]);
 
     const result = await runDailyJobForOrganization(orgA);
 
