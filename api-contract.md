@@ -66,6 +66,9 @@ interface Organization {
   createdAt: string; createdBy?: string;
 }
 
+// Máximo de usuarios con rol admin por organización (incluye al administrador inicial):
+// Básico: 1 | Pro: 3 | Negocio: 5 | A medida: 5.
+
 interface User {
   id: string; name: string; email: string;
   role: UserRole;
@@ -253,6 +256,7 @@ interface DebtorItem {
 { message: string; user: User }
 // Errors: 401 UNAUTHORIZED | 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 400 INVALID_PHONE
 //         403 TENANT_REQUIRED | 404 ORGANIZATION_NOT_FOUND | 409 EMAIL_TAKEN
+//         409 ADMIN_LIMIT_REACHED (incluye adminCount y adminLimit)
 ```
 
 **POST /auth/login**
@@ -476,6 +480,7 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
+//         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)
 ```
 
 **Organization DTO (responses GET/POST/PUT):**
@@ -1271,12 +1276,19 @@ Authorization: Bearer {accessToken}
 ## Formato de Error
 
 ```typescript
-{ error: { code: string; message: string; clientCount?: number; clientLimit?: number } }
+{
+  error: {
+    code: string;
+    message: string;
+    clientCount?: number; clientLimit?: number;
+    adminCount?: number; adminLimit?: number;
+  }
+}
 ```
 
 Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN` | `CLIENT_LIMIT_REACHED` (409, incluye conteo y límite)
 
-Codigos de planes: `PLAN_READ_ONLY` (403) | `PLAN_NOT_CONFIGURED` (409) | `CLIENT_LIMIT_BELOW_USAGE` (409) | `INVALID_CLIENT_LIMIT` | `INVALID_PLAN` | `INVALID_PLAN_STATUS` | `INVALID_PLAN_DATE` | `INVALID_PAYMENT_METHOD` | `PLAN_CONCURRENT_UPDATE` (409)
+Codigos de planes: `PLAN_READ_ONLY` (403) | `PLAN_NOT_CONFIGURED` (409) | `CLIENT_LIMIT_BELOW_USAGE` (409) | `ADMIN_LIMIT_REACHED` (409) | `ADMIN_LIMIT_BELOW_USAGE` (409) | `INVALID_CLIENT_LIMIT` | `INVALID_PLAN` | `INVALID_PLAN_STATUS` | `INVALID_PLAN_DATE` | `INVALID_PAYMENT_METHOD` | `PLAN_CONCURRENT_UPDATE` (409)
 
 Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
 

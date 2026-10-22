@@ -10,6 +10,7 @@ import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { AuthenticatedRequest } from '../middleware/auth';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
+import { validateOrganizationAdminCount } from '../../domain/business-plan';
 import {
   EMAIL_REGEX,
   normalizePhoneToE164,
@@ -192,6 +193,24 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     if (updates.role === 'admin' && !updates.organizationId && user.organizationId === null) {
       throw new BusinessError('TENANT_REQUIRED', 'Al asignar rol admin, debes indicar la organización (organizationId).');
+    }
+
+    const nextRole = updates.role ?? user.role;
+    const nextOrganizationId = updates.organizationId ?? user.organizationId;
+    const joinsOrganization =
+      nextRole === 'admin' &&
+      nextOrganizationId &&
+      (user.role !== 'admin' || user.organizationId !== nextOrganizationId);
+    if (joinsOrganization) {
+      const organization = await organizationRepository.getById(nextOrganizationId);
+      if (!organization) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización indicada no existe.');
+      }
+      const organizationAdmins = await userRepository.listByOrganization(nextOrganizationId);
+      validateOrganizationAdminCount(
+        organization.plan ?? 'basico',
+        organizationAdmins.filter((adminUser) => adminUser.role === 'admin').length
+      );
     }
 
     const updatedUser: User = { ...user, ...updates };

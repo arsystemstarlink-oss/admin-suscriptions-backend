@@ -1,5 +1,8 @@
 import {
+  BUSINESS_PLAN_ADMIN_LIMITS,
   isPlanExpired,
+  validateOrganizationAdminCount,
+  validateOrganizationAdminLimit,
   validatePlanConfiguration,
 } from '../domain/business-plan';
 import { Organization } from '../domain/entities';
@@ -23,6 +26,22 @@ function organization(overrides: Partial<Organization> = {}): Organization {
 }
 
 describe('business plan rules', () => {
+  it.each([
+    ['basico', 1],
+    ['pro', 3],
+    ['negocio', 5],
+    ['a-medida', 5],
+  ] as const)('sets the administrator limit for %s', (plan, adminLimit) => {
+    expect(BUSINESS_PLAN_ADMIN_LIMITS[plan]).toBe(adminLimit);
+    expect(() => validateOrganizationAdminCount(plan, adminLimit - 1)).not.toThrow();
+    expect(() => validateOrganizationAdminCount(plan, adminLimit)).toThrow('permite hasta');
+  });
+
+  it('prevents changing to a plan below the current administrator count', () => {
+    expect(() => validateOrganizationAdminLimit('basico', 1)).not.toThrow();
+    expect(() => validateOrganizationAdminLimit('basico', 2)).toThrow('ya tiene 2 administradores');
+  });
+
   it.each([
     ['basico', 30],
     ['pro', 150],

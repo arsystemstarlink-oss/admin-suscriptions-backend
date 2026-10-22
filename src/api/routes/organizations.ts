@@ -27,6 +27,7 @@ import { createId } from '../../domain/business-rules';
 import {
   BUSINESS_PLAN_LIMITS,
   CUSTOM_PLAN_MIN_CLIENTS,
+  validateOrganizationAdminLimit,
   validatePlanConfiguration,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
@@ -516,6 +517,13 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       existing.planStatus !== planStatus ||
       existing.trialEndsAt?.getTime() !== trialEndsAt?.getTime() ||
       existing.planExpiresAt?.getTime() !== planExpiresAt?.getTime();
+    if (existing.plan !== plan) {
+      const admins = await userRepository.listByOrganization(existing.id);
+      validateOrganizationAdminLimit(
+        plan,
+        admins.filter((user) => user.role === 'admin').length
+      );
+    }
     const actor = getAuth(req);
     const updated: Organization = {
       ...existing,
@@ -568,6 +576,13 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const paymentPlan = plan as BusinessPlanKey;
+    if (paymentPlan !== current.plan) {
+      const admins = await userRepository.listByOrganization(current.id);
+      validateOrganizationAdminLimit(
+        paymentPlan,
+        admins.filter((user) => user.role === 'admin').length
+      );
+    }
     const clientLimit =
       BUSINESS_PLAN_LIMITS[paymentPlan] ??
       (Number.isInteger(current.clientLimit) && current.clientLimit! >= CUSTOM_PLAN_MIN_CLIENTS

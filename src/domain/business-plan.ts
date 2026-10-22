@@ -12,7 +12,36 @@ export const BUSINESS_PLAN_LIMITS: Record<BusinessPlanKey, number | null> = {
   'a-medida': null,
 };
 
+export const BUSINESS_PLAN_ADMIN_LIMITS: Record<BusinessPlanKey, number> = {
+  basico: 1,
+  pro: 3,
+  negocio: 5,
+  'a-medida': 5,
+};
+
 export const CUSTOM_PLAN_MIN_CLIENTS = 301;
+
+export function validateOrganizationAdminCount(plan: BusinessPlanKey, adminCount: number): void {
+  const adminLimit = BUSINESS_PLAN_ADMIN_LIMITS[plan];
+  if (adminCount >= adminLimit) {
+    throw new BusinessError(
+      'ADMIN_LIMIT_REACHED',
+      `El plan ${plan} permite hasta ${adminLimit} administrador${adminLimit === 1 ? '' : 'es'}.`,
+      { adminCount, adminLimit }
+    );
+  }
+}
+
+export function validateOrganizationAdminLimit(plan: BusinessPlanKey, adminCount: number): void {
+  const adminLimit = BUSINESS_PLAN_ADMIN_LIMITS[plan];
+  if (adminCount > adminLimit) {
+    throw new BusinessError(
+      'ADMIN_LIMIT_BELOW_USAGE',
+      `No se puede asignar el plan ${plan}: la organización ya tiene ${adminCount} administradores y el límite es ${adminLimit}.`,
+      { adminCount, adminLimit }
+    );
+  }
+}
 
 export function isPlanExpired(organization: Organization, now = new Date()): boolean {
   if (organization.planStatus === 'prueba') {

@@ -7,6 +7,7 @@ import {
 import { authService } from '../../domain/auth-service';
 import { BusinessError, User, UserRole } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
+import { validateOrganizationAdminCount } from '../../domain/business-plan';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
@@ -98,6 +99,11 @@ async function validateAndCreateUser(input: {
     if (!organization || !organization.active) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización indicada no existe o está inactiva.');
     }
+    const admins = await userRepository.listByOrganization(organizationId);
+    validateOrganizationAdminCount(
+      organization.plan ?? 'basico',
+      admins.filter((adminUser) => adminUser.role === 'admin').length
+    );
   }
 
   const user: User = {
