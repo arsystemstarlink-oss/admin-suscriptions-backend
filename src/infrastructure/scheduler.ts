@@ -20,6 +20,7 @@ import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
 import { flushStatsRecompute } from './stats-service';
 import {
+  BusinessError,
   BillingPeriod,
   WhatsAppMessage,
   DomainEvent,
@@ -30,6 +31,7 @@ import {
   Subscription,
 } from '../domain/entities';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import { isPlanExpired, validatePlanConfiguration } from '../domain/business-plan';
 
 const businessService = new SubscriptionBusinessService();
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -181,9 +183,53 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
   const organization = await organizationRepository.getById(organizationId);
-  const notificationConfig = organization
-    ? resolveWhatsAppNotificationConfig(organization)
-    : undefined;
+  if (!organization) {
+    throw new Error(`Organización ${organizationId} no encontrada para el Daily Job.`);
+  }
+  const currentOrganization = await organizationRepository.refreshExpiredStatus(organization, now);
+  const clientLimit = currentOrganization.clientLimit;
+  const clientCount = currentOrganization.clientCount;
+  if (
+    !currentOrganization.plan ||
+    !currentOrganization.planStatus ||
+    typeof clientLimit !== 'number' ||
+    !Number.isInteger(clientLimit) ||
+    clientLimit <= 0 ||
+    typeof clientCount !== 'number' ||
+    !Number.isInteger(clientCount) ||
+    clientCount < 0
+  ) {
+    console.info(
+      `[Daily Job] Se omite la organización ${organizationId}: el plan o el contador no está configurado.`
+    );
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
+  }
+  try {
+    validatePlanConfiguration({
+      plan: currentOrganization.plan,
+      clientLimit,
+      planStatus: currentOrganization.planStatus,
+      trialEndsAt: currentOrganization.trialEndsAt,
+      planExpiresAt: currentOrganization.planExpiresAt,
+    });
+  } catch (error) {
+    if (!(error instanceof BusinessError)) throw error;
+    console.info(
+      `[Daily Job] Se omite la organización ${organizationId}: la configuración del plan no es válida.`
+    );
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
+  }
+  if (
+    currentOrganization.planStatus === 'vencido' ||
+    currentOrganization.planStatus === 'suspendido' ||
+    isPlanExpired(currentOrganization, now)
+  ) {
+    console.info(
+      `[Daily Job] Se omite la organización ${organizationId}: el plan no permite escrituras.`
+    );
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
+  }
+  const notificationConfig = resolveWhatsAppNotificationConfig(currentOrganization);
 
   // Ventana de recordatorios en días UTC. Incluye el día 0 para que el aviso de
   // corte siga funcionando aunque reminderDaysBefore esté vacío.

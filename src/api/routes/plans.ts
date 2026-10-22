@@ -135,7 +135,10 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     const updated = {
       ...existing,
-      ...dto,
+      ...(dto.name !== undefined ? { name: dto.name } : {}),
+      ...(dto.price !== undefined ? { price: dto.price } : {}),
+      ...(dto.description !== undefined ? { description: dto.description } : {}),
+      ...(dto.active !== undefined ? { active: dto.active } : {}),
     };
 
     await planRepository.update(updated);

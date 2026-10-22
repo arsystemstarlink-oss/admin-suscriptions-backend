@@ -1,6 +1,9 @@
 export type UserRole = 'super-admin' | 'admin';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED';
 export type BillingPeriodStatus = 'PENDING' | 'PAID' | 'OVERDUE';
+export type BusinessPlanKey = 'basico' | 'pro' | 'negocio' | 'a-medida';
+export type OrganizationPlanStatus = 'prueba' | 'activo' | 'vencido' | 'suspendido';
+export type OrganizationPlanPaymentMethod = 'transferencia' | 'usdt' | 'efectivo';
 
 export interface OrganizationTwilioConfig {
   accountSid?: string;
@@ -31,10 +34,31 @@ export interface Organization {
   name: string;
   slug?: string;
   active: boolean;
+  plan?: BusinessPlanKey;
+  clientLimit?: number;
+  planStatus?: OrganizationPlanStatus;
+  trialEndsAt?: Date | null;
+  planExpiresAt?: Date | null;
+  clientCount?: number;
+  planUpdatedAt?: Date;
+  planUpdatedBy?: string;
   twilio?: OrganizationTwilioConfig;
   whatsappNotifications?: OrganizationWhatsAppConfig;
   createdAt: Date;
   createdBy?: string;
+}
+
+export interface OrganizationPlanPayment {
+  id: string;
+  organizationId: string;
+  paidAt: Date;
+  amount: number;
+  method: OrganizationPlanPaymentMethod;
+  plan: BusinessPlanKey;
+  newPlanExpiresAt: Date;
+  notes?: string;
+  createdBy: string;
+  createdAt: Date;
 }
 
 export interface User {
@@ -271,7 +295,11 @@ export interface DomainEvent {
 }
 
 export class BusinessError extends Error {
-  constructor(public code: string, message: string) {
+  constructor(
+    public code: string,
+    message: string,
+    public details?: Record<string, unknown>
+  ) {
     super(message);
     Object.setPrototypeOf(this, BusinessError.prototype);
   }

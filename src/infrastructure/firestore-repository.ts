@@ -95,7 +95,7 @@ export class FirestoreRepository<T extends Identifiable> {
     console.log(`[${ctx.requestId}] ${operation} ${this.collectionName}${documentId ? `/${documentId}` : ''}`);
   }
 
-  protected serialize(entity: T): any {
+  protected serialize<U>(entity: U): any {
     const stripUndefined = (value: any): any => {
       if (value instanceof Date) {
         return value;

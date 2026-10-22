@@ -12,6 +12,17 @@ const STATUS_BY_CODE: Record<string, number> = {
   NOT_FOUND: 404,
   USER_NOT_FOUND: 404,
   EMAIL_TAKEN: 409,
+  CLIENT_LIMIT_REACHED: 409,
+  CLIENT_LIMIT_BELOW_USAGE: 409,
+  PLAN_CONCURRENT_UPDATE: 409,
+  PLAN_NOT_CONFIGURED: 409,
+  PLAN_READ_ONLY: 403,
+  INVALID_CLIENT_LIMIT: 400,
+  INVALID_PLAN: 400,
+  INVALID_PLAN_STATUS: 400,
+  INVALID_PLAN_DATE: 400,
+  INVALID_PAYMENT_METHOD: 400,
+  INVALID_FILTER: 400,
   SETUP_DISABLED: 403,
   INVALID_SETUP_KEY: 403,
   RATE_LIMITED: 429,
@@ -52,6 +63,7 @@ export function errorHandler(
       error: {
         code: err.code,
         message: err.message,
+        ...err.details,
       },
     });
     return;

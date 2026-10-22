@@ -15,17 +15,30 @@ import {
 } from '../../infrastructure/repositories';
 import {
   BusinessError,
+  BusinessPlanKey,
   Organization,
+  OrganizationPlanPayment,
+  OrganizationPlanPaymentMethod,
+  OrganizationPlanStatus,
   OrganizationTwilioConfig,
+  User,
 } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
+import {
+  BUSINESS_PLAN_LIMITS,
+  CUSTOM_PLAN_MIN_CLIENTS,
+  validatePlanConfiguration,
+} from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
 import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
-import { admin } from '../../infrastructure/firebase';
+import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
+import { authService } from '../../domain/auth-service';
+import { toOrganizationDto } from '../dto/organization';
 
 const router = Router();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 router.use(requireSuperAdmin);
 
@@ -71,25 +84,36 @@ function parseTwilioInput(
   return merged;
 }
 
-function toOrganizationDto(organization: Organization) {
-  const { twilio, ...rest } = organization;
+function parsePlanDate(value: unknown, field: string): Date | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  if (
+    typeof value === 'string' &&
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value)
+  ) {
+    throw new BusinessError('INVALID_PLAN_DATE', `${field} debe ser una fecha ISO 8601 UTC.`);
+  }
+  if (typeof value !== 'string' && !(value instanceof Date)) {
+    throw new BusinessError('INVALID_PLAN_DATE', `${field} debe ser una fecha ISO 8601.`);
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new BusinessError('INVALID_PLAN_DATE', `${field} debe ser una fecha ISO 8601 válida.`);
+  }
+  return date;
+}
 
+function defaultOrganizationPlan(now = new Date()): Pick<
+  Organization,
+  'plan' | 'clientLimit' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt' | 'clientCount'
+> {
   return {
-    ...rest,
-    twilioConfigured: Boolean(
-      twilio?.accountSid &&
-        twilio?.authToken &&
-        twilio?.phoneNumber &&
-        twilio.enabled !== false
-    ),
-    twilio: twilio
-      ? {
-          accountSid: twilio.accountSid,
-          phoneNumber: twilio.phoneNumber,
-          enabled: twilio.enabled !== false,
-          authTokenSet: Boolean(twilio.authToken),
-        }
-      : undefined,
+    plan: 'basico',
+    clientLimit: 30,
+    planStatus: 'prueba',
+    trialEndsAt: new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000),
+    planExpiresAt: null,
+    clientCount: 0,
   };
 }
 
@@ -117,6 +141,12 @@ async function resolveUniqueSlug(baseSlug: string, excludeId?: string): Promise<
     counter += 1;
     candidate = `${baseSlug}-${counter}`;
   }
+}
+
+async function refreshExpiredOrganizations(organizations: Organization[]): Promise<Organization[]> {
+  return Promise.all(
+    organizations.map((organization) => organizationRepository.refreshExpiredStatus(organization))
+  );
 }
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
@@ -149,6 +179,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       name: name.trim().toUpperCase(),
       slug: normalizedSlug,
       active: active !== undefined ? Boolean(active) : true,
+      ...defaultOrganizationPlan(),
+      planUpdatedAt: new Date(),
+      planUpdatedBy: actor.userId,
       twilio: parseTwilioInput(twilio) ?? { enabled: false },
       createdAt: new Date(),
       createdBy: actor.userId,
@@ -161,12 +194,165 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+router.post('/onboard', async (req: Request, res: Response, next: NextFunction) => {
+  let firebaseUserCreated = false;
+  let userId: string | undefined;
+  try {
+    const organizationInput = req.body?.organization;
+    const adminInput = req.body?.admin;
+    const name = typeof organizationInput?.name === 'string' ? organizationInput.name.trim() : '';
+    const adminName = typeof adminInput?.name === 'string' ? adminInput.name.trim() : '';
+    const email = typeof adminInput?.email === 'string' ? adminInput.email.trim().toLowerCase() : '';
+    const password = typeof adminInput?.password === 'string' ? adminInput.password : '';
+
+    if (!name || !adminName) {
+      throw new BusinessError('INVALID_DATA', 'El nombre de la organización y del administrador son obligatorios.');
+    }
+    if (!EMAIL_REGEX.test(email)) {
+      throw new BusinessError('INVALID_EMAIL', 'El email no es válido.');
+    }
+    if (password.length < 8 || !/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+      throw new BusinessError('WEAK_PASSWORD', 'La contraseña debe tener al menos 8 caracteres e incluir letras y números.');
+    }
+
+    const actor = getAuth(req);
+    const now = new Date();
+    const slugValue = typeof organizationInput.slug === 'string' ? organizationInput.slug.trim() : '';
+    const normalizedSlug = slugValue
+      ? slugify(slugValue)
+      : await resolveUniqueSlug(slugify(name));
+    if (!normalizedSlug) {
+      throw new BusinessError('INVALID_DATA', 'El slug de la organización no es válido.');
+    }
+
+    const organization: Organization = {
+      id: createId(),
+      name: name.toUpperCase(),
+      slug: normalizedSlug,
+      active: true,
+      ...defaultOrganizationPlan(now),
+      twilio: parseTwilioInput(organizationInput.twilio) ?? { enabled: false },
+      createdAt: now,
+      createdBy: actor.userId,
+      planUpdatedAt: now,
+      planUpdatedBy: actor.userId,
+    };
+    const user: User = {
+      id: createId(),
+      name: adminName,
+      email,
+      password: await authService.hashPassword(password),
+      role: 'admin',
+      organizationId: organization.id,
+      createdAt: now,
+    };
+    userId = user.id;
+
+    try {
+      await admin.auth().createUser({
+        uid: user.id,
+        email: user.email,
+        password,
+        displayName: user.name,
+      });
+      firebaseUserCreated = true;
+    } catch (error) {
+      if ((error as { code?: string }).code === 'auth/email-already-exists') {
+        throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
+      }
+      throw error;
+    }
+
+    await organizationRepository.createWithAdmin(organization, user);
+    await syncUserCustomClaims({
+      uid: user.id,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
+    res.status(201).json({
+      organization: toOrganizationDto(organization),
+      admin: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        organizationId: user.organizationId,
+        createdAt: user.createdAt,
+      },
+    });
+  } catch (err) {
+    if (firebaseUserCreated && userId) {
+      try {
+        await admin.auth().deleteUser(userId);
+      } catch (cleanupError) {
+        console.error('[Organizations] No se pudo revertir el usuario de Firebase Auth del alta conjunta.', {
+          userId,
+          error: (cleanupError as Error).message,
+        });
+      }
+    }
+    next(err);
+  }
+});
+
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const search = req.query.search as string;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const cursor = req.query.cursor as string | undefined;
+    const filter = req.query.filter as string | undefined;
+
+    if (
+      filter !== undefined &&
+      filter !== 'trial-expiring' &&
+      filter !== 'expired' &&
+      filter !== 'near-limit'
+    ) {
+      throw new BusinessError('INVALID_FILTER', 'El filtro de plan no es válido.');
+    }
+
+    if (filter) {
+      const now = new Date();
+      const trialWindowEnd = now.getTime() + 3 * 24 * 60 * 60 * 1000;
+      let organizations = await organizationRepository.list();
+      if (search) {
+        const searchLower = search.toLowerCase();
+        organizations = organizations.filter(
+          (organization) =>
+            organization.name.toLowerCase().includes(searchLower) ||
+            (organization.slug || '').toLowerCase().includes(searchLower)
+        );
+      }
+      organizations = organizations.filter((organization) => {
+        if (filter === 'trial-expiring') {
+          const end = organization.trialEndsAt?.getTime();
+          return organization.planStatus === 'prueba' && end !== undefined && end >= now.getTime() && end <= trialWindowEnd;
+        }
+        if (filter === 'expired') {
+          const trialEnd = organization.trialEndsAt?.getTime();
+          const planEnd = organization.planExpiresAt?.getTime();
+          return (
+            organization.planStatus === 'vencido' ||
+            (trialEnd !== undefined && trialEnd <= now.getTime()) ||
+            (planEnd !== undefined && planEnd <= now.getTime())
+          );
+        }
+        return (
+          Number.isInteger(organization.clientCount) &&
+          Number.isInteger(organization.clientLimit) &&
+          organization.clientLimit! > 0 &&
+          organization.clientCount! / organization.clientLimit! >= 0.8
+        );
+      });
+      organizations.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      const total = organizations.length;
+      const page = await refreshExpiredOrganizations(organizations.slice(offset, offset + limit));
+      return res.json({
+        organizations: page.map(toOrganizationDto),
+        pagination: { total, limit, offset, hasMore: offset + limit < total },
+      });
+    }
 
     if (!search) {
         const page = await organizationRepository.listPage({
@@ -178,7 +364,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           requireTotal: !cursor,
         });
       return res.json({
-        organizations: page.items.map(toOrganizationDto),
+        organizations: (await refreshExpiredOrganizations(page.items)).map(toOrganizationDto),
         pagination: {
           total: page.total,
           limit,
@@ -203,7 +389,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     organizations.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
 
     const total = organizations.length;
-    const paginated = organizations.slice(offset, offset + limit);
+    const paginated = await refreshExpiredOrganizations(organizations.slice(offset, offset + limit));
 
     res.json({
       organizations: paginated.map(toOrganizationDto),
@@ -221,10 +407,11 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
 router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organization = await organizationRepository.getById(req.params.id);
-    if (!organization) {
+    const current = await organizationRepository.getById(req.params.id);
+    if (!current) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
+    const organization = await organizationRepository.refreshExpiredStatus(current);
 
     const users = await userRepository.listByOrganization(organization.id);
 
@@ -272,16 +459,154 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       }
     }
 
+    const plan: BusinessPlanKey =
+      req.body.plan === undefined ? existing.plan ?? 'basico' : req.body.plan;
+    if (!['basico', 'pro', 'negocio', 'a-medida'].includes(plan)) {
+      throw new BusinessError('INVALID_PLAN', 'El plan seleccionado no es válido.');
+    }
+    const planStatus: OrganizationPlanStatus =
+      req.body.planStatus === undefined ? existing.planStatus ?? 'activo' : req.body.planStatus;
+    if (!['prueba', 'activo', 'vencido', 'suspendido'].includes(planStatus)) {
+      throw new BusinessError('INVALID_PLAN_STATUS', 'El estado del plan no es válido.');
+    }
+
+    const parsedTrialEnd = parsePlanDate(req.body.trialEndsAt, 'trialEndsAt');
+    const parsedPlanEnd = parsePlanDate(req.body.planExpiresAt, 'planExpiresAt');
+    const trialEndsAt =
+      planStatus === 'prueba'
+        ? parsedTrialEnd === undefined
+          ? existing.trialEndsAt ?? null
+          : parsedTrialEnd
+        : planStatus === 'vencido' || planStatus === 'suspendido'
+          ? parsedTrialEnd === undefined
+            ? existing.trialEndsAt ?? null
+            : parsedTrialEnd
+          : null;
+    const planExpiresAt =
+      planStatus === 'prueba'
+        ? null
+        : parsedPlanEnd === undefined
+          ? existing.planExpiresAt ?? null
+          : parsedPlanEnd;
+    const fixedLimit = BUSINESS_PLAN_LIMITS[plan];
+    const clientLimit =
+      req.body.clientLimit === undefined
+        ? fixedLimit ?? existing.clientLimit
+        : req.body.clientLimit;
+    if (!Number.isInteger(clientLimit)) {
+      throw new BusinessError('INVALID_CLIENT_LIMIT', 'El límite de clientes debe ser un entero positivo.');
+    }
+    validatePlanConfiguration({
+      plan,
+      clientLimit: clientLimit!,
+      planStatus,
+      trialEndsAt,
+      planExpiresAt,
+    });
+    if ((existing.clientCount ?? 0) > clientLimit!) {
+      throw new BusinessError(
+        'CLIENT_LIMIT_BELOW_USAGE',
+        'El límite no puede ser menor que la cantidad actual de clientes.'
+      );
+    }
+
+    const planWasChanged =
+      existing.plan !== plan ||
+      existing.clientLimit !== clientLimit ||
+      existing.planStatus !== planStatus ||
+      existing.trialEndsAt?.getTime() !== trialEndsAt?.getTime() ||
+      existing.planExpiresAt?.getTime() !== planExpiresAt?.getTime();
+    const actor = getAuth(req);
     const updated: Organization = {
       ...existing,
       name: name !== undefined && name.trim() ? name.trim().toUpperCase() : existing.name,
       slug: normalizedSlug,
       active: active !== undefined ? Boolean(active) : existing.active,
+      plan,
+      clientLimit: clientLimit!,
+      planStatus,
+      trialEndsAt,
+      planExpiresAt,
+      ...(planWasChanged ? { planUpdatedAt: new Date(), planUpdatedBy: actor.userId } : {}),
       twilio: parseTwilioInput(twilio, existing.twilio),
     };
 
-    await organizationRepository.updateOrganization(updated);
-    res.json(toOrganizationDto(updated));
+    const saved = await organizationRepository.updateOrganization(updated, existing);
+    res.json(toOrganizationDto(await organizationRepository.refreshExpiredStatus(saved)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/plan-payments', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const current = await organizationRepository.getById(req.params.id);
+    if (!current) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+    }
+
+    const { paidAt, amount, method, plan } = req.body ?? {};
+    const parsedPaidAt = parsePlanDate(paidAt, 'paidAt');
+    const newPlanExpiresAt = parsePlanDate(req.body?.newPlanExpiresAt, 'newPlanExpiresAt');
+    if (!parsedPaidAt || !newPlanExpiresAt) {
+      throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de pago y el nuevo vencimiento son obligatorios.');
+    }
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
+      throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto debe ser un número mayor que cero.');
+    }
+    if (!['transferencia', 'usdt', 'efectivo'].includes(method)) {
+      throw new BusinessError('INVALID_PAYMENT_METHOD', 'El método de pago no es válido.');
+    }
+    if (!['basico', 'pro', 'negocio', 'a-medida'].includes(plan)) {
+      throw new BusinessError('INVALID_PLAN', 'El plan seleccionado no es válido.');
+    }
+    if (
+      req.body?.notes !== undefined &&
+      (typeof req.body.notes !== 'string' || req.body.notes.length > 1000)
+    ) {
+      throw new BusinessError('INVALID_DATA', 'Las notas deben ser texto de hasta 1000 caracteres.');
+    }
+
+    const paymentPlan = plan as BusinessPlanKey;
+    const clientLimit =
+      BUSINESS_PLAN_LIMITS[paymentPlan] ??
+      (Number.isInteger(current.clientLimit) && current.clientLimit! >= CUSTOM_PLAN_MIN_CLIENTS
+        ? current.clientLimit
+        : undefined);
+    if (clientLimit === undefined) {
+      throw new BusinessError(
+        'INVALID_CLIENT_LIMIT',
+        `El plan A medida requiere un límite asignado de al menos ${CUSTOM_PLAN_MIN_CLIENTS} clientes.`
+      );
+    }
+    if (clientLimit < (current.clientCount ?? 0)) {
+      throw new BusinessError(
+        'CLIENT_LIMIT_BELOW_USAGE',
+        'El límite del nuevo plan no puede ser menor que la cantidad actual de clientes.'
+      );
+    }
+
+    const actor = getAuth(req);
+    const payment: OrganizationPlanPayment = {
+      id: createId(),
+      organizationId: current.id,
+      paidAt: parsedPaidAt,
+      amount,
+      method: method as OrganizationPlanPaymentMethod,
+      plan: paymentPlan,
+      newPlanExpiresAt,
+      notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() || undefined : undefined,
+      createdBy: actor.userId,
+      createdAt: new Date(),
+    };
+    const organization = await organizationRepository.registerPlanPayment(
+      payment,
+      paymentPlan,
+      clientLimit,
+      newPlanExpiresAt,
+    );
+
+    res.status(201).json({ payment, organization: toOrganizationDto(organization) });
   } catch (err) {
     next(err);
   }

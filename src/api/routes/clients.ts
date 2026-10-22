@@ -115,7 +115,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       createdByRole: auth.role,
     };
 
-    await clientRepository.create(client);
+    await clientRepository.createWithinPlanLimit(client);
     scheduleStatsRecompute(organizationId);
     res.status(201).json(client);
   } catch (err) {
@@ -269,11 +269,13 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
     }
 
-    const { dni: _dni, ...dtoRest } = dto;
-    let updated: Client = {
-      ...existing,
-      ...dtoRest,
-    };
+    let updated: Client = { ...existing };
+    if (dto.firstName !== undefined) updated.firstName = dto.firstName;
+    if (dto.lastName !== undefined) updated.lastName = dto.lastName;
+    if (dto.phone !== undefined) updated.phone = dto.phone;
+    if (dto.email !== undefined) updated.email = dto.email;
+    if (dto.address !== undefined) updated.address = dto.address;
+    if (dto.notes !== undefined) updated.notes = dto.notes;
 
     if (dto.dni !== undefined) {
       if (dto.dni === null || dto.dni.trim() === '') {
@@ -338,7 +340,13 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
       );
     }
 
-    await clientRepository.delete(req.params.id);
+    const deleted = await clientRepository.deleteAndDecrementClientCount(
+      req.params.id,
+      organizationId
+    );
+    if (!deleted) {
+      throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
+    }
     scheduleStatsRecompute(organizationId);
     res.status(204).send();
   } catch (err) {

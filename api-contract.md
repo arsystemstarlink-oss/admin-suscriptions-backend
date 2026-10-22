@@ -22,6 +22,8 @@ Auth: Authorization: Bearer {accessToken}
 - Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
 - Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP) y `POST /api/auth/refresh` (60 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
+- Alta conjunta de organización y administrador: `POST /api/organizations/onboard` (10 intentos / 15 min por IP).
+- Una organización vencida o suspendida permanece en solo lectura: el backend bloquea sus escrituras y conserva las lecturas. `/api/public/*` mantiene su acceso normal.
 - Headers de seguridad HTTP vía Helmet.
 - `POST /communications/webhook` (público) valida firma Twilio (obligatoria en production).
 
@@ -55,6 +57,12 @@ enum PaymentReportStatus { PENDING, APPROVED, REJECTED }
 ```typescript
 interface Organization {
   id: string; name: string; slug?: string; active: boolean;
+  plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  clientLimit: number;
+  planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
+  trialEndsAt: string | null;
+  planExpiresAt: string | null;
+  clientCount: number;
   createdAt: string; createdBy?: string;
 }
 
@@ -62,8 +70,22 @@ interface User {
   id: string; name: string; email: string;
   role: UserRole;
   organizationId: string | null; // null => super-admin; requerido para admin
+  organization?: Organization; // incluido en login/me para admins; omitido para super-admin
   phone?: string; // normalizado a E.164 (+58...)
   lastLoginAt?: string;
+  createdAt: string;
+}
+
+interface OrganizationPlanPayment {
+  id: string;
+  organizationId: string;
+  paidAt: string;
+  amount: number;
+  method: 'transferencia' | 'usdt' | 'efectivo';
+  plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  newPlanExpiresAt: string;
+  notes?: string;
+  createdBy: string;
   createdAt: string;
 }
 
@@ -239,6 +261,7 @@ interface DebtorItem {
 { email: string; password: string }
 // Response 200
 { accessToken: string; refreshToken: string; user: User }
+// Para admin, user.organization incluye los datos del plan de su organización; para super-admin se omite.
 // Actualiza lastLoginAt del usuario
 ```
 
@@ -265,6 +288,7 @@ interface DebtorItem {
 // Header: Authorization: Bearer {accessToken}
 // Response 200
 { user: User }
+// Para admin, incluye la organización y su estado de plan actualizados.
 // Error 404: USER_NOT_FOUND | Error 401: UNAUTHORIZED
 ```
 
@@ -277,6 +301,7 @@ interface DebtorItem {
 // phone se normaliza a E.164 (+58...)
 // Response 200
 { user: User }
+// Para admin, incluye la organización y sus datos de plan actualizados; organizationId no es editable.
 // Errors: 400 INVALID_EMAIL | 400 INVALID_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
 ```
 
@@ -359,6 +384,9 @@ interface DebtorItem {
 | PUT | /organizations/:id | Bearer super-admin | Actualizar organización |
 | DELETE | /organizations/:id | Bearer super-admin | Eliminar organización (solo sin usuarios) |
 
+Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
+`POST /organizations/:id/plan-payments`.
+
 **POST /organizations**
 ```typescript
 // Request
@@ -371,13 +399,34 @@ interface DebtorItem {
 // slug se normaliza a minúsculas con guiones (ej: "Org A" -> "org-a"). Único si se usa.
 // twilio.phoneNumber se normaliza sin prefijo "whatsapp:" (formato E.164, ej: +584223552626).
 // Response 201 → Organization (DTO: ver nota de masking abajo)
+// El servidor asigna plan Básico, límite 30, prueba de 14 días, clientCount 0 y planExpiresAt null.
+// No acepta campos de plan en este alta.
 // Errors: 400 INVALID_DATA (nombre obligatorio, slug duplicado)
+```
+
+**POST /organizations/onboard**
+```typescript
+// Request
+{
+  organization: { name: string; slug?: string; twilio?: TwilioConfig };
+  admin: { name: string; email: string; password: string };
+}
+// Response 201 → { organization: Organization; admin: User }
+// Crea ambos registros como una sola operación lógica. No devuelve la contraseña.
+// Requiere email válido y contraseña de mínimo 8 caracteres con letras y números.
+// El plan Básico de prueba, límite 30 y clientCount 0 se asignan en servidor.
+// Errores revierten la creación asociada en Firestore y Firebase Auth.
+// Rate limit: 10 intentos / 15 min por IP.
+// Errors: 400 INVALID_DATA | INVALID_EMAIL | WEAK_PASSWORD
+//         403 FORBIDDEN | 409 EMAIL_TAKEN | 429 RATE_LIMITED
 ```
 
 **GET /organizations**
 ```typescript
 // Query params
-{ search?: string; limit?: number; offset?: number }
+{ search?: string; limit?: number; offset?: number; filter?: 'trial-expiring' | 'expired' | 'near-limit' }
+// Filtros se aplican antes de paginar: prueba por vencer (próximos 3 días),
+// vencidas (estado o fecha vencida), cerca del límite (uso >= 80%).
 // Response 200
 { organizations: Organization[]; pagination }
 ```
@@ -396,8 +445,17 @@ interface DebtorItem {
   name?: string;
   slug?: string;
   active?: boolean;
+  plan?: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  clientLimit?: number;
+  planStatus?: 'prueba' | 'activo' | 'vencido' | 'suspendido';
+  trialEndsAt?: string | null;
+  planExpiresAt?: string | null;
   twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean } | null
 }
+// Solo super-admin puede cambiar el plan. Límites: Básico 30, Pro 150, Negocio 300,
+// A medida requiere más de 300. No se reduce clientLimit por debajo de clientCount.
+// prueba requiere trialEndsAt y solo permite Básico; activo requiere planExpiresAt.
+// Fechas ISO 8601 UTC; el cambio de plan no elimina clientes.
 // twilio se combina con el existente:
 // - authToken vacío/ausente => conserva el actual; string => lo reemplaza; null => lo borra.
 // - accountSid/phoneNumber con string vacío => borran el campo.
@@ -405,10 +463,29 @@ interface DebtorItem {
 // Response 200 → Organization (DTO)
 ```
 
+**POST /organizations/:id/plan-payments**
+```typescript
+// Request
+{
+  paidAt: string; amount: number;
+  method: 'transferencia' | 'usdt' | 'efectivo';
+  plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  newPlanExpiresAt: string; notes?: string;
+}
+// Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
+// Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
+// Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
+//         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
+```
+
 **Organization DTO (responses GET/POST/PUT):**
 ```typescript
 {
   id: string; name: string; slug?: string; active: boolean;
+  plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  clientLimit: number;
+  planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
+  trialEndsAt: string | null; planExpiresAt: string | null; clientCount: number;
   createdAt: string; createdBy?: string;
   twilioConfigured: boolean; // true si accountSid+authToken+phoneNumber presentes y enabled !== false
   twilio?: {
@@ -464,7 +541,9 @@ interface DebtorItem {
 // dni se normaliza a formato canónico con guion (ej: "v.12.345.678" -> "V-12345678", "V12345678" -> "V-12345678")
 // dni: opcional, SOLO "V-" o "J-" + 7 a 9 dígitos numéricos. Otros formatos se rechazan (ej: "9279238239" -> INVALID_DNI)
 // Response 201 → Client
-// Errors: 400 INVALID_DNI | 409 DNI_TAKEN
+// Creación y clientCount se incrementan en una operación atómica.
+// Errors: 400 INVALID_DNI | 409 DNI_TAKEN | CLIENT_LIMIT_REACHED
+// CLIENT_LIMIT_REACHED incluye clientCount y clientLimit actuales.
 ```
 
 **PUT /clients/:id**
@@ -477,6 +556,7 @@ interface DebtorItem {
 ```
 
 **DELETE /clients/:id** → Response 204
+// El borrado y decremento de clientCount son atómicos e idempotentes.
 
 ---
 
@@ -1191,10 +1271,12 @@ Authorization: Bearer {accessToken}
 ## Formato de Error
 
 ```typescript
-{ error: { code: string; message: string } }
+{ error: { code: string; message: string; clientCount?: number; clientLimit?: number } }
 ```
 
-Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN`
+Codigos principales: `NOT_FOUND` | `INVALID_DATA` | `INVALID_DNI` | `DNI_TAKEN` | `INVALID_PERIOD_STATE` | `PERIOD_ALREADY_PAID` | `INVALID_PAYMENT_AMOUNT` | `CLIENT_HAS_ACTIVE_SUBSCRIPTIONS` | `PLAN_HAS_SUBSCRIPTIONS` | `CANNOT_DELETE_SELF` | `LAST_ADMIN` | `CLIENT_LIMIT_REACHED` (409, incluye conteo y límite)
+
+Codigos de planes: `PLAN_READ_ONLY` (403) | `PLAN_NOT_CONFIGURED` (409) | `CLIENT_LIMIT_BELOW_USAGE` (409) | `INVALID_CLIENT_LIMIT` | `INVALID_PLAN` | `INVALID_PLAN_STATUS` | `INVALID_PLAN_DATE` | `INVALID_PAYMENT_METHOD` | `PLAN_CONCURRENT_UPDATE` (409)
 
 Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
 

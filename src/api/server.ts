@@ -20,6 +20,7 @@ import paymentReportRoutes from './routes/payment-reports';
 import badgesRoutes from './routes/badges';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
+import { requireWritablePlan } from './middleware/organization-plan-access';
 import { initializeFirebase } from '../infrastructure/firebase';
 import { startScheduler, stopScheduler } from '../infrastructure/scheduler';
 import { requestIdMiddleware, getMetricsSnapshot, isMetricsEnabled } from './middleware/request-id';
@@ -108,6 +109,19 @@ const setupRateLimiter = rateLimit({
   },
 });
 
+const organizationOnboardRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas altas de organizaciones. Intenta de nuevo más tarde.',
+    },
+  },
+});
+
 const publicRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
@@ -155,19 +169,20 @@ app.get('/health', (req, res) => {
 app.use('/api/auth/login', loginRateLimiter);
 app.use('/api/auth/refresh', refreshRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
+app.post('/api/organizations/onboard', organizationOnboardRateLimiter);
 app.use('/api/public', publicRateLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/public', publicRoutes);
-app.use('/api/admins', authenticateAdmin, adminRoutes);
+app.use('/api/admins', authenticateAdmin, requireWritablePlan, adminRoutes);
 app.use('/api/organizations', authenticateAdmin, organizationRoutes);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
-app.use('/api/clients', authenticateAdmin, clientRoutes);
-app.use('/api/plans', authenticateAdmin, planRoutes);
-app.use('/api/subscriptions', authenticateAdmin, subscriptionRoutes);
-app.use('/api/billing-periods', authenticateAdmin, billingPeriodRoutes);
-app.use('/api/payment-reports', authenticateAdmin, paymentReportRoutes);
+app.use('/api/clients', authenticateAdmin, requireWritablePlan, clientRoutes);
+app.use('/api/plans', authenticateAdmin, requireWritablePlan, planRoutes);
+app.use('/api/subscriptions', authenticateAdmin, requireWritablePlan, subscriptionRoutes);
+app.use('/api/billing-periods', authenticateAdmin, requireWritablePlan, billingPeriodRoutes);
+app.use('/api/payment-reports', authenticateAdmin, requireWritablePlan, paymentReportRoutes);
 app.use('/api/badges', authenticateAdmin, badgesRoutes);
-app.use('/api/scheduler', authenticateAdmin, schedulerRoutes);
+app.use('/api/scheduler', authenticateAdmin, requireWritablePlan, schedulerRoutes);
 app.use('/api/whatsapp', whatsappConfigRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/communications', whatsappRoutes);

@@ -44,6 +44,7 @@ jest.mock('../infrastructure/repositories', () => ({
   },
   organizationRepository: {
     getById: jest.fn(),
+    refreshExpiredStatus: jest.fn(async (organization: Organization) => organization),
   },
   domainEventRepository: {
     create: jest.fn(),
@@ -132,6 +133,21 @@ function makeSubscription(orgId: string, id = `sub_${orgId}`): Subscription {
   };
 }
 
+function makeOrganization(id: string): Organization {
+  return {
+    id,
+    name: `Org ${id}`,
+    active: true,
+    plan: 'basico',
+    clientLimit: 30,
+    planStatus: 'activo',
+    trialEndsAt: null,
+    planExpiresAt: new Date(Date.UTC(2027, 0, 1)),
+    clientCount: 0,
+    createdAt: new Date(),
+  };
+}
+
 function makePeriod(orgId: string, subscriptionId: string, id = `period_${orgId}`): BillingPeriod {
   return {
     id,
@@ -166,6 +182,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     mockedSubscriptions.listGenerationCandidates.mockResolvedValue([]);
     mockedWhatsAppMessages.existsOutboundMessageSince.mockResolvedValue(false);
     mockedWhatsAppMessages.listOutboundSince.mockResolvedValue([]);
+    mockedOrganizations.getById.mockResolvedValue(makeOrganization('org_A'));
     mockedSchedulerConfig.getConfig.mockResolvedValue({
       id: 'org_A',
       enabled: true,
@@ -398,9 +415,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       endDate: new Date(Date.UTC(2026, 6, 15)),
     };
     const organization: Organization = {
-      id: orgA,
-      name: 'Org A',
-      active: true,
+      ...makeOrganization(orgA),
       twilio: {
         authToken: 'token_org_A',
         phoneNumber: '+584111111111',
@@ -413,7 +428,6 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
         },
         templates: { reminder: 'HX_org_A_reminder' },
       },
-      createdAt: new Date(),
     };
 
     mockedOrganizations.getById.mockResolvedValue(organization);
@@ -473,15 +487,12 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       status: 'PENDING',
     };
     const organization: Organization = {
-      id: orgA,
-      name: 'Org A',
-      active: true,
+      ...makeOrganization(orgA),
       twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
       whatsappNotifications: {
         rules: { reminderDaysBefore: [5, 3], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
         templates: { reminder: 'HX_org_A_reminder' },
       },
-      createdAt: new Date(),
     };
 
     mockedOrganizations.getById.mockResolvedValue(organization);
@@ -534,7 +545,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       paymentMethod: 'CASH',
     };
 
-    mockedOrganizations.getById.mockResolvedValue(undefined);
+    mockedOrganizations.getById.mockResolvedValue(makeOrganization(orgA));
     mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
     mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([paidPeriod]);
     mockedSubscriptions.listByIds.mockResolvedValue([subA]);
@@ -567,15 +578,12 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       status: 'PENDING',
     };
     const organization: Organization = {
-      id: orgA,
-      name: 'Org A',
-      active: true,
+      ...makeOrganization(orgA),
       twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
       whatsappNotifications: {
         rules: { reminderDaysBefore: [5, 3], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
         templates: { reminder: 'HX_org_A_reminder' },
       },
-      createdAt: new Date(),
     };
 
     mockedOrganizations.getById.mockResolvedValue(organization);
@@ -632,15 +640,12 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       status: 'PENDING',
     };
     const organization: Organization = {
-      id: orgA,
-      name: 'Org A',
-      active: true,
+      ...makeOrganization(orgA),
       twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
       whatsappNotifications: {
         rules: { reminderDaysBefore: [], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
         templates: { dueDateWarning: 'HX_org_A_warning' },
       },
-      createdAt: new Date(),
     };
 
     mockedOrganizations.getById.mockResolvedValue(organization);

@@ -92,6 +92,20 @@ npm run build
 npm test
 ```
 
+## Activar límites de plan en organizaciones existentes
+
+Antes de habilitar las escrituras bajo el plan, haz respaldo de Firestore y ejecuta la migración
+con el backend temporalmente sin escrituras de clientes para evitar conteos desactualizados:
+
+```bash
+npm run migrate:organization-client-count
+```
+
+La migración recalcula `clientCount` desde los documentos de `clients` por organización y es
+segura para volver a ejecutar. No asigna planes comerciales a organizaciones existentes: el
+super-admin debe asignar el plan, límite y fechas correctos antes de permitir escrituras; las
+organizaciones sin plan configurado permanecen bloqueadas para escritura.
+
 ## Ejecución
 
 ### Desarrollo

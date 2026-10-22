@@ -5,6 +5,7 @@ import { pushService, PushRegistrationInput } from '../../infrastructure/push-se
 import { userRepository } from '../../infrastructure/repositories';
 import { getAuth } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
+import { requireWritablePlan } from '../middleware/organization-plan-access';
 
 const router = Router();
 
@@ -18,6 +19,7 @@ router.get('/vapid-public-key', async (req: Request, res: Response, next: NextFu
 });
 
 router.use(authenticateAdmin);
+router.use(requireWritablePlan);
 
 router.post('/subscriptions', async (req: Request, res: Response, next: NextFunction) => {
   try {

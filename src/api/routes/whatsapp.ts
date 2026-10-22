@@ -16,6 +16,7 @@ import { pushService } from '../../infrastructure/push-service';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
+import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isFirestoreIndexError } from '../../infrastructure/firestore-error';
 
@@ -36,7 +37,7 @@ async function verifyDeletionPassword(userId: string, password: unknown): Promis
   }
 }
 
-router.post('/send', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
@@ -262,7 +263,7 @@ router.get('/conversations', authenticateAdmin, async (req: Request, res: Respon
   }
 });
 
-router.post('/conversations/:phone/read', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/conversations/:phone/read', authenticateAdmin, requireWritablePlan, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = requireOrganizationId(req);
     const phone = normalizePhoneNumber(req.params.phone);
@@ -301,7 +302,7 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
   }
 });
 
-router.delete('/messages/batch', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/messages/batch', authenticateAdmin, requireWritablePlan, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
@@ -357,7 +358,7 @@ router.delete('/messages/batch', authenticateAdmin, async (req: Request, res: Re
   }
 });
 
-router.delete('/messages/:phone', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/messages/:phone', authenticateAdmin, requireWritablePlan, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const auth = getAuth(req);
     const { phone } = req.params;

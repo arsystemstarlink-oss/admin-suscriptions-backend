@@ -11,6 +11,8 @@ import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
+import { toOrganizationDto } from '../dto/organization';
+import { requireWritablePlan } from '../middleware/organization-plan-access';
 
 const router = Router();
 
@@ -27,6 +29,19 @@ export function toUserDto(user: User) {
     lastLoginAt: user.lastLoginAt,
     createdAt: user.createdAt,
   };
+}
+
+async function toAuthenticatedUserDto(user: User) {
+  const userDto = toUserDto(user);
+  if (user.role !== 'admin' || !user.organizationId) {
+    return userDto;
+  }
+  const organization = await organizationRepository.getById(user.organizationId);
+  if (!organization) {
+    throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización del usuario no existe.');
+  }
+  const currentOrganization = await organizationRepository.refreshExpiredStatus(organization);
+  return { ...userDto, organization: toOrganizationDto(currentOrganization) };
 }
 
 export function validatePasswordStrength(password: string): void {
@@ -199,7 +214,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     res.json({
       accessToken,
       refreshToken,
-      user: toUserDto(updatedUser),
+      user: await toAuthenticatedUserDto(updatedUser),
     });
   } catch (err) {
     next(err);
@@ -337,7 +352,7 @@ router.post('/setup', async (req: Request, res: Response, next: NextFunction) =>
   }
 });
 
-router.post('/register', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+router.post('/register', authenticateAdmin, requireWritablePlan, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const actor = getAuth(req);
     const requestedRole: UserRole = req.body?.role === 'super-admin' ? 'super-admin' : 'admin';
@@ -385,7 +400,7 @@ router.get('/me', authenticateAdmin, async (req: Request, res: Response, next: N
     }
 
     res.json({
-      user: toUserDto(user),
+      user: await toAuthenticatedUserDto(user),
     });
   } catch (err) {
     next(err);
@@ -453,7 +468,7 @@ router.put('/me', authenticateAdmin, async (req: Request, res: Response, next: N
     const updatedUser: User = { ...user, ...updates };
     await userRepository.update(updatedUser);
 
-    res.json({ user: toUserDto(updatedUser) });
+    res.json({ user: await toAuthenticatedUserDto(updatedUser) });
   } catch (err) {
     next(err);
   }

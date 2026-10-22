@@ -13,11 +13,13 @@ import {
   resolveWhatsAppNotificationConfig,
 } from '../../infrastructure/whatsapp-configuration';
 import { authenticateAdmin } from '../middleware/auth';
+import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { requireOrganizationId } from '../middleware/tenant';
 
 const router = Router();
 
 router.use(authenticateAdmin);
+router.use(requireWritablePlan);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -171,11 +173,12 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const currentConfig = resolveWhatsAppNotificationConfig(organization);
-    const updated: Organization = { ...organization };
+    let twilio = organization.twilio;
+    let whatsappNotifications = organization.whatsappNotifications;
     let hasChanges = false;
 
     if ('twilio' in req.body) {
-      updated.twilio = validateTwilioPatch(req.body.twilio, organization.twilio);
+      twilio = validateTwilioPatch(req.body.twilio, organization.twilio);
       hasChanges = true;
     }
 
@@ -186,7 +189,7 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
       const rules = 'rules' in req.body
         ? validateRulesPatch(req.body.rules, currentConfig.rules)
         : currentConfig.rules;
-      updated.whatsappNotifications = { templates, rules };
+      whatsappNotifications = { templates, rules };
       hasChanges = true;
     }
 
@@ -194,7 +197,11 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
       throw new BusinessError('INVALID_DATA', 'Indica al menos "twilio", "templates" o "rules".');
     }
 
-    await organizationRepository.updateOrganization(updated);
+    const updated = await organizationRepository.updateWhatsAppConfiguration(
+      organizationId,
+      twilio,
+      whatsappNotifications,
+    );
     res.json(toConfigResponse(updated));
   } catch (error) {
     next(error);

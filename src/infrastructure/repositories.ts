@@ -10,6 +10,7 @@ import {
 } from '../api/middleware/request-id';
 import {
   BusinessError,
+  BusinessPlanKey,
   Client,
   Plan,
   Subscription,
@@ -24,10 +25,12 @@ import {
   RefreshTokenSession,
   PushSubscription,
   Organization,
+  OrganizationPlanPayment,
   OrganizationTwilioConfig,
   DomainEvent,
   PaymentReport,
 } from '../domain/entities';
+import { isPlanExpired, validatePlanConfiguration } from '../domain/business-plan';
 
 function toDate(value: any): Date | undefined {
   if (value === undefined || value === null) return undefined;
@@ -36,6 +39,17 @@ function toDate(value: any): Date | undefined {
   if (typeof value?._seconds === 'number') return new Date(value._seconds * 1000);
   const parsed = new Date(value);
   return isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function deserializeOrganization(id: string, data: FirebaseFirestore.DocumentData): Organization {
+  return {
+    ...data,
+    id,
+    createdAt: toDate(data.createdAt) ?? new Date(0),
+    trialEndsAt: toDate(data.trialEndsAt) ?? null,
+    planExpiresAt: toDate(data.planExpiresAt) ?? null,
+    planUpdatedAt: toDate(data.planUpdatedAt),
+  } as Organization;
 }
 
 export class OrganizationFirestoreRepository extends FirestoreRepository<Organization> {
@@ -53,41 +67,305 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     return results.find((org) => org.twilio?.phoneNumber === phoneNumber);
   }
 
-  async updateOrganization(organization: Organization): Promise<void> {
+  async updateOrganization(
+    organization: Organization,
+    expected?: Organization,
+  ): Promise<Organization> {
     const docRef = this.db.collection(this.collectionName).doc(organization.id);
-    const existing = await docRef.get();
-
-    if (!existing.exists) {
-      throw new Error(`Entity with id ${organization.id} does not exist.`);
-    }
-
-    const data = this.serialize(organization);
-    const updates: Record<string, any> = { ...data };
-    delete updates.twilio;
-
-    if (organization.twilio) {
-      const fields: (keyof OrganizationTwilioConfig)[] = [
-        'accountSid',
-        'authToken',
-        'phoneNumber',
-        'enabled',
-      ];
-      for (const field of fields) {
-        const value = organization.twilio[field];
-        updates[`twilio.${field}`] =
-          value === undefined ? admin.firestore.FieldValue.delete() : value;
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
       }
-    } else {
-      updates.twilio = admin.firestore.FieldValue.delete();
-    }
+      const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      if (
+        expected &&
+        (current.plan !== expected.plan ||
+          current.clientLimit !== expected.clientLimit ||
+          current.planStatus !== expected.planStatus ||
+          current.trialEndsAt?.getTime() !== expected.trialEndsAt?.getTime() ||
+          current.planExpiresAt?.getTime() !== expected.planExpiresAt?.getTime())
+      ) {
+        throw new BusinessError(
+          'PLAN_CONCURRENT_UPDATE',
+          'El plan cambió mientras se guardaban los datos. Recarga la organización e inténtalo de nuevo.'
+        );
+      }
+      if (
+        current.clientCount !== undefined &&
+        organization.clientLimit !== undefined &&
+        organization.clientLimit < current.clientCount
+      ) {
+        throw new BusinessError(
+          'CLIENT_LIMIT_BELOW_USAGE',
+          'El límite no puede ser menor que la cantidad actual de clientes.'
+        );
+      }
 
-    await docRef.update(updates);
+      const saved = { ...organization, clientCount: current.clientCount };
+      const updates: Record<string, any> = { ...this.serialize(saved) };
+      delete updates.twilio;
+      if (saved.twilio) {
+        const fields: (keyof OrganizationTwilioConfig)[] = [
+          'accountSid',
+          'authToken',
+          'phoneNumber',
+          'enabled',
+        ];
+        for (const field of fields) {
+          const value = saved.twilio[field];
+          updates[`twilio.${field}`] =
+            value === undefined ? admin.firestore.FieldValue.delete() : value;
+        }
+      } else {
+        updates.twilio = admin.firestore.FieldValue.delete();
+      }
+      transaction.update(docRef, updates);
+      recordWrite();
+      return saved;
+    });
+  }
+
+  async updateWhatsAppConfiguration(
+    organizationId: string,
+    twilio: OrganizationTwilioConfig | undefined,
+    whatsappNotifications: Organization['whatsappNotifications'],
+  ): Promise<Organization> {
+    const docRef = this.db.collection(this.collectionName).doc(organizationId);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+      }
+      const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      transaction.update(docRef, {
+        twilio: twilio ? this.serialize(twilio) : admin.firestore.FieldValue.delete(),
+        whatsappNotifications: whatsappNotifications
+          ? this.serialize(whatsappNotifications)
+          : admin.firestore.FieldValue.delete(),
+      });
+      recordWrite();
+      return { ...current, twilio, whatsappNotifications };
+    });
+  }
+
+  async refreshExpiredStatus(organization: Organization, now = new Date()): Promise<Organization> {
+    if (!isPlanExpired(organization, now)) {
+      return organization;
+    }
+    const docRef = this.db.collection(this.collectionName).doc(organization.id);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+      }
+      const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      if (!isPlanExpired(current, now)) {
+        return current;
+      }
+      transaction.update(docRef, { planStatus: 'vencido' });
+      recordWrite();
+      return { ...current, planStatus: 'vencido' };
+    });
+  }
+
+  async createWithAdmin(organization: Organization, user: User): Promise<void> {
+    const organizationRef = this.db.collection('organizations').doc(organization.id);
+    const userRef = this.db.collection('users').doc(user.id);
+    const slugQuery = this.db.collection('organizations').where('slug', '==', organization.slug);
+    const emailQuery = this.db.collection('users').where('email', '==', user.email);
+
+    await this.db.runTransaction(async (transaction) => {
+      const [slugMatches, emailMatches] = await Promise.all([
+        transaction.get(slugQuery),
+        transaction.get(emailQuery),
+      ]);
+      recordQuery();
+      recordDocReads(slugMatches.size + emailMatches.size);
+      if (!slugMatches.empty) {
+        throw new BusinessError('INVALID_DATA', 'Ya existe una organización con ese slug.');
+      }
+      if (!emailMatches.empty) {
+        throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
+      }
+      recordWrite(2);
+      transaction.create(organizationRef, this.serialize(organization));
+      transaction.create(userRef, this.serialize(user));
+    });
+  }
+
+  async registerPlanPayment(
+    payment: OrganizationPlanPayment,
+    plan: BusinessPlanKey,
+    clientLimit: number,
+    planExpiresAt: Date,
+  ): Promise<Organization> {
+    const organizationRef = this.db.collection(this.collectionName).doc(payment.organizationId);
+    const paymentRef = this.db.collection('organizationPlanPayments').doc(payment.id);
+
+    return this.db.runTransaction(async (transaction) => {
+      const organizationSnapshot = await transaction.get(organizationRef);
+      recordDocReads();
+      if (!organizationSnapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+      }
+      const organization = deserializeOrganization(
+        organizationSnapshot.id,
+        organizationSnapshot.data()!
+      );
+      if (planExpiresAt.getTime() <= Date.now()) {
+        throw new BusinessError(
+          'INVALID_PLAN_DATE',
+          'El nuevo vencimiento debe ser una fecha futura para activar el plan.'
+        );
+      }
+      if (clientLimit < (organization.clientCount ?? 0)) {
+        throw new BusinessError(
+          'CLIENT_LIMIT_BELOW_USAGE',
+          'El límite nuevo no puede ser menor que la cantidad actual de clientes.'
+        );
+      }
+      const updated: Organization = {
+        ...organization,
+        plan,
+        clientLimit,
+        planStatus: 'activo',
+        trialEndsAt: null,
+        planExpiresAt,
+        planUpdatedAt: payment.createdAt,
+        planUpdatedBy: payment.createdBy,
+      };
+      recordWrite(2);
+      transaction.create(paymentRef, this.serialize(payment));
+      transaction.update(organizationRef, this.serialize(updated));
+      return updated;
+    });
   }
 }
 
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
     super('clients');
+  }
+
+  async createWithinPlanLimit(client: Client): Promise<void> {
+    const organizationRef = this.db.collection('organizations').doc(client.organizationId);
+    const clientRef = this.db.collection(this.collectionName).doc(client.id);
+
+    const result: { code: string; message: string; details?: Record<string, unknown> } | undefined =
+      await this.db.runTransaction(async (transaction) => {
+      const [organizationSnapshot, clientSnapshot] = await Promise.all([
+        transaction.get(organizationRef),
+        transaction.get(clientRef),
+      ]);
+      recordDocReads(2);
+      if (!organizationSnapshot.exists) {
+        return { code: 'ORGANIZATION_NOT_FOUND', message: 'Organización no encontrada.' };
+      }
+      if (clientSnapshot.exists) {
+        return { code: 'INVALID_DATA', message: 'El cliente ya existe.' };
+      }
+
+      const organization = deserializeOrganization(
+        organizationSnapshot.id,
+        organizationSnapshot.data()!
+      );
+      if (isPlanExpired(organization)) {
+        recordWrite();
+        transaction.update(organizationRef, { planStatus: 'vencido' });
+        return {
+          code: 'PLAN_READ_ONLY',
+          message: 'El plan venció. La organización está en modo de solo lectura.',
+        };
+      }
+      if (
+        !organization.plan ||
+        !organization.planStatus ||
+        !Number.isInteger(organization.clientLimit) ||
+        !Number.isInteger(organization.clientCount) ||
+        organization.clientCount! < 0
+      ) {
+        return {
+          code: 'PLAN_NOT_CONFIGURED',
+          message: 'El plan o el contador de clientes de la organización no está configurado.',
+        };
+      }
+      try {
+        validatePlanConfiguration({
+          plan: organization.plan,
+          clientLimit: organization.clientLimit!,
+          planStatus: organization.planStatus,
+          trialEndsAt: organization.trialEndsAt,
+          planExpiresAt: organization.planExpiresAt,
+        });
+      } catch (error) {
+        if (error instanceof BusinessError) {
+          return { code: error.code, message: error.message };
+        }
+        throw error;
+      }
+      if (organization.planStatus === 'vencido' || organization.planStatus === 'suspendido') {
+        return {
+          code: 'PLAN_READ_ONLY',
+          message: 'La organización está en modo de solo lectura.',
+        };
+      }
+      if (organization.clientCount! >= organization.clientLimit!) {
+        return {
+          code: 'CLIENT_LIMIT_REACHED',
+          message: 'La organización alcanzó el límite de clientes de su plan.',
+          details: {
+            clientCount: organization.clientCount,
+            clientLimit: organization.clientLimit,
+          },
+        };
+      }
+
+      recordWrite(2);
+      transaction.create(clientRef, this.serialize(client));
+      transaction.update(organizationRef, { clientCount: organization.clientCount! + 1 });
+      return undefined;
+    });
+
+    if (result) {
+      throw new BusinessError(result.code, result.message, result.details);
+    }
+  }
+
+  async deleteAndDecrementClientCount(id: string, organizationId: string): Promise<boolean> {
+    const clientRef = this.db.collection(this.collectionName).doc(id);
+    const organizationRef = this.db.collection('organizations').doc(organizationId);
+
+    return this.db.runTransaction(async (transaction) => {
+      const [clientSnapshot, organizationSnapshot] = await Promise.all([
+        transaction.get(clientRef),
+        transaction.get(organizationRef),
+      ]);
+      recordDocReads(2);
+      if (!clientSnapshot.exists || clientSnapshot.data()?.organizationId !== organizationId) {
+        return false;
+      }
+
+      if (!organizationSnapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+      }
+      const clientCount = organizationSnapshot.data()?.clientCount;
+      if (!Number.isInteger(clientCount) || clientCount < 0) {
+        throw new BusinessError(
+          'PLAN_NOT_CONFIGURED',
+          'El contador de clientes no está inicializado. Ejecuta la migración de planes.'
+        );
+      }
+
+      recordWrite();
+      transaction.delete(clientRef);
+      recordWrite();
+      transaction.update(organizationRef, { clientCount: Math.max(0, clientCount - 1) });
+      return true;
+    });
   }
 
   async findByDni(dni: string, organizationId?: string): Promise<Client | undefined> {
