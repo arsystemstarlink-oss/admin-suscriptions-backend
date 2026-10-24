@@ -1292,7 +1292,7 @@ Codigos de planes: `PLAN_READ_ONLY` (403) | `PLAN_NOT_CONFIGURED` (409) | `CLIEN
 
 Codigos multi-tenant: `TENANT_REQUIRED` (403) | `ORGANIZATION_NOT_FOUND` (404) | `CROSS_TENANT_REFERENCE` (403) | `FORBIDDEN_CROSS_TENANT` (403)
 
-Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias completas (`accountSid`, `authToken`, `phoneNumber` y `enabled !== false`).
+Codigos WhatsApp: `WHATSAPP_NOT_CONFIGURED` (503) — la organización no tiene credenciales Twilio propias completas (`accountSid`, `authToken`, `phoneNumber` y `enabled !== false`). `TWILIO_NUMBER_IN_USE` (409) — el número de WhatsApp ya pertenece a otra organización. `TWILIO_NUMBER_AMBIGUOUS` (409) — el número resuelve a varias organizaciones en el webhook.
 
 Codigos portal/reportes: `PAYMENT_REPORT_NOT_FOUND` (404) | `PAYMENT_REPORT_ALREADY_EXISTS` (409) | `PAYMENT_REPORT_ALREADY_REVIEWED` (409) | `PAYMENT_REPORT_INVALID_STATE` (400)
 
@@ -1304,6 +1304,8 @@ Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `
 - Defaults: recordatorio a 3 días, aviso de vencimiento habilitado y aviso de suspensión habilitado. Los Content SID de entorno antiguos se usan solo como fallback hasta que la organización guarde su configuración.
 - `readiness.ready` y `readiness.missing` describen los requisitos activos pendientes. La falta de configuración WhatsApp no detiene el cron ni el ciclo de negocio.
 - Cada organización debe tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`. No existe configuración Twilio global de servidor.
+- Unicidad del número: un `phoneNumber` pertenece a una sola organización. Al crear o cambiar el número (`POST /organizations`, `POST /organizations/onboard`, `PUT /organizations/:id`, `PUT /api/whatsapp/config`) el backend reserva `twilioPhoneNumbers/{phoneNumber}` dentro de una transacción y rechaza con `409 TWILIO_NUMBER_IN_USE` si otra organización lo usa. Al cambiar o eliminar el número se libera la reserva. Las reservas no son accesibles desde clientes (`firestore.rules`).
+- Si un número resuelve a más de una organización (datos previos a la reserva), el webhook rechaza el mensaje con `409 TWILIO_NUMBER_AMBIGUOUS`. Ejecutar `npm run backfill:twilio-phone-claims` (dry-run por defecto, `--apply` para escribir) crea las reservas de los números sin conflicto y reporta los duplicados.
 - Resolución de credenciales: solo se usan las credenciales de la organización; si la config está incompleta o `enabled === false`, no hay credenciales (`WHATSAPP_NOT_CONFIGURED`).
 - `POST /whatsapp/send` usa las credenciales de la organización efectiva. Requiere contexto de organización (`TENANT_REQUIRED` si un super-admin no indica `?organizationId=`).
 - Webhook inbound (`POST /communications/webhook`): resuelve la organización por el número destino (`To` del mensaje = `twilio.phoneNumber` de la org), valida la firma con el `authToken` de esa org, y asigna el mensaje a la organización. Si la org no se resuelve, no hay credenciales para validar y el webhook se rechaza. Fallback histórico: match por teléfono del cliente (solo con validación desactivada en development).

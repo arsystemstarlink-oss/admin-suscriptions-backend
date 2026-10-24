@@ -188,7 +188,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       createdBy: actor.userId,
     };
 
-    await organizationRepository.create(organization);
+    await organizationRepository.createWithTwilioClaim(organization);
     res.status(201).json(toOrganizationDto(organization));
   } catch (err) {
     next(err);
@@ -661,7 +661,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     await schedulerConfigRepository.delete(orgId);
 
     await deleteOrganizationStats(orgId);
-    await organizationRepository.delete(orgId);
+    await organizationRepository.deleteWithTwilioClaim(orgId, existing.twilio?.phoneNumber);
     res.status(204).send();
   } catch (err) {
     next(err);

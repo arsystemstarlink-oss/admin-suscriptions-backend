@@ -52,6 +52,73 @@ function deserializeOrganization(id: string, data: FirebaseFirestore.DocumentDat
   } as Organization;
 }
 
+const TWILIO_PHONE_CLAIMS_COLLECTION = 'twilioPhoneNumbers';
+
+function twilioPhoneClaimRef(db: FirebaseFirestore.Firestore, phoneNumber: string) {
+  return db.collection(TWILIO_PHONE_CLAIMS_COLLECTION).doc(phoneNumber);
+}
+
+/**
+ * Valida dentro de una transacción que `nextPhone` no pertenezca a otra organización
+ * y devuelve las escrituras del registro de reservas `twilioPhoneNumbers/{numero}`.
+ * Debe invocarse antes de cualquier escritura de la transacción: el callback devuelto
+ * solo escribe. El registro garantiza unicidad; la consulta cubre datos previos a la reserva.
+ */
+async function planTwilioPhoneClaimChange(
+  db: FirebaseFirestore.Firestore,
+  transaction: FirebaseFirestore.Transaction,
+  organizationId: string,
+  previousPhone: string | undefined,
+  nextPhone: string | undefined,
+): Promise<() => void> {
+  if (previousPhone === nextPhone) {
+    return () => undefined;
+  }
+
+  const nextRef = nextPhone ? twilioPhoneClaimRef(db, nextPhone) : undefined;
+  const previousRef = previousPhone ? twilioPhoneClaimRef(db, previousPhone) : undefined;
+
+  let nextClaim: FirebaseFirestore.DocumentSnapshot | undefined;
+  let previousClaim: FirebaseFirestore.DocumentSnapshot | undefined;
+  let nextOwners: FirebaseFirestore.QuerySnapshot | undefined;
+
+  if (nextRef && nextPhone) {
+    nextClaim = await transaction.get(nextRef);
+    nextOwners = await transaction.get(
+      db.collection('organizations').where('twilio.phoneNumber', '==', nextPhone),
+    );
+    recordDocReads(1 + nextOwners.size);
+    const claimedByOther =
+      nextClaim.exists && nextClaim.data()?.organizationId !== organizationId;
+    const usedByOther = nextOwners.docs.some((doc) => doc.id !== organizationId);
+    if (claimedByOther || usedByOther) {
+      throw new BusinessError(
+        'TWILIO_NUMBER_IN_USE',
+        'Ese número de WhatsApp de Twilio ya está asignado a otra organización.'
+      );
+    }
+  }
+  if (previousRef) {
+    previousClaim = await transaction.get(previousRef);
+    recordDocReads();
+  }
+
+  return () => {
+    if (nextRef) {
+      recordWrite();
+      transaction.set(nextRef, { organizationId, updatedAt: new Date() });
+    }
+    if (
+      previousRef &&
+      previousClaim?.exists &&
+      previousClaim.data()?.organizationId === organizationId
+    ) {
+      recordWrite();
+      transaction.delete(previousRef);
+    }
+  };
+}
+
 export class OrganizationFirestoreRepository extends FirestoreRepository<Organization> {
   constructor() {
     super('organizations');
@@ -63,8 +130,47 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
   }
 
   async findByTwilioPhoneNumber(phoneNumber: string): Promise<Organization | undefined> {
-    const results = await this.listByField('twilio.phoneNumber', phoneNumber);
-    return results.find((org) => org.twilio?.phoneNumber === phoneNumber);
+    const results = (await this.listByField('twilio.phoneNumber', phoneNumber)).filter(
+      (org) => org.twilio?.phoneNumber === phoneNumber
+    );
+    if (results.length > 1) {
+      throw new BusinessError(
+        'TWILIO_NUMBER_AMBIGUOUS',
+        'El número de WhatsApp de Twilio está asociado a más de una organización.'
+      );
+    }
+    return results[0];
+  }
+
+  async createWithTwilioClaim(organization: Organization): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(organization.id);
+    await this.db.runTransaction(async (transaction) => {
+      const applyClaims = await planTwilioPhoneClaimChange(
+        this.db,
+        transaction,
+        organization.id,
+        undefined,
+        organization.twilio?.phoneNumber,
+      );
+      recordWrite();
+      transaction.create(docRef, this.serialize(organization));
+      applyClaims();
+    });
+  }
+
+  async deleteWithTwilioClaim(id: string, phoneNumber: string | undefined): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(id);
+    const claimRef = phoneNumber ? twilioPhoneClaimRef(this.db, phoneNumber) : undefined;
+    await this.db.runTransaction(async (transaction) => {
+      const claim = claimRef ? await transaction.get(claimRef) : undefined;
+      recordDocReads();
+      recordWrite();
+      transaction.delete(docRef);
+      if (claimRef && claim?.exists && claim.data()?.organizationId === id) {
+        recordWrite();
+        transaction.delete(claimRef);
+      }
+    });
   }
 
   async updateOrganization(
@@ -79,6 +185,13 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
       }
       const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      const applyClaims = await planTwilioPhoneClaimChange(
+        this.db,
+        transaction,
+        organization.id,
+        current.twilio?.phoneNumber,
+        organization.twilio?.phoneNumber,
+      );
       if (
         expected &&
         (current.plan !== expected.plan ||
@@ -123,6 +236,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
       }
       transaction.update(docRef, updates);
       recordWrite();
+      applyClaims();
       return saved;
     });
   }
@@ -140,6 +254,13 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
       }
       const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      const applyClaims = await planTwilioPhoneClaimChange(
+        this.db,
+        transaction,
+        organizationId,
+        current.twilio?.phoneNumber,
+        twilio?.phoneNumber,
+      );
       transaction.update(docRef, {
         twilio: twilio ? this.serialize(twilio) : admin.firestore.FieldValue.delete(),
         whatsappNotifications: whatsappNotifications
@@ -147,6 +268,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
           : admin.firestore.FieldValue.delete(),
       });
       recordWrite();
+      applyClaims();
       return { ...current, twilio, whatsappNotifications };
     });
   }
@@ -191,9 +313,17 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
       if (!emailMatches.empty) {
         throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
       }
+      const applyClaims = await planTwilioPhoneClaimChange(
+        this.db,
+        transaction,
+        organization.id,
+        undefined,
+        organization.twilio?.phoneNumber,
+      );
       recordWrite(2);
       transaction.create(organizationRef, this.serialize(organization));
       transaction.create(userRef, this.serialize(user));
+      applyClaims();
     });
   }
 

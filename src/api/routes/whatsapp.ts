@@ -130,6 +130,7 @@ async function resolveOrganizationFromWebhook(parsedTo: string): Promise<Organiz
   try {
     return await organizationRepository.findByTwilioPhoneNumber(normalizePhoneNumber(parsedTo));
   } catch (error) {
+    if (error instanceof BusinessError) throw error;
     console.error('[WhatsApp] Error resolviendo organización del webhook:', error);
     return undefined;
   }

@@ -242,6 +242,10 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
     const db = getFirestore();
     const batch = db.batch();
     batch.set(db.collection('paymentReports').doc(approved.id), stripUndefined(approved));
+    batch.set(
+      db.collection('billingPeriods').doc(updatedPeriod.id),
+      stripUndefined(updatedPeriod),
+    );
 
     const paidEventId = createId();
     batch.set(

@@ -13,6 +13,7 @@
     "create-admin": "ts-node scripts/create-admin.ts",
     "migrate:tenant": "ts-node scripts/migrate-tenant.ts",
     "migrate:organization-client-count": "ts-node scripts/migrate-organization-client-count.ts",
+    "backfill:twilio-phone-claims": "ts-node scripts/backfill-twilio-phone-claims.ts",
     "backfill:conversations": "ts-node scripts/backfill-conversations.ts",
     "backfill:conversation-unread": "ts-node scripts/backfill-conversation-unread.ts",
     "backfill:radar": "ts-node scripts/backfill-subscription-radar.ts",
