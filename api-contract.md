@@ -87,6 +87,7 @@ interface OrganizationPlanPayment {
   amount: number;
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  months?: number; // meses renovados; en pagos antiguos puede faltar
   newPlanExpiresAt: string;
   notes?: string;
   createdBy: string;
@@ -475,7 +476,7 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
 ```typescript
 // Request
 {
-  paidAt: string; amount: number;
+  paidAt: string; amount: number; // en planes fijos el servidor ignora el enviado
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit?: number; // requerido para A medida (>= 301); ignorado en planes fijos
@@ -485,12 +486,18 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
 }
 // Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
+// Monto: en planes fijos es priceUsdMonthly × months (total); en A medida es el amount enviado.
+// Si se envía newPlanExpiresAt sin months, el monto fijo equivale a 1 mes.
+// Meses: mismo plan → se suman al vencimiento actual; cambio de plan → el nuevo plazo
+// inicia en paidAt/now y no se suma el tiempo restante del plan anterior.
+// Tope: el vencimiento resultante no puede superar 12 meses desde hoy (PREPAID_LIMIT_REACHED).
 // El tope de clientes siempre se deriva del plan en los planes fijos.
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
 //         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)
 //         409 PLAN_DOWNGRADE_NOT_ALLOWED (la suscripción vigente solo permite renovar o subir)
+//         409 PREPAID_LIMIT_REACHED (el vencimiento resultante supera 12 meses desde hoy)
 ```
 
 **Organization DTO (responses GET/POST/PUT):**
@@ -807,7 +814,10 @@ interface BusinessPlanCatalogItem {
 ### Reportes de pago de plan de organizacion (`/organization-plan-payment-reports`, auth)
 
 El admin reporta el pago de su propia organizacion; el super-admin lo revisa. El monto de
-los planes fijos lo define el servidor (`BUSINESS_PLAN_PRICES`), no el cliente.
+los planes fijos lo define el servidor como `BUSINESS_PLAN_PRICES[plan] × months` (total),
+no el cliente. Mismo plan suma meses al vencimiento; cambio de plan reinicia el plazo desde
+la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
+(`PREPAID_LIMIT_REACHED`).
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
@@ -823,13 +833,14 @@ los planes fijos lo define el servidor (`BUSINESS_PLAN_PRICES`), no el cliente.
   months: number; // 1-12
   method: 'transferencia' | 'usdt' | 'efectivo';
   paidAt: string;
-  amount?: number; // requerido solo para A medida
+  amount?: number; // requerido solo para A medida; monto total acordado
   clientLimit?: number; // opcional; en A medida debe ser >= 301
   reference?: string; notes?: string;
 }
 // Response 201 → { report: OrganizationPlanPaymentReport }
 // Errors: 409 PLAN_PAYMENT_REPORT_ALREADY_EXISTS | 409 CLIENT_LIMIT_BELOW_USAGE
-//         409 PLAN_DOWNGRADE_NOT_ALLOWED | 400 INVALID_PAYMENT_DATE | INVALID_PLAN_MONTHS
+//         409 PLAN_DOWNGRADE_NOT_ALLOWED | 409 PREPAID_LIMIT_REACHED
+//         400 INVALID_PAYMENT_DATE | INVALID_PLAN_MONTHS
 ```
 
 ```typescript

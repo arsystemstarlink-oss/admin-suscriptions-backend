@@ -36,6 +36,27 @@ export const BUSINESS_PLAN_PRICES: Record<BusinessPlanKey, number | null> = {
   'a-medida': null,
 };
 
+export const MAX_PREPAID_MONTHS = 12;
+
+export function isOrganizationPlanChange(input: {
+  currentPlan?: BusinessPlanKey;
+  targetPlan?: BusinessPlanKey;
+  planStatus?: OrganizationPlanStatus;
+}): boolean {
+  return (
+    input.planStatus === 'activo' &&
+    Boolean(input.currentPlan && input.targetPlan && input.currentPlan !== input.targetPlan)
+  );
+}
+
+export function resolveFixedPlanPaymentAmount(
+  plan: BusinessPlanKey,
+  months: number
+): number | null {
+  const monthlyPrice = BUSINESS_PLAN_PRICES[plan];
+  return monthlyPrice === null ? null : monthlyPrice * months;
+}
+
 export const BUSINESS_PLAN_TRIAL_DAYS: Record<BusinessPlanKey, number> = {
   basico: 14,
   pro: 0,
@@ -126,10 +147,18 @@ export function resolveOrganizationPlanExpiration(input: {
   planStatus?: OrganizationPlanStatus;
   trialEndsAt?: Date | null;
   planExpiresAt?: Date | null;
+  currentPlan?: BusinessPlanKey;
+  targetPlan?: BusinessPlanKey;
   now?: Date;
 }): Date {
   const now = input.now ?? new Date();
+  const planChanged = isOrganizationPlanChange({
+    currentPlan: input.currentPlan,
+    targetPlan: input.targetPlan,
+    planStatus: input.planStatus,
+  });
   const paidActive =
+    !planChanged &&
     input.planStatus === 'activo' &&
     Boolean(input.planExpiresAt && input.planExpiresAt.getTime() > now.getTime());
   const trialActive =
@@ -143,6 +172,25 @@ export function resolveOrganizationPlanExpiration(input: {
       : new Date(Math.max(input.paidAt.getTime(), now.getTime()));
 
   return addOrganizationBillingMonths(base, input.months, input.billingDay);
+}
+
+export function assertPrepaidMonthsLimit(input: {
+  newPlanExpiresAt: Date;
+  billingDay: number;
+  now?: Date;
+}): void {
+  const maxPlanExpiresAt = addOrganizationBillingMonths(
+    input.now ?? new Date(),
+    MAX_PREPAID_MONTHS,
+    input.billingDay
+  );
+
+  if (input.newPlanExpiresAt.getTime() > maxPlanExpiresAt.getTime()) {
+    throw new BusinessError(
+      'PREPAID_LIMIT_REACHED',
+      `No puedes prepagar más de ${MAX_PREPAID_MONTHS} meses. El vencimiento máximo permitido es ${maxPlanExpiresAt.toISOString().slice(0, 10)}.`
+    );
+  }
 }
 
 /**

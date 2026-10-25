@@ -56,6 +56,7 @@ export interface OrganizationPlanPayment {
   amount: number;
   method: OrganizationPlanPaymentMethod;
   plan: BusinessPlanKey;
+  months?: number;
   newPlanExpiresAt: Date;
   notes?: string;
   createdBy: string;

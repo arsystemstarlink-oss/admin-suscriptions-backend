@@ -26,12 +26,13 @@ import {
 import { createId } from '../../domain/business-rules';
 import {
   assertPlanChangeAllowed,
+  assertPrepaidMonthsLimit,
   getOrganizationBillingDay,
   resolveOrganizationPlanExpiration,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
   resolveClientLimitForPlan,
-  BUSINESS_PLAN_PRICES,
+  resolveFixedPlanPaymentAmount,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
@@ -568,6 +569,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
     const billingDay = getOrganizationBillingDay(current);
     let newPlanExpiresAt: Date;
+    let renewalMonths = 1;
     if (months !== undefined) {
       const parsedMonths = typeof months === 'number' ? months : Number(months);
       if (!Number.isInteger(parsedMonths) || parsedMonths < 1 || parsedMonths > 12) {
@@ -576,6 +578,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
           'Los meses a renovar deben ser un entero entre 1 y 12.'
         );
       }
+      renewalMonths = parsedMonths;
       newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt: parsedPaidAt,
         months: parsedMonths,
@@ -583,6 +586,8 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
         planStatus: current.planStatus,
         trialEndsAt: current.trialEndsAt,
         planExpiresAt: current.planExpiresAt,
+        currentPlan: current.plan,
+        targetPlan: plan as BusinessPlanKey,
       });
     } else {
       const parsedExpiry = parsePlanDate(req.body?.newPlanExpiresAt, 'newPlanExpiresAt');
@@ -597,6 +602,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     if (!['basico', 'pro', 'negocio', 'a-medida'].includes(plan)) {
       throw new BusinessError('INVALID_PLAN', 'El plan seleccionado no es válido.');
     }
+    assertPrepaidMonthsLimit({ newPlanExpiresAt, billingDay });
     if (
       req.body?.notes !== undefined &&
       (typeof req.body.notes !== 'string' || req.body.notes.length > 1000)
@@ -605,8 +611,8 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const paymentPlan = plan as BusinessPlanKey;
-    const fixedPrice = BUSINESS_PLAN_PRICES[paymentPlan];
-    const effectiveAmount = fixedPrice !== null ? fixedPrice : amount;
+    const fixedAmount = resolveFixedPlanPaymentAmount(paymentPlan, renewalMonths);
+    const effectiveAmount = fixedAmount !== null ? fixedAmount : amount;
     if (
       typeof effectiveAmount !== 'number' ||
       !Number.isFinite(effectiveAmount) ||
@@ -648,6 +654,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
       amount: effectiveAmount,
       method: method as OrganizationPlanPaymentMethod,
       plan: paymentPlan,
+      months: renewalMonths,
       newPlanExpiresAt,
       notes: typeof req.body?.notes === 'string' ? req.body.notes.trim() || undefined : undefined,
       createdBy: actor.userId,

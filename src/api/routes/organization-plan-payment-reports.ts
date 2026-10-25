@@ -11,12 +11,13 @@ import {
 import { isSuperAdmin } from '../../domain/auth-context';
 import { createId } from '../../domain/business-rules';
 import {
-  BUSINESS_PLAN_PRICES,
   assertPlanChangeAllowed,
+  assertPrepaidMonthsLimit,
   getOrganizationBillingDay,
   isBusinessPlanKey,
   isOrganizationPlanPaymentMethod,
   resolveClientLimitForPlan,
+  resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanExpiration,
 } from '../../domain/business-plan';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
@@ -107,11 +108,27 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       targetClientLimit: clientLimit,
     });
 
-    const fixedPrice = BUSINESS_PLAN_PRICES[plan];
-    const amount = fixedPrice !== null ? fixedPrice : Number(req.body?.amount);
+    const fixedAmount = resolveFixedPlanPaymentAmount(plan, months);
+    const amount = fixedAmount !== null ? fixedAmount : Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto del pago debe ser mayor que cero.');
     }
+
+    const previewBillingDay = getOrganizationBillingDay(organization);
+    const previewExpiry = resolveOrganizationPlanExpiration({
+      paidAt,
+      months,
+      billingDay: previewBillingDay,
+      planStatus: organization.planStatus,
+      trialEndsAt: organization.trialEndsAt,
+      planExpiresAt: organization.planExpiresAt,
+      currentPlan: organization.plan,
+      targetPlan: plan,
+    });
+    assertPrepaidMonthsLimit({
+      newPlanExpiresAt: previewExpiry,
+      billingDay: previewBillingDay,
+    });
 
     const pending = await organizationPlanPaymentReportRepository.findPendingByOrganization(organizationId);
     if (pending) {
@@ -268,7 +285,10 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       planStatus: organization.planStatus,
       trialEndsAt: organization.trialEndsAt,
       planExpiresAt: organization.planExpiresAt,
+      currentPlan: organization.plan,
+      targetPlan: report.plan,
     });
+    assertPrepaidMonthsLimit({ newPlanExpiresAt, billingDay });
 
     const payment: OrganizationPlanPayment = {
       id: createId(),
@@ -277,6 +297,7 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       amount: report.amount,
       method: report.method,
       plan: report.plan,
+      months: report.months,
       newPlanExpiresAt,
       notes: report.notes,
       createdBy: auth.userId,

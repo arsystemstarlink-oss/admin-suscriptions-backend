@@ -2,10 +2,12 @@ import {
   BUSINESS_PLAN_ADMIN_LIMITS,
   addOrganizationBillingMonths,
   assertPlanChangeAllowed,
+  assertPrepaidMonthsLimit,
   getBusinessPlanCatalog,
   getOrganizationBillingDay,
   isPlanExpired,
   resolveClientLimitForPlan,
+  resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanExpiration,
   validateOrganizationAdminCount,
   validateOrganizationAdminLimit,
@@ -227,6 +229,14 @@ describe('business plan rules', () => {
     ]);
   });
 
+  it('calculates the fixed plan payment total by renewal months', () => {
+    expect(resolveFixedPlanPaymentAmount('basico', 1)).toBe(15);
+    expect(resolveFixedPlanPaymentAmount('basico', 3)).toBe(45);
+    expect(resolveFixedPlanPaymentAmount('pro', 6)).toBe(150);
+    expect(resolveFixedPlanPaymentAmount('negocio', 12)).toBe(480);
+    expect(resolveFixedPlanPaymentAmount('a-medida', 3)).toBeNull();
+  });
+
   it('starts the paid cycle after an active trial and stacks active renewals', () => {
     expect(
       resolveOrganizationPlanExpiration({
@@ -251,5 +261,51 @@ describe('business plan rules', () => {
         now,
       }).toISOString()
     ).toBe('2026-12-07T23:59:59.999Z');
+  });
+
+  it('resets the term when the active plan changes instead of summing both plans', () => {
+    const base = {
+      paidAt: new Date('2026-10-25T12:00:00.000Z'),
+      months: 12,
+      billingDay: 20,
+      planStatus: 'activo' as const,
+      trialEndsAt: null,
+      planExpiresAt: new Date('2026-11-20T23:59:59.999Z'),
+      now: new Date('2026-10-25T12:00:00.000Z'),
+    };
+
+    expect(
+      resolveOrganizationPlanExpiration({
+        ...base,
+        currentPlan: 'basico',
+        targetPlan: 'pro',
+      }).toISOString()
+    ).toBe('2027-10-20T23:59:59.999Z');
+
+    expect(
+      resolveOrganizationPlanExpiration({
+        ...base,
+        currentPlan: 'pro',
+        targetPlan: 'pro',
+      }).toISOString()
+    ).toBe('2027-11-20T23:59:59.999Z');
+  });
+
+  it('rejects expirations beyond the 12-month prepaid cap', () => {
+    expect(() =>
+      assertPrepaidMonthsLimit({
+        newPlanExpiresAt: new Date('2027-10-20T23:59:59.999Z'),
+        billingDay: 20,
+        now: new Date('2026-10-25T12:00:00.000Z'),
+      })
+    ).not.toThrow();
+
+    expect(() =>
+      assertPrepaidMonthsLimit({
+        newPlanExpiresAt: new Date('2027-10-21T00:00:00.000Z'),
+        billingDay: 20,
+        now: new Date('2026-10-25T12:00:00.000Z'),
+      })
+    ).toThrow('No puedes prepagar más de 12 meses.');
   });
 });
