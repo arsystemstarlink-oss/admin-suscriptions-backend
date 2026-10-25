@@ -458,9 +458,9 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   planExpiresAt?: string | null;
   twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean } | null
 }
-// Solo super-admin puede cambiar el plan. Límites fijos: Básico 30, Pro 150, Negocio 300.
+// Solo super-admin puede cambiar el plan. Límites fijos: Básico 30, Pro 75, Negocio 150.
 // En planes fijos el servidor deriva clientLimit del plan e ignora el valor enviado.
-// A medida requiere un clientLimit explícito de al menos 301.
+// A medida requiere un clientLimit explícito de al menos 151.
 // No se reduce clientLimit por debajo de clientCount.
 // Mientras la suscripción esté vigente solo se permite renovar o subir de plan.
 // prueba requiere trialEndsAt y solo permite Básico; activo requiere planExpiresAt.
@@ -479,7 +479,7 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   paidAt: string; amount: number; // en planes fijos el servidor ignora el enviado
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
-  clientLimit?: number; // requerido para A medida (>= 301); ignorado en planes fijos
+  clientLimit?: number; // requerido para A medida (>= 151); ignorado en planes fijos
   months?: number; // 1-12; el servidor calcula newPlanExpiresAt con el día de corte
   newPlanExpiresAt?: string; // legado; solo si no se envía months
   notes?: string;
@@ -834,7 +834,7 @@ la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
   method: 'transferencia' | 'usdt' | 'efectivo';
   paidAt: string;
   amount?: number; // requerido solo para A medida; monto total acordado
-  clientLimit?: number; // opcional; en A medida debe ser >= 301
+  clientLimit?: number; // opcional; en A medida debe ser >= 151
   reference?: string; notes?: string;
 }
 // Response 201 → { report: OrganizationPlanPaymentReport }

@@ -52,8 +52,8 @@ describe('business plan rules', () => {
 
   it.each([
     ['basico', 30],
-    ['pro', 150],
-    ['negocio', 300],
+    ['pro', 75],
+    ['negocio', 150],
   ] as const)('accepts the fixed limit for %s', (plan, clientLimit) => {
     expect(() =>
       validatePlanConfiguration({
@@ -65,21 +65,21 @@ describe('business plan rules', () => {
     ).not.toThrow();
   });
 
-  it('requires custom plans to exceed 300 clients', () => {
+  it('requires custom plans to exceed 150 clients', () => {
     expect(() =>
       validatePlanConfiguration({
         plan: 'a-medida',
-        clientLimit: 300,
+        clientLimit: 150,
         planStatus: 'activo',
         planExpiresAt: new Date('2026-11-01T00:00:00.000Z'),
       })
-    ).toThrow('al menos 301');
+    ).toThrow('al menos 151');
   });
 
   it.each([
     ['basico', 30],
-    ['pro', 150],
-    ['negocio', 300],
+    ['pro', 75],
+    ['negocio', 150],
   ] as const)('derives the fixed client limit for %s', (plan, clientLimit) => {
     expect(resolveClientLimitForPlan(plan, 999, 10)).toBe(clientLimit);
     expect(resolveClientLimitForPlan(plan, undefined, 10)).toBe(clientLimit);
@@ -88,8 +88,8 @@ describe('business plan rules', () => {
   it('requires an explicit limit for a custom plan', () => {
     expect(resolveClientLimitForPlan('a-medida', 500, 30)).toBe(500);
     expect(resolveClientLimitForPlan('a-medida', undefined, 400)).toBe(400);
-    expect(() => resolveClientLimitForPlan('a-medida', undefined, 30)).toThrow('al menos 301');
-    expect(() => resolveClientLimitForPlan('a-medida', 200, 30)).toThrow('al menos 301');
+    expect(() => resolveClientLimitForPlan('a-medida', undefined, 30)).toThrow('al menos 151');
+    expect(() => resolveClientLimitForPlan('a-medida', 150, 30)).toThrow('al menos 151');
   });
 
   it('blocks downgrades while the paid plan is active', () => {
@@ -146,7 +146,7 @@ describe('business plan rules', () => {
     expect(() =>
       validatePlanConfiguration({
         plan: 'pro',
-        clientLimit: 150,
+        clientLimit: 75,
         planStatus: 'prueba',
         trialEndsAt: new Date('2026-11-01T00:00:00.000Z'),
       })

@@ -11,6 +11,7 @@ import {
 import { isSuperAdmin } from '../../domain/auth-context';
 import { createId } from '../../domain/business-rules';
 import {
+  CUSTOM_PLAN_MIN_CLIENTS,
   assertPlanChangeAllowed,
   assertPrepaidMonthsLimit,
   getOrganizationBillingDay,
@@ -92,7 +93,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const paidAt = parsePaymentDate(req.body?.paidAt);
     const clientLimit =
       plan === 'a-medida' && req.body?.clientLimit === undefined
-        ? Math.max(301, organization.clientLimit ?? 0, organization.clientCount ?? 0)
+        ? Math.max(
+            CUSTOM_PLAN_MIN_CLIENTS,
+            organization.clientLimit ?? 0,
+            organization.clientCount ?? 0
+          )
         : resolveClientLimitForPlan(plan, req.body?.clientLimit, organization.clientLimit);
     if (clientLimit < (organization.clientCount ?? 0)) {
       throw new BusinessError(

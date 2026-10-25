@@ -17,8 +17,8 @@ export const BUSINESS_PLAN_LABELS: Record<BusinessPlanKey, string> = {
 
 export const BUSINESS_PLAN_LIMITS: Record<BusinessPlanKey, number | null> = {
   basico: 30,
-  pro: 150,
-  negocio: 300,
+  pro: 75,
+  negocio: 150,
   'a-medida': null,
 };
 
@@ -94,7 +94,7 @@ export function isOrganizationPlanPaymentMethod(
   return value === 'transferencia' || value === 'usdt' || value === 'efectivo';
 }
 
-export const CUSTOM_PLAN_MIN_CLIENTS = 301;
+export const CUSTOM_PLAN_MIN_CLIENTS = 151;
 
 export function normalizeOrganizationBillingDay(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value);
