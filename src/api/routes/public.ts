@@ -18,6 +18,7 @@ import {
   validateReportPaidAt,
 } from '../../domain/payment-reports';
 import { createId } from '../../domain/business-rules';
+import { getBusinessPlanCatalog } from '../../domain/business-plan';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { pushService } from '../../infrastructure/push-service';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
@@ -28,6 +29,10 @@ import {
 } from '../middleware/public-protection';
 
 const router = Router();
+
+router.get('/business-plans', (_req: Request, res: Response) => {
+  res.json({ plans: getBusinessPlanCatalog() });
+});
 
 // Protección del portal público: límite por cédula con bloqueo progresivo y
 // verificación CAPTCHA (Cloudflare Turnstile) cuando TURNSTILE_SECRET_KEY está

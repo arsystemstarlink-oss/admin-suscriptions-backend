@@ -1,6 +1,12 @@
 import {
   BUSINESS_PLAN_ADMIN_LIMITS,
+  addOrganizationBillingMonths,
+  assertPlanChangeAllowed,
+  getBusinessPlanCatalog,
+  getOrganizationBillingDay,
   isPlanExpired,
+  resolveClientLimitForPlan,
+  resolveOrganizationPlanExpiration,
   validateOrganizationAdminCount,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
@@ -68,6 +74,72 @@ describe('business plan rules', () => {
     ).toThrow('al menos 301');
   });
 
+  it.each([
+    ['basico', 30],
+    ['pro', 150],
+    ['negocio', 300],
+  ] as const)('derives the fixed client limit for %s', (plan, clientLimit) => {
+    expect(resolveClientLimitForPlan(plan, 999, 10)).toBe(clientLimit);
+    expect(resolveClientLimitForPlan(plan, undefined, 10)).toBe(clientLimit);
+  });
+
+  it('requires an explicit limit for a custom plan', () => {
+    expect(resolveClientLimitForPlan('a-medida', 500, 30)).toBe(500);
+    expect(resolveClientLimitForPlan('a-medida', undefined, 400)).toBe(400);
+    expect(() => resolveClientLimitForPlan('a-medida', undefined, 30)).toThrow('al menos 301');
+    expect(() => resolveClientLimitForPlan('a-medida', 200, 30)).toThrow('al menos 301');
+  });
+
+  it('blocks downgrades while the paid plan is active', () => {
+    const active = {
+      currentPlanStatus: 'activo' as const,
+      currentPlanExpiresAt: new Date('2026-11-01T00:00:00.000Z'),
+      currentClientLimit: 150,
+      now,
+    };
+    expect(() =>
+      assertPlanChangeAllowed({ ...active, targetClientLimit: 30 })
+    ).toThrow('No puedes bajar de plan');
+    expect(() =>
+      assertPlanChangeAllowed({ ...active, targetClientLimit: 150 })
+    ).not.toThrow();
+    expect(() =>
+      assertPlanChangeAllowed({ ...active, targetClientLimit: 300 })
+    ).not.toThrow();
+  });
+
+  it('allows downgrades after expiry or while suspended', () => {
+    expect(() =>
+      assertPlanChangeAllowed({
+        currentPlanStatus: 'activo',
+        currentPlanExpiresAt: new Date('2026-10-22T11:59:59.999Z'),
+        currentClientLimit: 150,
+        targetClientLimit: 30,
+        now,
+      })
+    ).not.toThrow();
+    expect(() =>
+      assertPlanChangeAllowed({
+        currentPlanStatus: 'suspendido',
+        currentClientLimit: 150,
+        targetClientLimit: 30,
+        now,
+      })
+    ).not.toThrow();
+  });
+
+  it('blocks lowering a custom limit while the plan is active', () => {
+    expect(() =>
+      assertPlanChangeAllowed({
+        currentPlanStatus: 'activo',
+        currentPlanExpiresAt: new Date('2026-11-01T00:00:00.000Z'),
+        currentClientLimit: 500,
+        targetClientLimit: 400,
+        now,
+      })
+    ).toThrow('No puedes bajar de plan');
+  });
+
   it('only permits a dated trial on the Basic plan', () => {
     expect(() =>
       validatePlanConfiguration({
@@ -114,5 +186,70 @@ describe('business plan rules', () => {
         now
       )
     ).toBe(false);
+  });
+
+  it('derives the billing day from the registration date when it is not stored', () => {
+    expect(
+      getOrganizationBillingDay(
+        organization({
+          billingDay: undefined,
+          createdAt: new Date('2026-11-07T12:00:00.000Z'),
+        })
+      )
+    ).toBe(7);
+    expect(
+      getOrganizationBillingDay(
+        organization({ billingDay: 31, planExpiresAt: new Date('2026-11-07T00:00:00.000Z') })
+      )
+    ).toBe(28);
+  });
+
+  it('anchors monthly expirations to the next billing day', () => {
+    expect(
+      addOrganizationBillingMonths(new Date('2026-11-07T12:00:00.000Z'), 1, 24).toISOString()
+    ).toBe('2026-11-24T23:59:59.999Z');
+    expect(
+      addOrganizationBillingMonths(new Date('2026-11-30T12:00:00.000Z'), 1, 24).toISOString()
+    ).toBe('2026-12-24T23:59:59.999Z');
+    expect(
+      addOrganizationBillingMonths(new Date('2026-01-31T12:00:00.000Z'), 1, 31).toISOString()
+    ).toBe('2026-02-28T23:59:59.999Z');
+    expect(() => addOrganizationBillingMonths(new Date(), 0, 7)).toThrow('entre 1 y 12');
+  });
+
+  it('exposes the fixed monthly prices from the backend catalog', () => {
+    const catalog = getBusinessPlanCatalog();
+    expect(catalog.map((plan) => [plan.key, plan.priceUsdMonthly])).toEqual([
+      ['basico', 15],
+      ['pro', 25],
+      ['negocio', 40],
+      ['a-medida', null],
+    ]);
+  });
+
+  it('starts the paid cycle after an active trial and stacks active renewals', () => {
+    expect(
+      resolveOrganizationPlanExpiration({
+        paidAt: new Date('2026-10-22T12:00:00.000Z'),
+        months: 1,
+        billingDay: 24,
+        planStatus: 'prueba',
+        trialEndsAt: new Date('2026-11-07T12:00:00.000Z'),
+        planExpiresAt: null,
+        now,
+      }).toISOString()
+    ).toBe('2026-11-24T23:59:59.999Z');
+
+    expect(
+      resolveOrganizationPlanExpiration({
+        paidAt: new Date('2026-10-22T12:00:00.000Z'),
+        months: 1,
+        billingDay: 7,
+        planStatus: 'activo',
+        trialEndsAt: null,
+        planExpiresAt: new Date('2026-11-07T23:59:59.999Z'),
+        now,
+      }).toISOString()
+    ).toBe('2026-12-07T23:59:59.999Z');
   });
 });

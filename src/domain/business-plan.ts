@@ -2,8 +2,18 @@ import {
   BusinessError,
   BusinessPlanKey,
   Organization,
+  OrganizationPlanPaymentMethod,
   OrganizationPlanStatus,
 } from './entities';
+
+export const BUSINESS_PLAN_KEYS: BusinessPlanKey[] = ['basico', 'pro', 'negocio', 'a-medida'];
+
+export const BUSINESS_PLAN_LABELS: Record<BusinessPlanKey, string> = {
+  basico: 'Básico',
+  pro: 'Pro',
+  negocio: 'Negocio',
+  'a-medida': 'A medida',
+};
 
 export const BUSINESS_PLAN_LIMITS: Record<BusinessPlanKey, number | null> = {
   basico: 30,
@@ -19,7 +29,178 @@ export const BUSINESS_PLAN_ADMIN_LIMITS: Record<BusinessPlanKey, number> = {
   'a-medida': 5,
 };
 
+export const BUSINESS_PLAN_PRICES: Record<BusinessPlanKey, number | null> = {
+  basico: 15,
+  pro: 25,
+  negocio: 40,
+  'a-medida': null,
+};
+
+export const BUSINESS_PLAN_TRIAL_DAYS: Record<BusinessPlanKey, number> = {
+  basico: 14,
+  pro: 0,
+  negocio: 0,
+  'a-medida': 0,
+};
+
+export interface BusinessPlanCatalogItem {
+  key: BusinessPlanKey;
+  label: string;
+  priceUsdMonthly: number | null;
+  clientLimit: number | null;
+  adminLimit: number;
+  trialDays: number;
+}
+
+export function getBusinessPlanCatalog(): BusinessPlanCatalogItem[] {
+  return BUSINESS_PLAN_KEYS.map((key) => ({
+    key,
+    label: BUSINESS_PLAN_LABELS[key],
+    priceUsdMonthly: BUSINESS_PLAN_PRICES[key],
+    clientLimit: BUSINESS_PLAN_LIMITS[key],
+    adminLimit: BUSINESS_PLAN_ADMIN_LIMITS[key],
+    trialDays: BUSINESS_PLAN_TRIAL_DAYS[key],
+  }));
+}
+
+export function isBusinessPlanKey(value: unknown): value is BusinessPlanKey {
+  return typeof value === 'string' && BUSINESS_PLAN_KEYS.includes(value as BusinessPlanKey);
+}
+
+export function isOrganizationPlanPaymentMethod(
+  value: unknown
+): value is OrganizationPlanPaymentMethod {
+  return value === 'transferencia' || value === 'usdt' || value === 'efectivo';
+}
+
 export const CUSTOM_PLAN_MIN_CLIENTS = 301;
+
+export function normalizeOrganizationBillingDay(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.min(Math.max(Math.trunc(numeric), 1), 28);
+}
+
+export function getOrganizationBillingDay(
+  organization: Pick<
+    Organization,
+    'billingDay' | 'trialEndsAt' | 'planExpiresAt' | 'createdAt'
+  >,
+  fallback = new Date()
+): number {
+  const stored = organization.billingDay;
+  if (typeof stored === 'number' && Number.isInteger(stored)) {
+    return Math.min(Math.max(stored, 1), 28);
+  }
+  const anchor = organization.createdAt ?? organization.planExpiresAt ?? organization.trialEndsAt ?? fallback;
+  return Math.min(Math.max(anchor.getUTCDate(), 1), 28);
+}
+
+export function addOrganizationBillingMonths(
+  base: Date,
+  months: number,
+  billingDay: number
+): Date {
+  if (!Number.isInteger(months) || months < 1 || months > 12) {
+    throw new BusinessError(
+      'INVALID_PLAN_MONTHS',
+      'Los meses a renovar deben ser un entero entre 1 y 12.'
+    );
+  }
+
+  const day = normalizeOrganizationBillingDay(billingDay);
+  const targetMonth = new Date(
+    Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + (base.getUTCDate() >= day ? 1 : 0), 1)
+  );
+  targetMonth.setUTCMonth(targetMonth.getUTCMonth() + (months - 1));
+  const year = targetMonth.getUTCFullYear();
+  const month = targetMonth.getUTCMonth();
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(day, lastDay), 23, 59, 59, 999));
+}
+
+export function resolveOrganizationPlanExpiration(input: {
+  paidAt: Date;
+  months: number;
+  billingDay: number;
+  planStatus?: OrganizationPlanStatus;
+  trialEndsAt?: Date | null;
+  planExpiresAt?: Date | null;
+  now?: Date;
+}): Date {
+  const now = input.now ?? new Date();
+  const paidActive =
+    input.planStatus === 'activo' &&
+    Boolean(input.planExpiresAt && input.planExpiresAt.getTime() > now.getTime());
+  const trialActive =
+    input.planStatus === 'prueba' &&
+    Boolean(input.trialEndsAt && input.trialEndsAt.getTime() > now.getTime());
+
+  const base = paidActive
+    ? input.planExpiresAt!
+    : trialActive
+      ? input.trialEndsAt!
+      : new Date(Math.max(input.paidAt.getTime(), now.getTime()));
+
+  return addOrganizationBillingMonths(base, input.months, input.billingDay);
+}
+
+/**
+ * Resuelve el límite de clientes que corresponde al plan.
+ * Los planes fijos ignoran cualquier límite enviado por el cliente; A medida exige un límite explícito.
+ */
+export function resolveClientLimitForPlan(
+  plan: BusinessPlanKey,
+  requested?: unknown,
+  existingLimit?: number
+): number {
+  const fixedLimit = BUSINESS_PLAN_LIMITS[plan];
+  if (fixedLimit !== null) {
+    return fixedLimit;
+  }
+
+  const candidate = requested === undefined || requested === null ? existingLimit : requested;
+  if (
+    typeof candidate !== 'number' ||
+    !Number.isInteger(candidate) ||
+    candidate < CUSTOM_PLAN_MIN_CLIENTS
+  ) {
+    throw new BusinessError(
+      'INVALID_CLIENT_LIMIT',
+      `El plan A medida requiere un límite de al menos ${CUSTOM_PLAN_MIN_CLIENTS} clientes.`
+    );
+  }
+
+  return candidate;
+}
+
+export function assertPlanChangeAllowed(input: {
+  currentPlanStatus?: OrganizationPlanStatus;
+  currentTrialEndsAt?: Date | null;
+  currentPlanExpiresAt?: Date | null;
+  currentClientLimit?: number;
+  targetClientLimit: number;
+  now?: Date;
+}): void {
+  const now = input.now ?? new Date();
+  const isPaidActive =
+    input.currentPlanStatus === 'activo' &&
+    (!input.currentPlanExpiresAt || input.currentPlanExpiresAt.getTime() > now.getTime());
+  const isTrialActive =
+    input.currentPlanStatus === 'prueba' &&
+    Boolean(input.currentTrialEndsAt && input.currentTrialEndsAt.getTime() > now.getTime());
+
+  if (!isPaidActive && !isTrialActive) {
+    return;
+  }
+
+  if (input.targetClientLimit < (input.currentClientLimit ?? 0)) {
+    throw new BusinessError(
+      'PLAN_DOWNGRADE_NOT_ALLOWED',
+      'No puedes bajar de plan mientras la suscripción esté vigente. Renueva el plan actual o espera a su vencimiento.'
+    );
+  }
+}
 
 export function validateOrganizationAdminCount(plan: BusinessPlanKey, adminCount: number): void {
   const adminLimit = BUSINESS_PLAN_ADMIN_LIMITS[plan];

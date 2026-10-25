@@ -17,6 +17,7 @@ import pushRoutes from './routes/push';
 import organizationRoutes from './routes/organizations';
 import publicRoutes from './routes/public';
 import paymentReportRoutes from './routes/payment-reports';
+import organizationPlanPaymentReportRoutes from './routes/organization-plan-payment-reports';
 import badgesRoutes from './routes/badges';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
@@ -175,6 +176,11 @@ app.use('/api/auth', authRoutes);
 app.use('/api/public', publicRoutes);
 app.use('/api/admins', authenticateAdmin, requireWritablePlan, adminRoutes);
 app.use('/api/organizations', authenticateAdmin, organizationRoutes);
+app.use(
+  '/api/organization-plan-payment-reports',
+  authenticateAdmin,
+  organizationPlanPaymentReportRoutes
+);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
 app.use('/api/clients', authenticateAdmin, requireWritablePlan, clientRoutes);
 app.use('/api/plans', authenticateAdmin, requireWritablePlan, planRoutes);

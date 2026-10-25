@@ -26,6 +26,7 @@ import {
   PushSubscription,
   Organization,
   OrganizationPlanPayment,
+  OrganizationPlanPaymentReport,
   OrganizationTwilioConfig,
   DomainEvent,
   PaymentReport,
@@ -332,6 +333,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     plan: BusinessPlanKey,
     clientLimit: number,
     planExpiresAt: Date,
+    billingDay: number,
   ): Promise<Organization> {
     const organizationRef = this.db.collection(this.collectionName).doc(payment.organizationId);
     const paymentRef = this.db.collection('organizationPlanPayments').doc(payment.id);
@@ -363,6 +365,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         plan,
         clientLimit,
         planStatus: 'activo',
+        billingDay,
         trialEndsAt: null,
         planExpiresAt,
         planUpdatedAt: payment.createdAt,
@@ -1550,6 +1553,23 @@ export class PaymentReportFirestoreRepository extends FirestoreRepository<Paymen
   }
 }
 
+export class OrganizationPlanPaymentReportFirestoreRepository extends FirestoreRepository<OrganizationPlanPaymentReport> {
+  constructor() {
+    super('organizationPlanPaymentReports');
+  }
+
+  async findPendingByOrganization(organizationId: string): Promise<OrganizationPlanPaymentReport | undefined> {
+    const results = await this.listByFields(
+      [
+        ['organizationId', organizationId],
+        ['status', 'PENDING'],
+      ],
+      1
+    );
+    return results[0];
+  }
+}
+
 export class JobLockFirestoreRepository {
   private collectionName = 'jobLocks';
 
@@ -1608,4 +1628,6 @@ export const whatsappConversationRepository = new WhatsAppConversationFirestoreR
 export const pushSubscriptionRepository = new PushSubscriptionFirestoreRepository();
 export const domainEventRepository = new DomainEventFirestoreRepository();
 export const paymentReportRepository = new PaymentReportFirestoreRepository();
+export const organizationPlanPaymentReportRepository =
+  new OrganizationPlanPaymentReportFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();

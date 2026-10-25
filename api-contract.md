@@ -60,6 +60,7 @@ interface Organization {
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit: number;
   planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
+  billingDay: number; // día de corte mensual (1-28), derivado de la fecha de alta
   trialEndsAt: string | null;
   planExpiresAt: string | null;
   clientCount: number;
@@ -456,8 +457,11 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   planExpiresAt?: string | null;
   twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean } | null
 }
-// Solo super-admin puede cambiar el plan. Límites: Básico 30, Pro 150, Negocio 300,
-// A medida requiere más de 300. No se reduce clientLimit por debajo de clientCount.
+// Solo super-admin puede cambiar el plan. Límites fijos: Básico 30, Pro 150, Negocio 300.
+// En planes fijos el servidor deriva clientLimit del plan e ignora el valor enviado.
+// A medida requiere un clientLimit explícito de al menos 301.
+// No se reduce clientLimit por debajo de clientCount.
+// Mientras la suscripción esté vigente solo se permite renovar o subir de plan.
 // prueba requiere trialEndsAt y solo permite Básico; activo requiere planExpiresAt.
 // Fechas ISO 8601 UTC; el cambio de plan no elimina clientes.
 // twilio se combina con el existente:
@@ -474,13 +478,19 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   paidAt: string; amount: number;
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
-  newPlanExpiresAt: string; notes?: string;
+  clientLimit?: number; // requerido para A medida (>= 301); ignorado en planes fijos
+  months?: number; // 1-12; el servidor calcula newPlanExpiresAt con el día de corte
+  newPlanExpiresAt?: string; // legado; solo si no se envía months
+  notes?: string;
 }
 // Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
+// El tope de clientes siempre se deriva del plan en los planes fijos.
+// El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
 //         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)
+//         409 PLAN_DOWNGRADE_NOT_ALLOWED (la suscripción vigente solo permite renovar o subir)
 ```
 
 **Organization DTO (responses GET/POST/PUT):**
@@ -490,6 +500,7 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit: number;
   planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
+  billingDay: number; // día de corte mensual (1-28)
   trialEndsAt: string | null; planExpiresAt: string | null; clientCount: number;
   createdAt: string; createdBy?: string;
   twilioConfigured: boolean; // true si accountSid+authToken+phoneNumber presentes y enabled !== false
@@ -738,6 +749,15 @@ interface PaymentReport {
   notes?: string; status: PaymentReportStatus;
   createdAt: string; reviewedAt?: string; reviewedByUserId?: string; reviewNotes?: string;
 }
+
+interface BusinessPlanCatalogItem {
+  key: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  label: string;
+  priceUsdMonthly: number | null; // 15, 25, 40, null (A medida)
+  clientLimit: number | null;
+  adminLimit: number;
+  trialDays: number;
+}
 ```
 
 | Metodo | Path | Descripcion |
@@ -745,6 +765,7 @@ interface PaymentReport {
 | GET | /public/org/:slug | Datos minimos de la organizacion (id, name, slug). 404 si inexistente/inactiva |
 | POST | /public/org/:slug/lookup | Consulta con cedula+telefono: detalle completo + totales + reportes en verificacion |
 | POST | /public/org/:slug/reports | Crear reporte de pago (monto = `period.amount`; periodo sigue PENDING/OVERDUE hasta aprobacion) |
+| GET | /public/business-plans | Catalogo publico de planes: precios fijos, limites y dias de prueba |
 
 **Protecciones del portal publico (lookup y reports)**
 - Limite por IP: 60 solicitudes / 15 min (`RATE_LIMITED`).
@@ -782,6 +803,42 @@ interface PaymentReport {
 ```
 
 ---
+
+### Reportes de pago de plan de organizacion (`/organization-plan-payment-reports`, auth)
+
+El admin reporta el pago de su propia organizacion; el super-admin lo revisa. El monto de
+los planes fijos lo define el servidor (`BUSINESS_PLAN_PRICES`), no el cliente.
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12) |
+| GET | /organization-plan-payment-reports/mine | Admin lista sus reportes |
+| GET | /organization-plan-payment-reports?status=PENDING | Super-admin lista reportes y los enriquece con `organizationName` |
+| POST | /organization-plan-payment-reports/:id/review | Super-admin aprueba (aplica el pago del plan) o rechaza |
+
+```typescript
+// POST /organization-plan-payment-reports
+{
+  plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+  months: number; // 1-12
+  method: 'transferencia' | 'usdt' | 'efectivo';
+  paidAt: string;
+  amount?: number; // requerido solo para A medida
+  clientLimit?: number; // opcional; en A medida debe ser >= 301
+  reference?: string; notes?: string;
+}
+// Response 201 → { report: OrganizationPlanPaymentReport }
+// Errors: 409 PLAN_PAYMENT_REPORT_ALREADY_EXISTS | 409 CLIENT_LIMIT_BELOW_USAGE
+//         409 PLAN_DOWNGRADE_NOT_ALLOWED | 400 INVALID_PAYMENT_DATE | INVALID_PLAN_MONTHS
+```
+
+```typescript
+// POST /organization-plan-payment-reports/:id/review
+{ action: 'approve' | 'reject'; notes?: string; clientLimit?: number }
+// approve → registra OrganizationPlanPayment y actualiza la organización
+// Response 200 → { report, organization, payment }
+// Errors: 404 PLAN_PAYMENT_REPORT_NOT_FOUND | 409 PLAN_PAYMENT_REPORT_ALREADY_REVIEWED
+```
 
 ### Bandeja de Reportes de Pago (admin, con auth)
 

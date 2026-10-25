@@ -1,10 +1,12 @@
 import { Organization } from '../../domain/entities';
+import { getOrganizationBillingDay } from '../../domain/business-plan';
 
 export function toOrganizationDto(organization: Organization) {
   const { twilio, planUpdatedBy: _planUpdatedBy, ...rest } = organization;
 
   return {
     ...rest,
+    billingDay: getOrganizationBillingDay(organization),
     twilioConfigured: Boolean(
       twilio?.accountSid &&
         twilio?.authToken &&

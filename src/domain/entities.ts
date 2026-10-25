@@ -37,6 +37,7 @@ export interface Organization {
   plan?: BusinessPlanKey;
   clientLimit?: number;
   planStatus?: OrganizationPlanStatus;
+  billingDay?: number;
   trialEndsAt?: Date | null;
   planExpiresAt?: Date | null;
   clientCount?: number;
@@ -59,6 +60,28 @@ export interface OrganizationPlanPayment {
   notes?: string;
   createdBy: string;
   createdAt: Date;
+}
+
+export type OrganizationPlanPaymentReportStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface OrganizationPlanPaymentReport {
+  id: string;
+  organizationId: string;
+  plan: BusinessPlanKey;
+  amount: number;
+  method: OrganizationPlanPaymentMethod;
+  paidAt: Date;
+  months: number;
+  clientLimit?: number;
+  reference?: string;
+  notes?: string;
+  status: OrganizationPlanPaymentReportStatus;
+  createdAt: Date;
+  createdByUserId: string;
+  reviewedAt?: Date;
+  reviewedByUserId?: string;
+  reviewNotes?: string;
+  appliedPaymentId?: string;
 }
 
 export interface User {

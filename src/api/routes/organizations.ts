@@ -25,10 +25,13 @@ import {
 } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import {
-  BUSINESS_PLAN_LIMITS,
-  CUSTOM_PLAN_MIN_CLIENTS,
+  assertPlanChangeAllowed,
+  getOrganizationBillingDay,
+  resolveOrganizationPlanExpiration,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
+  resolveClientLimitForPlan,
+  BUSINESS_PLAN_PRICES,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
@@ -106,13 +109,15 @@ function parsePlanDate(value: unknown, field: string): Date | null | undefined {
 
 function defaultOrganizationPlan(now = new Date()): Pick<
   Organization,
-  'plan' | 'clientLimit' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt' | 'clientCount'
+  'plan' | 'clientLimit' | 'planStatus' | 'billingDay' | 'trialEndsAt' | 'planExpiresAt' | 'clientCount'
 > {
+  const trialEndsAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
   return {
     plan: 'basico',
     clientLimit: 30,
     planStatus: 'prueba',
-    trialEndsAt: new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000),
+    billingDay: Math.min(Math.max(now.getUTCDate(), 1), 28),
+    trialEndsAt,
     planExpiresAt: null,
     clientCount: 0,
   };
@@ -489,14 +494,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         : parsedPlanEnd === undefined
           ? existing.planExpiresAt ?? null
           : parsedPlanEnd;
-    const fixedLimit = BUSINESS_PLAN_LIMITS[plan];
-    const clientLimit =
-      req.body.clientLimit === undefined
-        ? fixedLimit ?? existing.clientLimit
-        : req.body.clientLimit;
-    if (!Number.isInteger(clientLimit)) {
-      throw new BusinessError('INVALID_CLIENT_LIMIT', 'El límite de clientes debe ser un entero positivo.');
-    }
+    const clientLimit = resolveClientLimitForPlan(plan, req.body.clientLimit, existing.clientLimit);
     validatePlanConfiguration({
       plan,
       clientLimit: clientLimit!,
@@ -509,6 +507,15 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         'CLIENT_LIMIT_BELOW_USAGE',
         'El límite no puede ser menor que la cantidad actual de clientes.'
       );
+    }
+    if (existing.plan !== plan || existing.clientLimit !== clientLimit) {
+      assertPlanChangeAllowed({
+        currentPlanStatus: existing.planStatus,
+        currentTrialEndsAt: existing.trialEndsAt,
+        currentPlanExpiresAt: existing.planExpiresAt,
+        currentClientLimit: existing.clientLimit,
+        targetClientLimit: clientLimit,
+      });
     }
 
     const planWasChanged =
@@ -533,6 +540,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       plan,
       clientLimit: clientLimit!,
       planStatus,
+      billingDay: getOrganizationBillingDay(existing),
       trialEndsAt,
       planExpiresAt,
       ...(planWasChanged ? { planUpdatedAt: new Date(), planUpdatedBy: actor.userId } : {}),
@@ -553,14 +561,35 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
 
-    const { paidAt, amount, method, plan } = req.body ?? {};
+    const { paidAt, amount, method, plan, months } = req.body ?? {};
     const parsedPaidAt = parsePlanDate(paidAt, 'paidAt');
-    const newPlanExpiresAt = parsePlanDate(req.body?.newPlanExpiresAt, 'newPlanExpiresAt');
-    if (!parsedPaidAt || !newPlanExpiresAt) {
-      throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de pago y el nuevo vencimiento son obligatorios.');
+    if (!parsedPaidAt) {
+      throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de pago es obligatoria.');
     }
-    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) {
-      throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto debe ser un número mayor que cero.');
+    const billingDay = getOrganizationBillingDay(current);
+    let newPlanExpiresAt: Date;
+    if (months !== undefined) {
+      const parsedMonths = typeof months === 'number' ? months : Number(months);
+      if (!Number.isInteger(parsedMonths) || parsedMonths < 1 || parsedMonths > 12) {
+        throw new BusinessError(
+          'INVALID_PLAN_MONTHS',
+          'Los meses a renovar deben ser un entero entre 1 y 12.'
+        );
+      }
+      newPlanExpiresAt = resolveOrganizationPlanExpiration({
+        paidAt: parsedPaidAt,
+        months: parsedMonths,
+        billingDay,
+        planStatus: current.planStatus,
+        trialEndsAt: current.trialEndsAt,
+        planExpiresAt: current.planExpiresAt,
+      });
+    } else {
+      const parsedExpiry = parsePlanDate(req.body?.newPlanExpiresAt, 'newPlanExpiresAt');
+      if (!parsedExpiry) {
+        throw new BusinessError('INVALID_PLAN_DATE', 'Indica los meses a renovar.');
+      }
+      newPlanExpiresAt = parsedExpiry;
     }
     if (!['transferencia', 'usdt', 'efectivo'].includes(method)) {
       throw new BusinessError('INVALID_PAYMENT_METHOD', 'El método de pago no es válido.');
@@ -576,6 +605,15 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const paymentPlan = plan as BusinessPlanKey;
+    const fixedPrice = BUSINESS_PLAN_PRICES[paymentPlan];
+    const effectiveAmount = fixedPrice !== null ? fixedPrice : amount;
+    if (
+      typeof effectiveAmount !== 'number' ||
+      !Number.isFinite(effectiveAmount) ||
+      effectiveAmount <= 0
+    ) {
+      throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto debe ser un número mayor que cero.');
+    }
     if (paymentPlan !== current.plan) {
       const admins = await userRepository.listByOrganization(current.id);
       validateOrganizationAdminLimit(
@@ -583,30 +621,31 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
         admins.filter((user) => user.role === 'admin').length
       );
     }
-    const clientLimit =
-      BUSINESS_PLAN_LIMITS[paymentPlan] ??
-      (Number.isInteger(current.clientLimit) && current.clientLimit! >= CUSTOM_PLAN_MIN_CLIENTS
-        ? current.clientLimit
-        : undefined);
-    if (clientLimit === undefined) {
-      throw new BusinessError(
-        'INVALID_CLIENT_LIMIT',
-        `El plan A medida requiere un límite asignado de al menos ${CUSTOM_PLAN_MIN_CLIENTS} clientes.`
-      );
-    }
+    const clientLimit = resolveClientLimitForPlan(
+      paymentPlan,
+      req.body?.clientLimit,
+      current.clientLimit,
+    );
     if (clientLimit < (current.clientCount ?? 0)) {
       throw new BusinessError(
         'CLIENT_LIMIT_BELOW_USAGE',
         'El límite del nuevo plan no puede ser menor que la cantidad actual de clientes.'
       );
     }
+    assertPlanChangeAllowed({
+      currentPlanStatus: current.planStatus,
+      currentTrialEndsAt: current.trialEndsAt,
+      currentPlanExpiresAt: current.planExpiresAt,
+      currentClientLimit: current.clientLimit,
+      targetClientLimit: clientLimit,
+    });
 
     const actor = getAuth(req);
     const payment: OrganizationPlanPayment = {
       id: createId(),
       organizationId: current.id,
       paidAt: parsedPaidAt,
-      amount,
+      amount: effectiveAmount,
       method: method as OrganizationPlanPaymentMethod,
       plan: paymentPlan,
       newPlanExpiresAt,
@@ -619,6 +658,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
       paymentPlan,
       clientLimit,
       newPlanExpiresAt,
+      billingDay,
     );
 
     res.status(201).json({ payment, organization: toOrganizationDto(organization) });
