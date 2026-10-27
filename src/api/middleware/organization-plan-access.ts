@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { BusinessError } from '../../domain/entities';
-import { validatePlanConfiguration } from '../../domain/business-plan';
+import { canOrganizationWrite, validatePlanConfiguration } from '../../domain/business-plan';
 import { organizationRepository } from '../../infrastructure/repositories';
 import { getAuth, requireOrganizationId } from './tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
@@ -45,7 +45,7 @@ export async function requireWritablePlan(
       trialEndsAt: current.trialEndsAt,
       planExpiresAt: current.planExpiresAt,
     });
-    if (current.planStatus === 'vencido' || current.planStatus === 'suspendido') {
+    if (!canOrganizationWrite(current)) {
       throw new BusinessError(
         'PLAN_READ_ONLY',
         'El plan venció o está suspendido. La organización está en modo de solo lectura.'

@@ -31,7 +31,7 @@ import {
   Subscription,
 } from '../domain/entities';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
-import { isPlanExpired, validatePlanConfiguration } from '../domain/business-plan';
+import { canOrganizationWrite, resolveEffectiveClientLimit, validatePlanConfiguration } from '../domain/business-plan';
 
 const businessService = new SubscriptionBusinessService();
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
@@ -187,7 +187,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     throw new Error(`Organización ${organizationId} no encontrada para el Daily Job.`);
   }
   const currentOrganization = await organizationRepository.refreshExpiredStatus(organization, now);
-  const clientLimit = currentOrganization.clientLimit;
+  const clientLimit = resolveEffectiveClientLimit(currentOrganization.plan, currentOrganization.clientLimit);
   const clientCount = currentOrganization.clientCount;
   if (
     !currentOrganization.plan ||
@@ -219,11 +219,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     );
     return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
   }
-  if (
-    currentOrganization.planStatus === 'vencido' ||
-    currentOrganization.planStatus === 'suspendido' ||
-    isPlanExpired(currentOrganization, now)
-  ) {
+  if (!canOrganizationWrite(currentOrganization, now)) {
     console.info(
       `[Daily Job] Se omite la organización ${organizationId}: el plan no permite escrituras.`
     );

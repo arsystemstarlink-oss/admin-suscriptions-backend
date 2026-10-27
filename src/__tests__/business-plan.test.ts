@@ -1,15 +1,21 @@
 import {
   BUSINESS_PLAN_ADMIN_LIMITS,
+  MAX_PREPAID_MONTHS,
+  PREPAID_MONTH_OPTIONS,
   addOrganizationBillingMonths,
   assertPlanChangeAllowed,
   assertPrepaidMonthsLimit,
+  canOrganizationWrite,
   getBusinessPlanCatalog,
   getOrganizationBillingDay,
   isOrganizationPlanLocked,
   isPlanExpired,
   resolveClientLimitForPlan,
+  resolveEffectiveClientLimit,
   resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanExpiration,
+  resolveOrganizationAccessStatus,
+  resolveOrganizationPlanMonths,
   validateOrganizationAdminCount,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
@@ -376,5 +382,71 @@ describe('business plan rules', () => {
         now: new Date('2026-10-25T12:00:00.000Z'),
       })
     ).toThrow('No puedes prepagar más de 12 meses.');
+  });
+
+  it('defaults missing months to one month and rejects out-of-range values', () => {
+    expect(resolveOrganizationPlanMonths(undefined)).toBe(1);
+    expect(resolveOrganizationPlanMonths(null)).toBe(1);
+    expect(resolveOrganizationPlanMonths('3')).toBe(3);
+    expect(resolveOrganizationPlanMonths(12)).toBe(12);
+    expect(() => resolveOrganizationPlanMonths(0)).toThrow('entre 1 y 12');
+    expect(() => resolveOrganizationPlanMonths(13)).toThrow('entre 1 y 12');
+    expect(() => resolveOrganizationPlanMonths(1.5)).toThrow('entre 1 y 12');
+    expect(() => resolveOrganizationPlanMonths('abc')).toThrow('entre 1 y 12');
+  });
+
+  it('keeps the offered prepaid month options inside the prepaid cap', () => {
+    PREPAID_MONTH_OPTIONS.forEach((months) => {
+      expect(months).toBeGreaterThanOrEqual(1);
+      expect(months).toBeLessThanOrEqual(MAX_PREPAID_MONTHS);
+    });
+    expect(PREPAID_MONTH_OPTIONS).toEqual([1, 3, 6, 12]);
+  });
+
+  it('derives the effective client limit from the fixed plan even when stored data is stale', () => {
+    expect(resolveEffectiveClientLimit('basico', 500)).toBe(30);
+    expect(resolveEffectiveClientLimit('pro', 20)).toBe(75);
+    expect(resolveEffectiveClientLimit('negocio', undefined)).toBe(150);
+    expect(resolveEffectiveClientLimit('a-medida', 400)).toBe(400);
+    expect(resolveEffectiveClientLimit('a-medida', undefined)).toBeNull();
+    expect(resolveEffectiveClientLimit(undefined, 30)).toBeNull();
+  });
+
+  it('reports an expired access status for a stale active or trial plan', () => {
+    expect(
+      resolveOrganizationAccessStatus(
+        organization({ planExpiresAt: new Date('2026-10-22T11:59:59.999Z') }),
+        now
+      )
+    ).toBe('vencido');
+    expect(
+      resolveOrganizationAccessStatus(
+        organization({ planStatus: 'prueba', trialEndsAt: new Date('2026-10-22T11:59:59.999Z') }),
+        now
+      )
+    ).toBe('vencido');
+    expect(resolveOrganizationAccessStatus(organization(), now)).toBe('activo');
+    expect(
+      resolveOrganizationAccessStatus(organization({ planStatus: 'suspendido' }), now)
+    ).toBe('suspendido');
+    expect(resolveOrganizationAccessStatus({ plan: undefined, planStatus: 'activo' }, now)).toBeUndefined();
+  });
+
+  it('only allows writes on trial or active plans, including a suspended plan without dates', () => {
+    expect(canOrganizationWrite(organization(), now)).toBe(true);
+    expect(
+      canOrganizationWrite(
+        organization({ planExpiresAt: new Date('2026-10-22T11:59:59.999Z') }),
+        now
+      )
+    ).toBe(false);
+    expect(canOrganizationWrite(organization({ planStatus: 'suspendido' }), now)).toBe(false);
+    expect(
+      canOrganizationWrite(
+        organization({ planStatus: 'suspendido', planExpiresAt: null }),
+        now
+      )
+    ).toBe(false);
+    expect(canOrganizationWrite({ plan: undefined, planStatus: 'activo' }, now)).toBe(false);
   });
 });

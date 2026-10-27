@@ -70,4 +70,31 @@ describe('requireWritablePlan', () => {
     const error = next.mock.calls[0][0] as BusinessError;
     expect(error.code).toBe('PLAN_READ_ONLY');
   });
+
+  it('blocks writes when a stored active plan has already passed its date', async () => {
+    const staleActive = {
+      ...activeOrganization,
+      planExpiresAt: new Date('2026-10-01T00:00:00.000Z'),
+    };
+    jest.spyOn(organizationRepository, 'getById').mockResolvedValue(staleActive);
+    jest.spyOn(organizationRepository, 'refreshExpiredStatus').mockResolvedValue(staleActive);
+
+    const next = await invoke('POST');
+    const error = next.mock.calls[0][0] as BusinessError;
+    expect(error.code).toBe('PLAN_READ_ONLY');
+  });
+
+  it('blocks writes while the organization is suspended even without an expiry date', async () => {
+    const suspended = {
+      ...activeOrganization,
+      planStatus: 'suspendido' as const,
+      planExpiresAt: null,
+    };
+    jest.spyOn(organizationRepository, 'getById').mockResolvedValue(suspended);
+    jest.spyOn(organizationRepository, 'refreshExpiredStatus').mockResolvedValue(suspended);
+
+    const next = await invoke('PUT');
+    const error = next.mock.calls[0][0] as BusinessError;
+    expect(error.code).toBe('PLAN_READ_ONLY');
+  });
 });

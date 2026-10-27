@@ -38,6 +38,34 @@ export const BUSINESS_PLAN_PRICES: Record<BusinessPlanKey, number | null> = {
 
 export const MAX_PREPAID_MONTHS = 12;
 
+/** Opciones de prepago que ofrece la interfaz. Deben mantenerse dentro de `1..MAX_PREPAID_MONTHS`. */
+export const PREPAID_MONTH_OPTIONS: number[] = [1, 3, 6, 12];
+
+export function isValidPrepaidMonths(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_PREPAID_MONTHS
+  );
+}
+
+/**
+ * Resuelve los meses de un pago o reporte de plan. Sin `months` se asume un solo mes,
+ * igual que el monto fijo legado de un período.
+ */
+export function resolveOrganizationPlanMonths(value: unknown): number {
+  if (value === undefined || value === null) return 1;
+  const months = typeof value === 'number' ? value : Number(value);
+  if (!isValidPrepaidMonths(months)) {
+    throw new BusinessError(
+      'INVALID_PLAN_MONTHS',
+      `Los meses a renovar deben ser un entero entre 1 y ${MAX_PREPAID_MONTHS}.`
+    );
+  }
+  return months;
+}
+
 export function isOrganizationPlanChange(input: {
   currentPlan?: BusinessPlanKey;
   targetPlan?: BusinessPlanKey;
@@ -92,6 +120,27 @@ export function isOrganizationPlanPaymentMethod(
   value: unknown
 ): value is OrganizationPlanPaymentMethod {
   return value === 'transferencia' || value === 'usdt' || value === 'efectivo';
+}
+
+/**
+ * El día de corte debe existir como día válido dentro del mes de referencia, de lo
+ * contrario el ciclo de facturación no se puede anclar. Se valida contra el mes actual
+ * porque un `billingDay` alto (ej. 28) no está disponible en todos los meses.
+ */
+export function assertBillingDayValidForMonth(billingDay: unknown, reference = new Date()): void {
+  if (!Number.isInteger(billingDay)) {
+    throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un entero.');
+  }
+  const day = billingDay as number;
+  const lastDay = new Date(
+    Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + 1, 0)
+  ).getUTCDate();
+  if (day < 1 || day > lastDay) {
+    throw new BusinessError(
+      'INVALID_BILLING_DAY',
+      `El día de corte debe estar entre 1 y ${lastDay} en el mes actual.`
+    );
+  }
 }
 
 export const CUSTOM_PLAN_MIN_CLIENTS = 151;
@@ -223,6 +272,21 @@ export function resolveClientLimitForPlan(
 }
 
 /**
+ * Tope de clientes efectivo de la organización. Un plan fijo siempre manda sobre el
+ * valor almacenado: si el catálogo cambia a un límite menor, el tope se reduce al del
+ * plan. `null` cuando no hay plan configurado.
+ */
+export function resolveEffectiveClientLimit(
+  plan: BusinessPlanKey | undefined,
+  storedLimit?: number
+): number | null {
+  if (!plan) return null;
+  const fixedLimit = BUSINESS_PLAN_LIMITS[plan];
+  if (fixedLimit !== null) return fixedLimit;
+  return typeof storedLimit === 'number' && Number.isInteger(storedLimit) ? storedLimit : null;
+}
+
+/**
  * Indica si la suscripción actual está vigente y por tanto bloquea bajadas de
  * plan o de tope. Es la única definición de "plan bloqueado" que debe usar el
  * backend; el frontend la consume vía GET /organization-plan-payment-reports/quote.
@@ -297,7 +361,10 @@ export function validateOrganizationAdminLimit(plan: BusinessPlanKey, adminCount
   }
 }
 
-export function isPlanExpired(organization: Organization, now = new Date()): boolean {
+export function isPlanExpired(
+  organization: Pick<Organization, 'planStatus' | 'trialEndsAt' | 'planExpiresAt'>,
+  now = new Date()
+): boolean {
   if (organization.planStatus === 'prueba') {
     return Boolean(organization.trialEndsAt && organization.trialEndsAt.getTime() <= now.getTime());
   }
@@ -305,6 +372,34 @@ export function isPlanExpired(organization: Organization, now = new Date()): boo
     return Boolean(organization.planExpiresAt && organization.planExpiresAt.getTime() <= now.getTime());
   }
   return false;
+}
+
+/**
+ * Estado de acceso que corresponde a la organización en este instante. Es la única
+ * definición de "la organización puede escribir" y debe ser igual a la que usa el
+ * middleware `requireWritablePlan` y el interceptor del frontend: un plan cuyo plazo
+ * ya venció está en solo lectura aunque todavía no se haya persistido `vencido`.
+ */
+export function resolveOrganizationAccessStatus(
+  organization: Pick<Organization, 'plan' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt'>,
+  now = new Date()
+): OrganizationPlanStatus | undefined {
+  if (!organization.plan || !organization.planStatus) return undefined;
+  return isPlanExpired(organization, now) ? 'vencido' : organization.planStatus;
+}
+
+/**
+ * Determina si una organización puede crear recursos de negocio. El estado `suspendido`
+ * es una sanción explícita del super-admin y no se levanta con el paso del tiempo, por
+ * lo que no depende de la fecha actual.
+ */
+export function canOrganizationWrite(
+  organization: Pick<Organization, 'plan' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt'>,
+  now = new Date()
+): boolean {
+  const status = resolveOrganizationAccessStatus(organization, now);
+  if (!status) return false;
+  return status === 'prueba' || status === 'activo';
 }
 
 export function validatePlanConfiguration(input: {

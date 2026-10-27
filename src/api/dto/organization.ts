@@ -1,12 +1,14 @@
 import { Organization } from '../../domain/entities';
-import { getOrganizationBillingDay } from '../../domain/business-plan';
+import { getOrganizationBillingDay, resolveEffectiveClientLimit } from '../../domain/business-plan';
 
 export function toOrganizationDto(organization: Organization) {
   const { twilio, planUpdatedBy: _planUpdatedBy, ...rest } = organization;
+  const effectiveClientLimit = resolveEffectiveClientLimit(organization.plan, organization.clientLimit);
 
   return {
     ...rest,
     billingDay: getOrganizationBillingDay(organization),
+    clientLimit: effectiveClientLimit ?? organization.clientLimit,
     twilioConfigured: Boolean(
       twilio?.accountSid &&
         twilio?.authToken &&

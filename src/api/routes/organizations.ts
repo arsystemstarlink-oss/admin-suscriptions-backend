@@ -29,6 +29,8 @@ import {
   assertPrepaidMonthsLimit,
   getOrganizationBillingDay,
   resolveOrganizationPlanExpiration,
+  resolveOrganizationPlanMonths,
+  resolveEffectiveClientLimit,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
   assertFuturePlanDates,
@@ -498,6 +500,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
           ? existing.planExpiresAt ?? null
           : parsedPlanEnd;
     const clientLimit = resolveClientLimitForPlan(plan, req.body.clientLimit, existing.clientLimit);
+    // El tope vigente se deriva del plan para comparar bajadas contra el espacio real.
+    const currentCapacity = resolveEffectiveClientLimit(existing.plan, existing.clientLimit);
     validatePlanConfiguration({
       plan,
       clientLimit: clientLimit!,
@@ -519,7 +523,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         currentPlanStatus: existing.planStatus,
         currentTrialEndsAt: existing.trialEndsAt,
         currentPlanExpiresAt: existing.planExpiresAt,
-        currentClientLimit: existing.clientLimit,
+        currentClientLimit: currentCapacity ?? existing.clientLimit,
         targetClientLimit: clientLimit,
       });
     }
@@ -570,16 +574,12 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     const { paidAt, amount, method, plan, months } = req.body ?? {};
     const parsedPaidAt = parseBusinessPaymentDate(paidAt);
     const billingDay = getOrganizationBillingDay(current);
+    // El tope vigente se deriva del plan para comparar bajadas contra el espacio real.
+    const currentCapacity = resolveEffectiveClientLimit(current.plan, current.clientLimit);
     let newPlanExpiresAt: Date;
     let renewalMonths = 1;
     if (months !== undefined) {
-      const parsedMonths = typeof months === 'number' ? months : Number(months);
-      if (!Number.isInteger(parsedMonths) || parsedMonths < 1 || parsedMonths > 12) {
-        throw new BusinessError(
-          'INVALID_PLAN_MONTHS',
-          'Los meses a renovar deben ser un entero entre 1 y 12.'
-        );
-      }
+      const parsedMonths = resolveOrganizationPlanMonths(months);
       renewalMonths = parsedMonths;
       newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt: parsedPaidAt,
@@ -644,7 +644,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
       currentPlanStatus: current.planStatus,
       currentTrialEndsAt: current.trialEndsAt,
       currentPlanExpiresAt: current.planExpiresAt,
-      currentClientLimit: current.clientLimit,
+      currentClientLimit: currentCapacity ?? current.clientLimit,
       targetClientLimit: clientLimit,
     });
 

@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   organizationPlanPaymentReportRepository,
   organizationRepository,
+  userRepository,
 } from '../../infrastructure/repositories';
 import {
   BusinessError,
@@ -11,6 +12,7 @@ import {
 import { isSuperAdmin } from '../../domain/auth-context';
 import { createId } from '../../domain/business-rules';
 import {
+  BUSINESS_PLAN_ADMIN_LIMITS,
   CUSTOM_PLAN_MIN_CLIENTS,
   MAX_PREPAID_MONTHS,
   addOrganizationBillingMonths,
@@ -20,6 +22,9 @@ import {
   isBusinessPlanKey,
   isOrganizationPlanChange,
   isOrganizationPlanLocked,
+  resolveEffectiveClientLimit,
+  resolveOrganizationPlanMonths,
+  validateOrganizationAdminLimit,
   isOrganizationPlanPaymentMethod,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
@@ -55,10 +60,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('TENANT_REQUIRED', 'Indica la organización del pago.');
     }
 
-    const organization = await organizationRepository.getById(organizationId);
-    if (!organization) {
+    const existingOrganization = await organizationRepository.getById(organizationId);
+    if (!existingOrganization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
+    const organization = await organizationRepository.refreshExpiredStatus(existingOrganization);
 
     const plan = req.body?.plan;
     if (!isBusinessPlanKey(plan)) {
@@ -69,20 +75,20 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('INVALID_PAYMENT_METHOD', 'Método de pago inválido.');
     }
 
-    const months = Number(req.body?.months);
-    if (!Number.isInteger(months) || months < 1 || months > 12) {
-      throw new BusinessError(
-        'INVALID_PLAN_MONTHS',
-        'Los meses a renovar deben ser un entero entre 1 y 12.'
-      );
-    }
+    const months = resolveOrganizationPlanMonths(req.body?.months);
 
     const paidAt = parseBusinessPaymentDate(req.body?.paidAt);
+    // El tope vigente se deriva del plan, no del valor almacenado, para que el bloqueo de
+    // bajadas use siempre el espacio real que concede el contrato actual.
+    const currentCapacity = resolveEffectiveClientLimit(
+      organization.plan,
+      organization.clientLimit
+    );
     const clientLimit =
       plan === 'a-medida' && req.body?.clientLimit === undefined
         ? Math.max(
             CUSTOM_PLAN_MIN_CLIENTS,
-            organization.clientLimit ?? 0,
+            currentCapacity ?? 0,
             organization.clientCount ?? 0
           )
         : resolveClientLimitForPlan(plan, req.body?.clientLimit, organization.clientLimit);
@@ -96,9 +102,16 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       currentPlanStatus: organization.planStatus,
       currentTrialEndsAt: organization.trialEndsAt,
       currentPlanExpiresAt: organization.planExpiresAt,
-      currentClientLimit: organization.clientLimit,
+      currentClientLimit: currentCapacity ?? organization.clientLimit,
       targetClientLimit: clientLimit,
     });
+    if (plan !== organization.plan) {
+      const admins = await userRepository.listByOrganization(organizationId);
+      validateOrganizationAdminLimit(
+        plan,
+        admins.filter((user) => user.role === 'admin').length
+      );
+    }
 
     const fixedAmount = resolveFixedPlanPaymentAmount(plan, months);
     const amount = fixedAmount !== null ? fixedAmount : Number(req.body?.amount);
@@ -174,10 +187,11 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
       throw new BusinessError('TENANT_REQUIRED', 'Indica la organización de la cotización.');
     }
 
-    const organization = await organizationRepository.getById(organizationId);
-    if (!organization) {
+    const existingOrganization = await organizationRepository.getById(organizationId);
+    if (!existingOrganization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
+    const organization = await organizationRepository.refreshExpiredStatus(existingOrganization);
 
     const plan = req.query.plan ?? organization.plan ?? 'basico';
     if (!isBusinessPlanKey(plan)) {
@@ -200,6 +214,7 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
       organization.planStatus === 'prueba'
         ? organization.trialEndsAt
         : organization.planExpiresAt;
+    const effectiveClientLimit = resolveEffectiveClientLimit(plan, organization.clientLimit);
 
     const expirationOptions = Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => {
       const months = index + 1;
@@ -230,6 +245,9 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         billingDay,
         planLocked,
         planChanged,
+        clientLimit: effectiveClientLimit,
+        clientCount: organization.clientCount ?? null,
+        adminLimit: BUSINESS_PLAN_ADMIN_LIMITS[plan],
         extendsCurrent: planLocked && !planChanged && Boolean(currentExpiry),
         currentExpiry: currentExpiry ? currentExpiry.toISOString() : null,
         paidAt: paidAt.toISOString(),
@@ -323,10 +341,15 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       return res.json({ report: serializeReport(rejected) });
     }
 
-    const organization = await organizationRepository.getById(report.organizationId);
-    if (!organization) {
+    const existingOrganization = await organizationRepository.getById(report.organizationId);
+    if (!existingOrganization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
+    const organization = await organizationRepository.refreshExpiredStatus(existingOrganization);
+    const currentCapacity = resolveEffectiveClientLimit(
+      organization.plan,
+      organization.clientLimit
+    );
 
     const clientLimit = resolveClientLimitForPlan(
       report.plan,
@@ -343,9 +366,16 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       currentPlanStatus: organization.planStatus,
       currentTrialEndsAt: organization.trialEndsAt,
       currentPlanExpiresAt: organization.planExpiresAt,
-      currentClientLimit: organization.clientLimit,
+      currentClientLimit: currentCapacity ?? organization.clientLimit,
       targetClientLimit: clientLimit,
     });
+    if (report.plan !== organization.plan) {
+      const admins = await userRepository.listByOrganization(report.organizationId);
+      validateOrganizationAdminLimit(
+        report.plan,
+        admins.filter((user) => user.role === 'admin').length
+      );
+    }
 
     const billingDay = getOrganizationBillingDay(organization);
     const newPlanExpiresAt = resolveOrganizationPlanExpiration({
