@@ -11,6 +11,7 @@ import {
 import {
   BusinessError,
   BusinessPlanKey,
+  AdminInvite,
   Client,
   Plan,
   Subscription,
@@ -295,9 +296,14 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     });
   }
 
-  async createWithAdmin(organization: Organization, user: User): Promise<void> {
+  async createWithAdmin(
+    organization: Organization,
+    user: User,
+    invite?: AdminInvite,
+  ): Promise<void> {
     const organizationRef = this.db.collection('organizations').doc(organization.id);
     const userRef = this.db.collection('users').doc(user.id);
+    const inviteRef = invite ? this.db.collection('adminInvites').doc(invite.id) : undefined;
     const slugQuery = this.db.collection('organizations').where('slug', '==', organization.slug);
     const emailQuery = this.db.collection('users').where('email', '==', user.email);
 
@@ -309,7 +315,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
       recordQuery();
       recordDocReads(slugMatches.size + emailMatches.size);
       if (!slugMatches.empty) {
-        throw new BusinessError('INVALID_DATA', 'Ya existe una organización con ese slug.');
+        throw new BusinessError('SLUG_TAKEN', 'Ya existe una organización con ese slug.');
       }
       if (!emailMatches.empty) {
         throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
@@ -321,9 +327,12 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         undefined,
         organization.twilio?.phoneNumber,
       );
-      recordWrite(2);
+      recordWrite(inviteRef ? 3 : 2);
       transaction.create(organizationRef, this.serialize(organization));
       transaction.create(userRef, this.serialize(user));
+      if (inviteRef && invite) {
+        transaction.create(inviteRef, this.serialize(invite));
+      }
       applyClaims();
     });
   }
@@ -903,6 +912,41 @@ export class UserFirestoreRepository extends FirestoreRepository<User> {
 
   async listByOrganization(organizationId: string): Promise<User[]> {
     return this.listByField('organizationId', organizationId);
+  }
+}
+
+export class AdminInviteFirestoreRepository extends FirestoreRepository<AdminInvite> {
+  constructor() {
+    super('adminInvites');
+  }
+
+  async findByTokenHash(tokenHash: string): Promise<AdminInvite | undefined> {
+    const results = await this.listByField('tokenHash', tokenHash);
+    return results[0];
+  }
+
+  /**
+   * Marca la invitación como usada solo si sigue pendiente. Devuelve false si
+   * otra solicitud la consumió primero, para que el aceptar sea de un solo uso.
+   */
+  async consume(inviteId: string, usedAt = new Date()): Promise<boolean> {
+    const docRef = this.db.collection(this.collectionName).doc(inviteId);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) return false;
+      const data = snapshot.data() as { usedAt?: unknown } | undefined;
+      if (data?.usedAt) return false;
+      recordWrite();
+      transaction.update(docRef, { usedAt });
+      return true;
+    });
+  }
+
+  async release(inviteId: string): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(inviteId);
+    recordWrite();
+    await docRef.update({ usedAt: admin.firestore.FieldValue.delete() });
   }
 }
 
@@ -1620,6 +1664,7 @@ export const planRepository = new PlanFirestoreRepository();
 export const subscriptionRepository = new SubscriptionFirestoreRepository();
 export const billingPeriodRepository = new BillingPeriodFirestoreRepository();
 export const userRepository = new UserFirestoreRepository();
+export const adminInviteRepository = new AdminInviteFirestoreRepository();
 export const refreshTokenSessionRepository = new RefreshTokenSessionFirestoreRepository();
 export const schedulerConfigRepository = new SchedulerConfigFirestoreRepository();
 export const schedulerLogRepository = new SchedulerLogFirestoreRepository();

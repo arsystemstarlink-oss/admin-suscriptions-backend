@@ -1,7 +1,9 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import {
   organizationRepository,
   userRepository,
+  adminInviteRepository,
   refreshTokenSessionRepository,
   clientRepository,
   planRepository,
@@ -14,6 +16,7 @@ import {
   schedulerConfigRepository,
 } from '../../infrastructure/repositories';
 import {
+  AdminInvite,
   BusinessError,
   BusinessPlanKey,
   Organization,
@@ -48,8 +51,68 @@ import { parseBusinessPaymentDate } from '../../domain/payment-date';
 
 const router = Router();
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const TWILIO_ACCOUNT_SID_REGEX = /^AC[0-9a-fA-F]{32}$/;
+const E164_REGEX = /^\+[1-9]\d{7,14}$/;
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function generateTemporaryPassword(): string {
+  return `${crypto.randomBytes(18).toString('base64url')}a1`;
+}
+
+function createInvite(params: {
+  userId: string;
+  organizationId: string;
+  email: string;
+  createdBy: string;
+  now: Date;
+}): { invite: AdminInvite; token: string } {
+  const token = crypto.randomBytes(32).toString('base64url');
+  const invite: AdminInvite = {
+    id: createId(),
+    tokenHash: authService.hashToken(token),
+    userId: params.userId,
+    organizationId: params.organizationId,
+    email: params.email,
+    expiresAt: new Date(params.now.getTime() + INVITE_TTL_MS),
+    createdAt: params.now,
+    createdBy: params.createdBy,
+  };
+  return { invite, token };
+}
 
 router.use(requireSuperAdmin);
+
+function validateTwilioFormat(config: OrganizationTwilioConfig): void {
+  if (config.accountSid && !TWILIO_ACCOUNT_SID_REGEX.test(config.accountSid)) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'El Account SID de Twilio debe empezar por AC y tener 32 caracteres hexadecimales.'
+    );
+  }
+  if (config.authToken && config.authToken.length < 16) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'El Auth Token de Twilio no parece válido.'
+    );
+  }
+  if (config.phoneNumber && !E164_REGEX.test(config.phoneNumber)) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'El número de WhatsApp debe estar en formato E.164, por ejemplo +584223552626.'
+    );
+  }
+  const hasAny = Boolean(config.accountSid || config.authToken || config.phoneNumber);
+  if (config.enabled === true) {
+    if (!config.accountSid || !config.authToken || !config.phoneNumber) {
+      throw new BusinessError(
+        'INVALID_TWILIO_CONFIG',
+        'Para habilitar WhatsApp debes configurar Account SID, Auth Token y número.'
+      );
+    }
+  } else if (config.enabled === undefined && hasAny && config.accountSid && config.authToken && config.phoneNumber) {
+    config.enabled = true;
+  }
+}
 
 function parseTwilioInput(
   input: unknown,
@@ -80,6 +143,8 @@ function parseTwilioInput(
   } else if (body.authToken === null) {
     merged.authToken = undefined;
   }
+
+  validateTwilioFormat(merged);
 
   if (
     !merged.accountSid &&
@@ -160,6 +225,34 @@ async function refreshExpiredOrganizations(organizations: Organization[]): Promi
   );
 }
 
+router.get('/check-slug', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const raw = typeof req.query.slug === 'string' ? req.query.slug : '';
+    const normalized = slugify(raw);
+    if (!normalized) {
+      return res.json({
+        slug: null,
+        available: false,
+        suggestion: null,
+        message: 'Escribe un slug con letras o números.',
+      });
+    }
+
+    const existing = await organizationRepository.findBySlug(normalized);
+    if (!existing) {
+      return res.json({ slug: normalized, available: true, suggestion: null });
+    }
+
+    return res.json({
+      slug: normalized,
+      available: false,
+      suggestion: await resolveUniqueSlug(normalized, existing.id),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { name, slug, active, twilio } = req.body;
@@ -172,11 +265,11 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const slugProvided = slug !== undefined && slug !== null && slug !== '';
 
     if (slugProvided) {
-      normalizedSlug = slugify(String(slug));
-      const existing = await organizationRepository.findBySlug(normalizedSlug);
-      if (existing) {
-        throw new BusinessError('INVALID_DATA', 'Ya existe una organización con ese slug.');
+      const baseSlug = slugify(String(slug));
+      if (!baseSlug) {
+        throw new BusinessError('INVALID_DATA', 'El slug de la organización no es válido.');
       }
+      normalizedSlug = await resolveUniqueSlug(baseSlug);
     } else {
       const baseSlug = slugify(name);
       if (baseSlug) {
@@ -215,6 +308,7 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
     const adminName = typeof adminInput?.name === 'string' ? adminInput.name.trim() : '';
     const email = typeof adminInput?.email === 'string' ? adminInput.email.trim().toLowerCase() : '';
     const password = typeof adminInput?.password === 'string' ? adminInput.password : '';
+    const inviteRequested = adminInput?.invite === true || !password;
 
     if (!name || !adminName) {
       throw new BusinessError('INVALID_DATA', 'El nombre de la organización y del administrador son obligatorios.');
@@ -222,16 +316,18 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
     if (!EMAIL_REGEX.test(email)) {
       throw new BusinessError('INVALID_EMAIL', 'El email no es válido.');
     }
-    if (password.length < 8 || !/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
+    if (!inviteRequested && (password.length < 8 || !/[a-zA-Z]/.test(password) || !/\d/.test(password))) {
       throw new BusinessError('WEAK_PASSWORD', 'La contraseña debe tener al menos 8 caracteres e incluir letras y números.');
     }
 
     const actor = getAuth(req);
     const now = new Date();
     const slugValue = typeof organizationInput.slug === 'string' ? organizationInput.slug.trim() : '';
-    const normalizedSlug = slugValue
-      ? slugify(slugValue)
-      : await resolveUniqueSlug(slugify(name));
+    const baseSlug = slugValue ? slugify(slugValue) : slugify(name);
+    if (slugValue && !baseSlug) {
+      throw new BusinessError('INVALID_DATA', 'El slug de la organización no es válido.');
+    }
+    const normalizedSlug = baseSlug ? await resolveUniqueSlug(baseSlug) : undefined;
     if (!normalizedSlug) {
       throw new BusinessError('INVALID_DATA', 'El slug de la organización no es válido.');
     }
@@ -248,22 +344,34 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
       planUpdatedAt: now,
       planUpdatedBy: actor.userId,
     };
+    const temporaryPassword = inviteRequested ? generateTemporaryPassword() : password;
     const user: User = {
       id: createId(),
       name: adminName,
       email,
-      password: await authService.hashPassword(password),
+      password: await authService.hashPassword(temporaryPassword),
       role: 'admin',
       organizationId: organization.id,
+      mustChangePassword: true,
       createdAt: now,
     };
     userId = user.id;
+
+    const inviteData = inviteRequested
+      ? createInvite({
+          userId: user.id,
+          organizationId: organization.id,
+          email: user.email,
+          createdBy: actor.userId,
+          now,
+        })
+      : undefined;
 
     try {
       await admin.auth().createUser({
         uid: user.id,
         email: user.email,
-        password,
+        password: temporaryPassword,
         displayName: user.name,
       });
       firebaseUserCreated = true;
@@ -274,7 +382,7 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
       throw error;
     }
 
-    await organizationRepository.createWithAdmin(organization, user);
+    await organizationRepository.createWithAdmin(organization, user, inviteData?.invite);
     await syncUserCustomClaims({
       uid: user.id,
       role: user.role,
@@ -288,8 +396,17 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
         email: user.email,
         role: user.role,
         organizationId: user.organizationId,
+        mustChangePassword: user.mustChangePassword,
         createdAt: user.createdAt,
       },
+      ...(inviteData
+        ? {
+            invite: {
+              token: inviteData.token,
+              expiresAt: inviteData.invite.expiresAt.toISOString(),
+            },
+          }
+        : {}),
     });
   } catch (err) {
     if (firebaseUserCreated && userId) {
@@ -435,6 +552,66 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
         role: u.role,
         createdAt: u.createdAt,
       })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/invitations', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const organization = await organizationRepository.getById(req.params.id);
+    if (!organization) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+    }
+
+    const users = await userRepository.listByOrganization(organization.id);
+    const requestedUserId = typeof req.body?.userId === 'string' ? req.body.userId : '';
+    const adminUser = requestedUserId
+      ? users.find((user) => user.id === requestedUserId && user.role === 'admin')
+      : users.find((user) => user.role === 'admin');
+    if (!adminUser) {
+      throw new BusinessError('NOT_FOUND', 'No encontramos un administrador para invitar.');
+    }
+
+    const now = new Date();
+    const temporaryPassword = generateTemporaryPassword();
+    const updatedUser: User = {
+      ...adminUser,
+      password: await authService.hashPassword(temporaryPassword),
+      mustChangePassword: true,
+    };
+
+    await userRepository.update(updatedUser);
+    await refreshTokenSessionRepository.revokeAllForUser(updatedUser.id);
+    await adminInviteRepository.deleteByField('userId', updatedUser.id);
+
+    try {
+      await admin.auth().updateUser(updatedUser.id, { password: temporaryPassword });
+    } catch (firebaseError: any) {
+      console.warn(
+        '[Organizations] No se pudo actualizar la contraseña temporal en Firebase Auth:',
+        firebaseError.message
+      );
+    }
+
+    const actor = getAuth(req);
+    const { invite, token } = createInvite({
+      userId: updatedUser.id,
+      organizationId: organization.id,
+      email: updatedUser.email,
+      createdBy: actor.userId,
+      now,
+    });
+    await adminInviteRepository.create(invite);
+
+    res.status(201).json({
+      invite: {
+        token,
+        expiresAt: invite.expiresAt.toISOString(),
+      },
+      userId: updatedUser.id,
+      email: updatedUser.email,
     });
   } catch (err) {
     next(err);

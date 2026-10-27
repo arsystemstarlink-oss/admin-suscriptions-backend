@@ -60,6 +60,34 @@ function validateTwilioPatch(
     }
     updated.enabled = input.enabled;
   }
+
+  if (updated.accountSid && !/^AC[0-9a-fA-F]{32}$/.test(updated.accountSid)) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'El Account SID de Twilio debe empezar por AC y tener 32 caracteres hexadecimales.'
+    );
+  }
+  if (updated.authToken && updated.authToken.length < 16) {
+    throw new BusinessError('INVALID_TWILIO_CONFIG', 'El Auth Token de Twilio no parece válido.');
+  }
+  if (updated.phoneNumber && !/^\+[1-9]\d{7,14}$/.test(updated.phoneNumber)) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'El número de WhatsApp debe estar en formato E.164, por ejemplo +584223552626.'
+    );
+  }
+
+  const complete = Boolean(updated.accountSid && updated.authToken && updated.phoneNumber);
+  if (updated.enabled === true && !complete) {
+    throw new BusinessError(
+      'INVALID_TWILIO_CONFIG',
+      'Para habilitar WhatsApp debes configurar Account SID, Auth Token y número.'
+    );
+  }
+  if (updated.enabled === undefined && complete) {
+    updated.enabled = true;
+  }
+
   return updated;
 }
 

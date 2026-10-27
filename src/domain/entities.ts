@@ -94,7 +94,20 @@ export interface User {
   organizationId: string | null;
   phone?: string;
   lastLoginAt?: Date;
+  mustChangePassword?: boolean;
   createdAt: Date;
+}
+
+export interface AdminInvite {
+  id: string;
+  tokenHash: string;
+  userId: string;
+  organizationId: string;
+  email: string;
+  expiresAt: Date;
+  usedAt?: Date;
+  createdAt: Date;
+  createdBy: string;
 }
 
 export interface RefreshTokenSession {

@@ -49,6 +49,16 @@ export function authenticateAdmin(
       throw new BusinessError('FORBIDDEN', 'El usuario no tiene una organización asignada.');
     }
 
+    const passwordChangeAllowed =
+      req.baseUrl === '/api/auth' &&
+      ['/me', '/change-password', '/logout'].includes(req.path);
+    if (user.mustChangePassword && !passwordChangeAllowed) {
+      throw new BusinessError(
+        'PASSWORD_CHANGE_REQUIRED',
+        'Debes cambiar tu contraseña inicial antes de continuar.'
+      );
+    }
+
     const auth = toAuthContext({
       ...payload,
       role: user.role,

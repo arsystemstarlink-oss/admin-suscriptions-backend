@@ -16,13 +16,14 @@ Auth: Authorization: Bearer {accessToken}
 - Referencias cruzadas (ej: `clientId` y `planId` de organizaciones distintas en `POST /subscriptions`) se rechazan con `403 CROSS_TENANT_REFERENCE`.
 
 **Seguridad:**
-- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/public/*` y webhooks Twilio) requieren JWT de admin/super-admin.
+- Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/auth/invite/*`, `/api/public/*` y webhooks Twilio) requieren JWT de admin/super-admin.
 - Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId), `role` y `organizationId`; no son intercambiables.
 - El refresh token es de un solo uso: cada `POST /auth/refresh` rota a un token nuevo y revoca el anterior (sesión persistida en `refreshTokenSessions`).
 - Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
-- Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP) y `POST /api/auth/refresh` (60 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
-- Alta conjunta de organización y administrador: `POST /api/organizations/onboard` (10 intentos / 15 min por IP).
+- Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP), `POST /api/auth/refresh` (60 / 15 min por IP) e invitaciones `/api/auth/invite/*` (30 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
+- Alta conjunta de organización y administrador: `POST /api/organizations/onboard` (10 intentos / 15 min por IP). El alta crea una invitación de un solo uso (7 días) en vez de exigir contraseña; también acepta `password` por compatibilidad.
+- Un administrador con `mustChangePassword: true` solo puede usar `/api/auth/me` y `/api/auth/change-password` hasta cambiar su contraseña inicial (`403 PASSWORD_CHANGE_REQUIRED` en el resto).
 - Una organización vencida o suspendida permanece en solo lectura: el backend bloquea sus escrituras y conserva las lecturas. `/api/public/*` mantiene su acceso normal.
 - Headers de seguridad HTTP vía Helmet.
 - `POST /communications/webhook` (público) valida firma Twilio (obligatoria en production).
@@ -77,6 +78,7 @@ interface User {
   organization?: Organization; // incluido en login/me para admins; omitido para super-admin
   phone?: string; // normalizado a E.164 (+58...)
   lastLoginAt?: string;
+  mustChangePassword?: boolean; // true => debe cambiar la contraseña inicial antes de operar
   createdAt: string;
 }
 
@@ -311,6 +313,34 @@ interface DebtorItem {
 // Errors: 400 INVALID_EMAIL | 400 INVALID_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
 ```
 
+**GET /auth/invite/:token**
+```typescript
+// Público. Rate limit 30 / 15 min por IP.
+// Response 200
+{
+  invite: {
+    email: string;
+    organizationName: string;
+    expiresAt: string;
+  };
+}
+// Errors: 404 INVITE_NOT_FOUND | 409 INVITE_ALREADY_USED | 410 INVITE_EXPIRED
+```
+
+**POST /auth/invite/accept**
+```typescript
+// Público. Un solo uso.
+// Request
+{ token: string; password: string; name?: string }
+// password: mínimo 8 caracteres, letras y números
+// Response 200
+{ message: string; accessToken: string; refreshToken: string; user: User }
+// Configura la contraseña, marca la invitación como usada, revoca sesiones
+// anteriores y deja mustChangePassword en false.
+// Errors: 400 INVALID_DATA | 400 WEAK_PASSWORD | 404 INVITE_NOT_FOUND
+//        | 409 INVITE_ALREADY_USED | 410 INVITE_EXPIRED
+```
+
 **POST /auth/change-password**
 ```typescript
 // Header: Authorization: Bearer {accessToken}
@@ -319,7 +349,8 @@ interface DebtorItem {
 // newPassword: mínimo 8 caracteres, letras y números
 // Revoca todas las sesiones y emite un par de tokens nuevo para la sesión actual
 // Response 200
-{ message: string; accessToken: string; refreshToken: string }
+{ message: string; accessToken: string; refreshToken: string; user: User }
+// Deja mustChangePassword en false.
 // Errors: 400 INVALID_PASSWORD (actual incorrecta) | 400 WEAK_PASSWORD
 ```
 
@@ -390,7 +421,8 @@ interface DebtorItem {
 | PUT | /organizations/:id | Bearer super-admin | Actualizar organización |
 | DELETE | /organizations/:id | Bearer super-admin | Eliminar organización (solo sin usuarios) |
 
-Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
+Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
+`POST /organizations/onboard`, `POST /organizations/:id/invitations` y
 `POST /organizations/:id/plan-payments`.
 
 **POST /organizations**
@@ -402,12 +434,26 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
   active?: boolean;
   twilio?: { accountSid?: string; authToken?: string; phoneNumber?: string; enabled?: boolean }
 }
-// slug se normaliza a minúsculas con guiones (ej: "Org A" -> "org-a"). Único si se usa.
+// slug se normaliza a minúsculas con guiones (ej: "Org A" -> "org-a"). Si ya existe, el servidor agrega un sufijo (-2, -3...).
 // twilio.phoneNumber se normaliza sin prefijo "whatsapp:" (formato E.164, ej: +584223552626).
+// Si se envía configuración Twilio, debe venir completa (accountSid AC + 32 hex, authToken, phoneNumber) y enabled=true;
+// si falta algún dato, responde 400 INVALID_TWILIO_CONFIG.
 // Response 201 → Organization (DTO: ver nota de masking abajo)
 // El servidor asigna plan Básico, límite 30, prueba de 14 días, clientCount 0 y planExpiresAt null.
 // No acepta campos de plan en este alta.
 // Errors: 400 INVALID_DATA (nombre obligatorio, slug duplicado)
+```
+
+**GET /organizations/check-slug**
+```typescript
+// Query: { slug: string }
+// Response 200
+{
+  slug: string | null;        // slug normalizado
+  available: boolean;
+  suggestion: string | null;  // alternativa libre cuando no está disponible
+  message?: string;
+}
 ```
 
 **POST /organizations/onboard**
@@ -415,16 +461,33 @@ Endpoints adicionales (solo super-admin): `POST /organizations/onboard` y
 // Request
 {
   organization: { name: string; slug?: string; twilio?: TwilioConfig };
-  admin: { name: string; email: string; password: string };
+  admin: { name: string; email: string; invite?: boolean; password?: string };
 }
-// Response 201 → { organization: Organization; admin: User }
-// Crea ambos registros como una sola operación lógica. No devuelve la contraseña.
-// Requiere email válido y contraseña de mínimo 8 caracteres con letras y números.
+// Response 201
+{
+  organization: Organization;
+  admin: User;
+  invite?: { token: string; expiresAt: string };
+}
+// Con invite: true (o sin password) crea una invitación de un solo uso de 7 días
+// y NO devuelve contraseña. `token` solo se muestra en esta respuesta.
+// Con password mantiene el alta directa por compatibilidad.
+// El usuario nace con mustChangePassword: true.
+// Requiere email válido; si se envía contraseña, mínimo 8 caracteres con letras y números.
 // El plan Básico de prueba, límite 30 y clientCount 0 se asignan en servidor.
 // Errores revierten la creación asociada en Firestore y Firebase Auth.
 // Rate limit: 10 intentos / 15 min por IP.
-// Errors: 400 INVALID_DATA | INVALID_EMAIL | WEAK_PASSWORD
-//         403 FORBIDDEN | 409 EMAIL_TAKEN | 429 RATE_LIMITED
+```
+
+**POST /organizations/:id/invitations**
+```typescript
+// Request
+{ userId?: string } // por defecto, el primer admin de la organización
+// Response 201
+{ invite: { token: string; expiresAt: string }; userId: string; email: string }
+// Reemplaza invitaciones anteriores del usuario, genera una contraseña temporal
+// nueva, revoca sus sesiones y exige cambiar la contraseña al aceptar.
+// Errors: 404 ORGANIZATION_NOT_FOUND | 404 NOT_FOUND (sin admin)
 ```
 
 **GET /organizations**

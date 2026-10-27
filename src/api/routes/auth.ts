@@ -1,11 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import {
   userRepository,
+  adminInviteRepository,
   refreshTokenSessionRepository,
   organizationRepository,
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
-import { BusinessError, User, UserRole } from '../../domain/entities';
+import { BusinessError, AdminInvite, User, UserRole } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { validateOrganizationAdminCount } from '../../domain/business-plan';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
@@ -29,6 +30,7 @@ export function toUserDto(user: User) {
     role: user.role,
     organizationId: user.organizationId,
     lastLoginAt: user.lastLoginAt,
+    mustChangePassword: user.mustChangePassword === true,
     createdAt: user.createdAt,
   };
 }
@@ -115,6 +117,7 @@ async function validateAndCreateUser(input: {
     role,
     organizationId,
     phone: input.phone ? normalizePhoneToE164(input.phone) : undefined,
+    mustChangePassword: role === 'admin',
     createdAt: new Date(),
   };
 
@@ -162,6 +165,112 @@ async function createRefreshSession(
     lastUsedAt: now,
   });
 }
+
+async function resolveInvite(token: unknown): Promise<{
+  invite: AdminInvite;
+  user: User;
+}> {
+  const rawToken = typeof token === 'string' ? token.trim() : '';
+  if (!rawToken) {
+    throw new BusinessError('INVITE_NOT_FOUND', 'La invitación no existe.');
+  }
+
+  const invite = await adminInviteRepository.findByTokenHash(authService.hashToken(rawToken));
+  if (!invite) {
+    throw new BusinessError('INVITE_NOT_FOUND', 'La invitación no existe.');
+  }
+  if (invite.usedAt) {
+    throw new BusinessError('INVITE_ALREADY_USED', 'Esta invitación ya fue utilizada.');
+  }
+  if (invite.expiresAt.getTime() <= Date.now()) {
+    throw new BusinessError('INVITE_EXPIRED', 'Esta invitación expiró. Solicita una nueva.');
+  }
+
+  const user = await userRepository.getById(invite.userId);
+  if (!user || user.email !== invite.email) {
+    throw new BusinessError('INVITE_NOT_FOUND', 'La invitación no es válida.');
+  }
+
+  return { invite, user };
+}
+
+router.get('/invite/:token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { invite } = await resolveInvite(req.params.token);
+    const organization = await organizationRepository.getById(invite.organizationId);
+    if (!organization) {
+      throw new BusinessError('INVITE_NOT_FOUND', 'La organización de la invitación no existe.');
+    }
+
+    res.json({
+      invite: {
+        email: invite.email,
+        organizationName: organization.name,
+        expiresAt: invite.expiresAt,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/invite/accept', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { token, password, name } = req.body ?? {};
+    if (typeof password !== 'string') {
+      throw new BusinessError('INVALID_DATA', 'La contraseña es requerida.');
+    }
+    validatePasswordStrength(password);
+
+    const { invite, user } = await resolveInvite(token);
+    const trimmedName = typeof name === 'string' ? name.trim() : '';
+
+    const consumed = await adminInviteRepository.consume(invite.id);
+    if (!consumed) {
+      throw new BusinessError('INVITE_ALREADY_USED', 'Esta invitación ya fue utilizada.');
+    }
+
+    try {
+      const updatedUser: User = {
+        ...user,
+        ...(trimmedName ? { name: trimmedName } : {}),
+        password: await authService.hashPassword(password),
+        mustChangePassword: false,
+      };
+      await userRepository.update(updatedUser);
+
+      try {
+        await admin.auth().updateUser(user.id, {
+          password,
+          ...(trimmedName ? { displayName: trimmedName } : {}),
+        });
+      } catch (firebaseError: any) {
+        console.warn(
+          '[Auth] No se pudo actualizar el usuario de Firebase al aceptar la invitación:',
+          firebaseError.message
+        );
+      }
+
+      await refreshTokenSessionRepository.revokeAllForUser(user.id);
+
+      const accessToken = authService.generateAccessToken(updatedUser);
+      const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(updatedUser);
+      await createRefreshSession(updatedUser, refreshToken, jti, expiresAt);
+
+      res.json({
+        message: 'Invitación aceptada. Tu contraseña quedó configurada.',
+        accessToken,
+        refreshToken,
+        user: await toAuthenticatedUserDto(updatedUser),
+      });
+    } catch (err) {
+      await adminInviteRepository.release(invite.id).catch(() => undefined);
+      throw err;
+    }
+  } catch (err) {
+    next(err);
+  }
+});
 
 router.post('/login', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -494,8 +603,18 @@ router.post('/change-password', authenticateAdmin, async (req: Request, res: Res
     }
 
     const hashedPassword = await authService.hashPassword(newPassword);
-    const updatedUser: User = { ...user, password: hashedPassword };
+    const updatedUser: User = {
+      ...user,
+      password: hashedPassword,
+      mustChangePassword: false,
+    };
     await userRepository.update(updatedUser);
+
+    try {
+      await admin.auth().updateUser(user.id, { password: newPassword });
+    } catch (firebaseError: any) {
+      console.warn('[Auth] No se pudo actualizar la contraseña en Firebase Auth:', firebaseError.message);
+    }
 
     await refreshTokenSessionRepository.revokeAllForUser(user.id);
 
@@ -507,6 +626,7 @@ router.post('/change-password', authenticateAdmin, async (req: Request, res: Res
       message: 'Contraseña actualizada correctamente.',
       accessToken,
       refreshToken,
+      user: await toAuthenticatedUserDto(updatedUser),
     });
   } catch (err) {
     next(err);

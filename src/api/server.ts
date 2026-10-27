@@ -97,6 +97,19 @@ const refreshRateLimiter = rateLimit({
   },
 });
 
+const inviteRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas solicitudes de invitación. Intenta de nuevo más tarde.',
+    },
+  },
+});
+
 const setupRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
@@ -169,6 +182,7 @@ app.get('/health', (req, res) => {
 
 app.use('/api/auth/login', loginRateLimiter);
 app.use('/api/auth/refresh', refreshRateLimiter);
+app.use('/api/auth/invite', inviteRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
 app.post('/api/organizations/onboard', organizationOnboardRateLimiter);
 app.use('/api/public', publicRateLimiter);

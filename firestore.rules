@@ -63,6 +63,9 @@ service cloud.firestore {
     match /refreshTokenSessions/{id} {
       allow read, write: if isSuperAdmin() || resource.data.userId == request.auth.uid;
     }
+    match /adminInvites/{id} {
+      allow read, write: if false;
+    }
     match /twilioPhoneNumbers/{phone} {
       allow read, write: if false;
     }
