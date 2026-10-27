@@ -7,8 +7,16 @@ import {
   planRepository,
   paymentReportRepository,
   domainEventRepository,
+  planQuoteRequestRepository,
 } from '../../infrastructure/repositories';
-import { BusinessError, BillingPeriod } from '../../domain/entities';
+import {
+  BusinessError,
+  BillingPeriod,
+  Organization,
+  OrganizationPlanPaymentReport,
+  PlanQuoteRequest,
+  User,
+} from '../../domain/entities';
 import { normalizeDni } from '../../domain/business-rules';
 import {
   phonesMatch,
@@ -18,10 +26,33 @@ import {
   validateReportPaidAt,
 } from '../../domain/payment-reports';
 import { createId } from '../../domain/business-rules';
-import { getBusinessPlanCatalog } from '../../domain/business-plan';
+import {
+  assertPlanChangeAllowed,
+  assertPrepaidMonthsLimit,
+  getBusinessPlanCatalog,
+  resolveClientLimitForPlan,
+  resolveFixedPlanPaymentAmount,
+  resolveOrganizationPlanExpiration,
+  validateOrganizationAdminLimit,
+} from '../../domain/business-plan';
+import {
+  buildPaymentInstructions,
+  validatePlanQuoteInput,
+  validatePublicSignupInput,
+} from '../../domain/public-signup';
+import { authService } from '../../domain/auth-service';
+import { createRefreshSession } from '../../domain/auth-session';
+import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { pushService } from '../../infrastructure/push-service';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
+import { toOrganizationDto } from '../dto/organization';
+import { toAuthenticatedUserDto } from '../dto/user';
+import {
+  defaultOrganizationPlan,
+  resolveUniqueSlug,
+  slugify,
+} from '../lib/organization-setup';
 import {
   createCaptchaVerifier,
   createDniRateLimiter,
@@ -280,5 +311,181 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
     next(err);
   }
 });
+
+router.get('/payment-instructions', (_req: Request, res: Response) => {
+  res.json(buildPaymentInstructions());
+});
+
+const signupCaptcha = createCaptchaVerifier({ action: 'public_signup' });
+
+router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: NextFunction) => {
+  let firebaseUserCreated = false;
+  let firebaseUserId: string | undefined;
+  try {
+    const input = validatePublicSignupInput(req.body);
+    const now = new Date();
+
+    const baseSlug = slugify(input.organizationName);
+    if (!baseSlug) {
+      throw new BusinessError('INVALID_DATA', 'El nombre de la organización no es válido.');
+    }
+    const slug = await resolveUniqueSlug(baseSlug);
+
+    const organization: Organization = {
+      id: createId(),
+      name: input.organizationName.toUpperCase(),
+      slug,
+      active: true,
+      ...defaultOrganizationPlan(now),
+      twilio: { enabled: false },
+      createdAt: now,
+    };
+    const user: User = {
+      id: createId(),
+      name: input.adminName,
+      email: input.email,
+      password: await authService.hashPassword(input.password),
+      role: 'admin',
+      organizationId: organization.id,
+      phone: input.phone,
+      lastLoginAt: now,
+      mustChangePassword: false,
+      createdAt: now,
+    };
+    organization.createdBy = user.id;
+    organization.planUpdatedAt = now;
+    organization.planUpdatedBy = user.id;
+
+    let planReport: OrganizationPlanPaymentReport | undefined;
+    if (input.plan !== 'basico' && input.payment) {
+      const clientLimit = resolveClientLimitForPlan(input.plan);
+      assertPlanChangeAllowed({
+        currentPlanStatus: organization.planStatus,
+        currentTrialEndsAt: organization.trialEndsAt,
+        currentPlanExpiresAt: organization.planExpiresAt,
+        currentClientLimit: organization.clientLimit,
+        targetClientLimit: clientLimit,
+      });
+      validateOrganizationAdminLimit(input.plan, 1);
+
+      const amount = resolveFixedPlanPaymentAmount(input.plan, 1);
+      if (amount === null) {
+        throw new BusinessError('INVALID_PLAN', 'El plan seleccionado no tiene precio fijo.');
+      }
+      const billingDay = organization.billingDay!;
+      const previewExpiry = resolveOrganizationPlanExpiration({
+        paidAt: now,
+        months: 1,
+        billingDay,
+        planStatus: organization.planStatus,
+        trialEndsAt: organization.trialEndsAt,
+        planExpiresAt: organization.planExpiresAt,
+        currentPlan: organization.plan,
+        targetPlan: input.plan,
+        now,
+      });
+      assertPrepaidMonthsLimit({ newPlanExpiresAt: previewExpiry, billingDay });
+
+      planReport = {
+        id: createId(),
+        organizationId: organization.id,
+        plan: input.plan,
+        amount,
+        method: input.payment.method,
+        paidAt: now,
+        months: 1,
+        clientLimit,
+        reference: input.payment.reference,
+        notes: input.payment.notes,
+        status: 'PENDING',
+        createdAt: now,
+        createdByUserId: user.id,
+      };
+    }
+
+    try {
+      await admin.auth().createUser({
+        uid: user.id,
+        email: user.email,
+        password: input.password,
+        displayName: user.name,
+      });
+      firebaseUserCreated = true;
+      firebaseUserId = user.id;
+    } catch (error) {
+      if ((error as { code?: string }).code === 'auth/email-already-exists') {
+        throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
+      }
+      throw error;
+    }
+
+    try {
+      await organizationRepository.createWithAdmin(organization, user, undefined, planReport);
+    } catch (error) {
+      throw error;
+    }
+
+    await syncUserCustomClaims({
+      uid: user.id,
+      role: user.role,
+      organizationId: user.organizationId,
+    });
+
+    const accessToken = authService.generateAccessToken(user);
+    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(user, {
+      rememberMe: false,
+    });
+    await createRefreshSession(user, refreshToken, jti, expiresAt, false);
+
+    res.status(201).json({
+      accessToken,
+      refreshToken,
+      user: await toAuthenticatedUserDto(user),
+      organization: toOrganizationDto(organization),
+      ...(planReport ? { paymentReport: planReport } : {}),
+    });
+  } catch (err) {
+    if (firebaseUserCreated && firebaseUserId) {
+      try {
+        await admin.auth().deleteUser(firebaseUserId);
+      } catch (cleanupError) {
+        console.error('[PublicSignup] No se pudo revertir el usuario de Firebase Auth.', {
+          userId: firebaseUserId,
+          error: (cleanupError as Error).message,
+        });
+      }
+    }
+    next(err);
+  }
+});
+
+const quoteCaptcha = createCaptchaVerifier({ action: 'public_quote' });
+
+router.post(
+  '/plan-quote-requests',
+  quoteCaptcha,
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const input = validatePlanQuoteInput(req.body);
+      const now = new Date();
+      const request: PlanQuoteRequest = {
+        id: createId(),
+        name: input.name,
+        email: input.email,
+        phone: input.phone,
+        organizationName: input.organizationName,
+        estimatedClients: input.estimatedClients,
+        message: input.message,
+        status: 'NEW',
+        createdAt: now,
+        updatedAt: now,
+      };
+      await planQuoteRequestRepository.create(request);
+      res.status(201).json({ request: { id: request.id, createdAt: request.createdAt } });
+    } catch (err) {
+      next(err);
+    }
+  },
+);
 
 export default router;

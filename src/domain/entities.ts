@@ -85,6 +85,24 @@ export interface OrganizationPlanPaymentReport {
   appliedPaymentId?: string;
 }
 
+export type PlanQuoteRequestStatus = 'NEW' | 'CONTACTED' | 'CLOSED';
+
+export interface PlanQuoteRequest {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  organizationName?: string;
+  estimatedClients: number;
+  message?: string;
+  status: PlanQuoteRequestStatus;
+  reviewNotes?: string;
+  createdAt: Date;
+  updatedAt: Date;
+  handledBy?: string;
+  handledAt?: Date;
+}
+
 export interface User {
   id: string;
   name: string;

@@ -13,49 +13,15 @@ import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authenticateAdmin, AuthenticatedRequest } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
-import { toOrganizationDto } from '../dto/organization';
 import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { normalizePhoneToE164 } from '../../domain/phone';
+import { EMAIL_REGEX, validatePasswordStrength } from '../../domain/validation';
+import { createRefreshSession } from '../../domain/auth-session';
+import { toAuthenticatedUserDto, toUserDto } from '../dto/user';
+
+export { EMAIL_REGEX, validatePasswordStrength, toUserDto, toAuthenticatedUserDto };
 
 const router = Router();
-
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-export function toUserDto(user: User) {
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone,
-    role: user.role,
-    organizationId: user.organizationId,
-    lastLoginAt: user.lastLoginAt,
-    mustChangePassword: user.mustChangePassword === true,
-    createdAt: user.createdAt,
-  };
-}
-
-async function toAuthenticatedUserDto(user: User) {
-  const userDto = toUserDto(user);
-  if (user.role !== 'admin' || !user.organizationId) {
-    return userDto;
-  }
-  const organization = await organizationRepository.getById(user.organizationId);
-  if (!organization) {
-    throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización del usuario no existe.');
-  }
-  const currentOrganization = await organizationRepository.refreshExpiredStatus(organization);
-  return { ...userDto, organization: toOrganizationDto(currentOrganization) };
-}
-
-export function validatePasswordStrength(password: string): void {
-  if (password.length < 8) {
-    throw new BusinessError('WEAK_PASSWORD', 'La contraseña debe tener al menos 8 caracteres.');
-  }
-  if (!/[a-zA-Z]/.test(password) || !/\d/.test(password)) {
-    throw new BusinessError('WEAK_PASSWORD', 'La contraseña debe incluir letras y números.');
-  }
-}
 
 async function validateAndCreateUser(input: {
   name?: string;
@@ -146,25 +112,6 @@ async function validateAndCreateUser(input: {
 }
 
 export { normalizePhoneToE164 };
-
-async function createRefreshSession(
-  user: User,
-  token: string,
-  jti: string,
-  expiresAt: Date,
-  rememberMe?: boolean,
-) {
-  const now = new Date();
-  await refreshTokenSessionRepository.create({
-    id: jti,
-    userId: user.id,
-    tokenHash: authService.hashToken(token),
-    rememberMe,
-    createdAt: now,
-    expiresAt,
-    lastUsedAt: now,
-  });
-}
 
 async function resolveInvite(token: unknown): Promise<{
   invite: AdminInvite;

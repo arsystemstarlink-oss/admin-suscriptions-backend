@@ -18,6 +18,7 @@ import organizationRoutes from './routes/organizations';
 import publicRoutes from './routes/public';
 import paymentReportRoutes from './routes/payment-reports';
 import organizationPlanPaymentReportRoutes from './routes/organization-plan-payment-reports';
+import planQuoteRequestRoutes from './routes/plan-quote-requests';
 import badgesRoutes from './routes/badges';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
@@ -136,6 +137,32 @@ const organizationOnboardRateLimiter = rateLimit({
   },
 });
 
+const publicSignupRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Demasiados intentos de alta. Intenta de nuevo más tarde.',
+    },
+  },
+});
+
+const publicQuoteRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Demasiadas solicitudes de cotización. Intenta de nuevo más tarde.',
+    },
+  },
+});
+
 const publicRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 60,
@@ -185,6 +212,8 @@ app.use('/api/auth/refresh', refreshRateLimiter);
 app.use('/api/auth/invite', inviteRateLimiter);
 app.use('/api/auth/setup', setupRateLimiter);
 app.post('/api/organizations/onboard', organizationOnboardRateLimiter);
+app.post('/api/public/signup', publicSignupRateLimiter);
+app.post('/api/public/plan-quote-requests', publicQuoteRateLimiter);
 app.use('/api/public', publicRateLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/public', publicRoutes);
@@ -195,6 +224,7 @@ app.use(
   authenticateAdmin,
   organizationPlanPaymentReportRoutes
 );
+app.use('/api/plan-quote-requests', authenticateAdmin, planQuoteRequestRoutes);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
 app.use('/api/clients', authenticateAdmin, requireWritablePlan, clientRoutes);
 app.use('/api/plans', authenticateAdmin, requireWritablePlan, planRoutes);

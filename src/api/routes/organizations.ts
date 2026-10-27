@@ -48,9 +48,14 @@ import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authService } from '../../domain/auth-service';
 import { toOrganizationDto } from '../dto/organization';
 import { parseBusinessPaymentDate } from '../../domain/payment-date';
+import { EMAIL_REGEX } from '../../domain/validation';
+import {
+  defaultOrganizationPlan,
+  resolveUniqueSlug,
+  slugify,
+} from '../lib/organization-setup';
 
 const router = Router();
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const TWILIO_ACCOUNT_SID_REGEX = /^AC[0-9a-fA-F]{32}$/;
 const E164_REGEX = /^\+[1-9]\d{7,14}$/;
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -175,48 +180,6 @@ function parsePlanDate(value: unknown, field: string): Date | null | undefined {
     throw new BusinessError('INVALID_PLAN_DATE', `${field} debe ser una fecha ISO 8601 válida.`);
   }
   return date;
-}
-
-function defaultOrganizationPlan(now = new Date()): Pick<
-  Organization,
-  'plan' | 'clientLimit' | 'planStatus' | 'billingDay' | 'trialEndsAt' | 'planExpiresAt' | 'clientCount'
-> {
-  const trialEndsAt = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-  return {
-    plan: 'basico',
-    clientLimit: 30,
-    planStatus: 'prueba',
-    billingDay: Math.min(Math.max(now.getUTCDate(), 1), 28),
-    trialEndsAt,
-    planExpiresAt: null,
-    clientCount: 0,
-  };
-}
-
-function slugify(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-async function resolveUniqueSlug(baseSlug: string, excludeId?: string): Promise<string> {
-  let candidate = baseSlug;
-  let counter = 1;
-
-  while (true) {
-    const existing = await organizationRepository.findBySlug(candidate);
-    if (!existing || existing.id === excludeId) {
-      return candidate;
-    }
-    counter += 1;
-    candidate = `${baseSlug}-${counter}`;
-  }
 }
 
 async function refreshExpiredOrganizations(organizations: Organization[]): Promise<Organization[]> {

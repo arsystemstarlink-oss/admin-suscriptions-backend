@@ -874,6 +874,91 @@ interface BusinessPlanCatalogItem {
 
 ---
 
+### Alta autoservicio y cotizaciones (`/public` y `/plan-quote-requests`)
+
+Permiten contratar desde `/planes` sin intervencion del super-admin. El alta crea la
+organizacion en plan Basico de prueba; si el plan es Pro o Negocio deja ademas un
+`OrganizationPlanPaymentReport` PENDING con el precio fijado por el servidor. A medida solo
+crea una solicitud de cotizacion.
+
+**Protecciones**
+- `POST /public/signup`: 5 intentos / 15 min por IP, CAPTCHA accion `public_signup`.
+- `POST /public/plan-quote-requests`: 10 intentos / 15 min por IP, CAPTCHA accion `public_quote`.
+- El CAPTCHA se omite si `TURNSTILE_SECRET_KEY` no esta configurado.
+
+**GET /public/payment-instructions** (sin auth)
+```typescript
+// Response 200
+{
+  bankTransfer: { bankName: string; accountHolder: string; accountNumber: string; accountType: string; rif: string; notes?: string } | null;
+  usdt: { network: string; address: string; notes?: string } | null;
+}
+// Cada bloque es null si falta configuracion en PAYMENT_* del backend.
+```
+
+**POST /public/signup**
+```typescript
+{
+  plan: 'basico' | 'pro' | 'negocio';
+  organization: { name: string };
+  admin: { name: string; email: string; password: string; phone?: string };
+  payment?: { method: 'transferencia' | 'usdt'; reference: string; notes?: string }; // obligatorio en pro/negocio
+  turnstileToken?: string;
+}
+// Response 201
+{
+  accessToken: string; refreshToken: string;
+  user: User & { organization: Organization };
+  organization: Organization;
+  paymentReport?: OrganizationPlanPaymentReport;
+}
+// La organizacion nace en Basico/prueba con trialEndsAt = alta + dias de prueba.
+// Pro/negocio calculan amount = precio mensual x 1 y clientLimit del plan.
+// Errors: 400 INVALID_DATA | 400 INVALID_EMAIL | 400 WEAK_PASSWORD | 409 EMAIL_TAKEN
+//         400 INVALID_PAYMENT_METHOD | 409 PREPAID_LIMIT_REACHED | 429 RATE_LIMITED
+//         403 CAPTCHA_REQUIRED | 403 CAPTCHA_FAILED | 503 CAPTCHA_UNAVAILABLE
+```
+
+**POST /public/plan-quote-requests**
+```typescript
+{ name: string; email: string; phone?: string; organizationName?: string; estimatedClients: number; message?: string; turnstileToken?: string }
+// Response 201 → { request: { id: string; createdAt: string } }
+// Errors: 400 INVALID_DATA | 400 INVALID_EMAIL | 400 INVALID_PHONE | 429 RATE_LIMITED
+//         403 CAPTCHA_REQUIRED | 403 CAPTCHA_FAILED | 503 CAPTCHA_UNAVAILABLE
+```
+
+```typescript
+interface PlanQuoteRequest {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string;
+  organizationName?: string;
+  estimatedClients: number;
+  message?: string;
+  status: 'NEW' | 'CONTACTED' | 'CLOSED';
+  reviewNotes?: string;
+  createdAt: string;
+  updatedAt: string;
+  handledBy?: string;
+  handledAt?: string;
+}
+```
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| GET | /plan-quote-requests?status=NEW\|CONTACTED\|CLOSED\|ALL&limit=&offset= | Super-admin lista solicitudes (orden `createdAt` desc) |
+| PATCH | /plan-quote-requests/:id | Super-admin marca `CONTACTED`/`CLOSED`, guarda `reviewNotes` y `handledBy` |
+
+```typescript
+// PATCH /plan-quote-requests/:id
+{ status: 'CONTACTED' | 'CLOSED'; reviewNotes?: string }
+// Response 200 → { request: PlanQuoteRequest }
+// Errors: 404 NOT_FOUND | 400 INVALID_DATA
+```
+
+---
+
 ### Reportes de pago de plan de organizacion (`/organization-plan-payment-reports`, auth)
 
 El admin reporta el pago de su propia organizacion; el super-admin lo revisa. El monto de

@@ -1,4 +1,4 @@
-import { Router, Request, Response, NextFunction } from 'express';
+﻿import { Router, Request, Response, NextFunction } from 'express';
 import {
   organizationPlanPaymentReportRepository,
   organizationRepository,
@@ -33,6 +33,7 @@ import {
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { requireSuperAdmin } from '../middleware/auth';
 import { parseBusinessPaymentDate } from '../../domain/payment-date';
+import { pushService } from '../../infrastructure/push-service';
 
 const router = Router();
 
@@ -338,6 +339,16 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
         reviewNotes,
       };
       await organizationPlanPaymentReportRepository.update(rejected);
+      pushService
+        .sendBroadcastToOrganization({
+          organizationId: report.organizationId,
+          title: 'Pago de plan rechazado',
+          body: reviewNotes || 'Revisa el detalle en tu perfil.',
+          data: { url: '/config/profile', topic: 'payment-reports' },
+        })
+        .catch((error) => {
+          console.error('[Push] Error notificando reporte de plan rechazado:', error);
+        });
       return res.json({ report: serializeReport(rejected) });
     }
 
@@ -422,6 +433,17 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
     };
     await organizationPlanPaymentReportRepository.update(approved);
 
+    pushService
+      .sendBroadcastToOrganization({
+        organizationId: report.organizationId,
+        title: 'Plan activado',
+        body: `Tu plan ${report.plan} ya está activo.`,
+        data: { url: '/config/profile', topic: 'payment-reports' },
+      })
+      .catch((error) => {
+        console.error('[Push] Error notificando plan activado:', error);
+      });
+
     res.json({
       report: serializeReport(approved, organization.name),
       organization: updatedOrganization,
@@ -433,3 +455,4 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
 });
 
 export default router;
+

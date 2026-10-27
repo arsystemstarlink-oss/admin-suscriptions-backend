@@ -31,6 +31,7 @@ import {
   OrganizationTwilioConfig,
   DomainEvent,
   PaymentReport,
+  PlanQuoteRequest,
 } from '../domain/entities';
 import { isPlanExpired, validatePlanConfiguration } from '../domain/business-plan';
 
@@ -300,10 +301,14 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     organization: Organization,
     user: User,
     invite?: AdminInvite,
+    planReport?: OrganizationPlanPaymentReport,
   ): Promise<void> {
     const organizationRef = this.db.collection('organizations').doc(organization.id);
     const userRef = this.db.collection('users').doc(user.id);
     const inviteRef = invite ? this.db.collection('adminInvites').doc(invite.id) : undefined;
+    const planReportRef = planReport
+      ? this.db.collection('organizationPlanPaymentReports').doc(planReport.id)
+      : undefined;
     const slugQuery = this.db.collection('organizations').where('slug', '==', organization.slug);
     const emailQuery = this.db.collection('users').where('email', '==', user.email);
 
@@ -327,11 +332,14 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         undefined,
         organization.twilio?.phoneNumber,
       );
-      recordWrite(inviteRef ? 3 : 2);
+      recordWrite(2 + (inviteRef ? 1 : 0) + (planReportRef ? 1 : 0));
       transaction.create(organizationRef, this.serialize(organization));
       transaction.create(userRef, this.serialize(user));
       if (inviteRef && invite) {
         transaction.create(inviteRef, this.serialize(invite));
+      }
+      if (planReportRef && planReport) {
+        transaction.create(planReportRef, this.serialize(planReport));
       }
       applyClaims();
     });
@@ -1614,6 +1622,12 @@ export class OrganizationPlanPaymentReportFirestoreRepository extends FirestoreR
   }
 }
 
+export class PlanQuoteRequestFirestoreRepository extends FirestoreRepository<PlanQuoteRequest> {
+  constructor() {
+    super('planQuoteRequests');
+  }
+}
+
 export class JobLockFirestoreRepository {
   private collectionName = 'jobLocks';
 
@@ -1675,4 +1689,5 @@ export const domainEventRepository = new DomainEventFirestoreRepository();
 export const paymentReportRepository = new PaymentReportFirestoreRepository();
 export const organizationPlanPaymentReportRepository =
   new OrganizationPlanPaymentReportFirestoreRepository();
+export const planQuoteRequestRepository = new PlanQuoteRequestFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();
