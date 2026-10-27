@@ -821,10 +821,39 @@ la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
+| GET | /organization-plan-payment-reports/quote | Cotiza bloqueo de plan, vencimientos y monto (fuente unica del backend) |
 | POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12) |
 | GET | /organization-plan-payment-reports/mine | Admin lista sus reportes |
 | GET | /organization-plan-payment-reports?status=PENDING | Super-admin lista reportes y los enriquece con `organizationName` |
 | POST | /organization-plan-payment-reports/:id/review | Super-admin aprueba (aplica el pago del plan) o rechaza |
+
+```typescript
+// GET /organization-plan-payment-reports/quote?organizationId=&plan=pro&paidAt=2026-10-27
+// organizationId solo lo usa el super-admin; el admin cotiza su propia organizacion.
+// Respuesta 200
+{
+  quote: {
+    organizationId: string;
+    plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
+    billingDay: number;
+    planLocked: boolean;       // plan/trial vigente: no permite bajar de plan ni de tope
+    planChanged: boolean;
+    extendsCurrent: boolean;
+    currentExpiry: string | null;
+    paidAt: string;
+    maxPlanExpiresAt: string;  // tope de prepago (12 meses)
+    expirations: Array<{
+      months: number;          // 1-12
+      newPlanExpiresAt: string;
+      exceedsPrepaidLimit: boolean;
+      amount: number | null;   // null para A medida
+    }>;
+  };
+}
+// Errors: 400 TENANT_REQUIRED | 404 ORGANIZATION_NOT_FOUND | 400 INVALID_DATA
+//         400 INVALID_PAYMENT_DATE
+// El frontend no debe recalcular vencimientos ni bloqueo de plan por su cuenta.
+```
 
 ```typescript
 // POST /organization-plan-payment-reports

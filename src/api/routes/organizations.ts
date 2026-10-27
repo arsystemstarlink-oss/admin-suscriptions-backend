@@ -31,6 +31,7 @@ import {
   resolveOrganizationPlanExpiration,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
+  assertFuturePlanDates,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
 } from '../../domain/business-plan';
@@ -41,6 +42,7 @@ import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authService } from '../../domain/auth-service';
 import { toOrganizationDto } from '../dto/organization';
+import { parseBusinessPaymentDate } from '../../domain/payment-date';
 
 const router = Router();
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -503,6 +505,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       trialEndsAt,
       planExpiresAt,
     });
+    if (planStatus !== existing.planStatus || trialEndsAt !== existing.trialEndsAt || planExpiresAt !== existing.planExpiresAt) {
+      assertFuturePlanDates({ planStatus, trialEndsAt, planExpiresAt });
+    }
     if ((existing.clientCount ?? 0) > clientLimit!) {
       throw new BusinessError(
         'CLIENT_LIMIT_BELOW_USAGE',
@@ -563,10 +568,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const { paidAt, amount, method, plan, months } = req.body ?? {};
-    const parsedPaidAt = parsePlanDate(paidAt, 'paidAt');
-    if (!parsedPaidAt) {
-      throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de pago es obligatoria.');
-    }
+    const parsedPaidAt = parseBusinessPaymentDate(paidAt);
     const billingDay = getOrganizationBillingDay(current);
     let newPlanExpiresAt: Date;
     let renewalMonths = 1;

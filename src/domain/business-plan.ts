@@ -222,6 +222,29 @@ export function resolveClientLimitForPlan(
   return candidate;
 }
 
+/**
+ * Indica si la suscripción actual está vigente y por tanto bloquea bajadas de
+ * plan o de tope. Es la única definición de "plan bloqueado" que debe usar el
+ * backend; el frontend la consume vía GET /organization-plan-payment-reports/quote.
+ */
+export function isOrganizationPlanLocked(
+  organization: Pick<Organization, 'planStatus' | 'planExpiresAt' | 'trialEndsAt'>,
+  now = new Date()
+): boolean {
+  if (organization.planStatus === 'activo') {
+    return (
+      !organization.planExpiresAt ||
+      organization.planExpiresAt.getTime() > now.getTime()
+    );
+  }
+  if (organization.planStatus === 'prueba') {
+    return Boolean(
+      organization.trialEndsAt && organization.trialEndsAt.getTime() > now.getTime()
+    );
+  }
+  return false;
+}
+
 export function assertPlanChangeAllowed(input: {
   currentPlanStatus?: OrganizationPlanStatus;
   currentTrialEndsAt?: Date | null;
@@ -231,14 +254,16 @@ export function assertPlanChangeAllowed(input: {
   now?: Date;
 }): void {
   const now = input.now ?? new Date();
-  const isPaidActive =
-    input.currentPlanStatus === 'activo' &&
-    (!input.currentPlanExpiresAt || input.currentPlanExpiresAt.getTime() > now.getTime());
-  const isTrialActive =
-    input.currentPlanStatus === 'prueba' &&
-    Boolean(input.currentTrialEndsAt && input.currentTrialEndsAt.getTime() > now.getTime());
+  const planLocked = isOrganizationPlanLocked(
+    {
+      planStatus: input.currentPlanStatus,
+      planExpiresAt: input.currentPlanExpiresAt ?? null,
+      trialEndsAt: input.currentTrialEndsAt ?? null,
+    },
+    now
+  );
 
-  if (!isPaidActive && !isTrialActive) {
+  if (!planLocked) {
     return;
   }
 
@@ -321,6 +346,23 @@ export function validatePlanConfiguration(input: {
     throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de vencimiento del plan activo es obligatoria.');
   }
 }
+
+export function assertFuturePlanDates(input: {
+  planStatus: OrganizationPlanStatus;
+  trialEndsAt?: Date | null;
+  planExpiresAt?: Date | null;
+  now?: Date;
+}): void {
+  const now = input.now ?? new Date();
+
+  if (input.planStatus === 'prueba' && input.trialEndsAt && input.trialEndsAt.getTime() <= now.getTime()) {
+    throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de fin de prueba debe ser futura.');
+  }
+  if (input.planStatus === 'activo' && input.planExpiresAt && input.planExpiresAt.getTime() <= now.getTime()) {
+    throw new BusinessError('INVALID_PLAN_DATE', 'La fecha de vencimiento del plan activo debe ser futura.');
+  }
+}
+
 
 export function expiredPlanStatus(organization: Organization, now = new Date()): OrganizationPlanStatus | undefined {
   return isPlanExpired(organization, now) ? 'vencido' : undefined;

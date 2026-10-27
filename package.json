@@ -19,6 +19,7 @@
     "backfill:radar": "ts-node scripts/backfill-subscription-radar.ts",
     "backfill:client-name": "ts-node scripts/backfill-subscription-client-name.ts",
     "backfill:billing-periods": "ts-node scripts/backfill-billing-period-fields.ts",
+    "migrate:business-rules": "ts-node scripts/migrate-business-rules.ts",
     "rebuild:stats": "ts-node scripts/rebuild-stats.ts",
     "verify:backfills": "ts-node scripts/verify-backfills.ts",
     "measure:endpoints": "ts-node scripts/measure-endpoints.ts",

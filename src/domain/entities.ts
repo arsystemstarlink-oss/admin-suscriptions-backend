@@ -297,9 +297,11 @@ export interface PushSubscription {
 export type DomainEventType =
   | 'client.created'
   | 'subscription.created'
+  | 'subscription.updated'
   | 'subscription.suspended'
   | 'subscription.reactivated'
   | 'subscription.plan_changed'
+  | 'subscription.periods_regenerated'
   | 'billing_period.overdue'
   | 'billing_period.paid'
   | 'billing_period.generated'

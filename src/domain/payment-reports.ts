@@ -1,27 +1,12 @@
 import { BusinessError } from './entities';
 import { isValidDateString, parseDateOnly } from './business-rules';
+import { normalizeVenezuelanPhoneDigits } from './phone';
+import { validatePaymentMethod } from './payment-methods';
 
-const VALID_REPORT_METHODS = ['CASH', 'TRANSFER', 'USDT', 'CARD', 'OTHER'];
+export { phonesMatch } from './phone';
 
 export function normalizePhoneDigits(value: string): string {
-  const digits = (value || '').replace(/\D/g, '');
-  let national = digits;
-  if (national.startsWith('58') && national.length > 10) {
-    national = national.slice(2);
-  } else if (national.startsWith('0')) {
-    national = national.slice(1);
-  }
-  return national.slice(-11);
-}
-
-export function phonesMatch(a: string, b: string): boolean {
-  const da = normalizePhoneDigits(a);
-  const db = normalizePhoneDigits(b);
-  if (!da || !db) return false;
-  if (da === db) return true;
-  const tail = Math.min(da.length, db.length, 10);
-  if (tail < 7) return false;
-  return da.slice(-tail) === db.slice(-tail);
+  return normalizeVenezuelanPhoneDigits(value);
 }
 
 export function maskPhone(phone: string): string {
@@ -39,9 +24,7 @@ export function maskEmail(email?: string): string | undefined {
 }
 
 export function validateReportPaymentMethod(method: string): void {
-  if (!method || !VALID_REPORT_METHODS.includes(method)) {
-    throw new BusinessError('INVALID_PAYMENT_METHOD', 'Método de pago inválido.');
-  }
+  validatePaymentMethod(method);
 }
 
 export function validateReportPaidAt(paidAt: string, periodStartDate: Date): Date {

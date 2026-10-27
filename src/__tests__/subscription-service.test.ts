@@ -1,6 +1,6 @@
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../domain/subscription-service';
 import { Client, Plan, Subscription, BillingPeriod } from '../domain/entities';
-import { createId, getBillingPeriodRange, isValidBillingDay } from '../domain/business-rules';
+import { createId, getBillingPeriodRange, getNextBillingDayAfter, getNextBillingPeriodEnd, isValidBillingDay } from '../domain/business-rules';
 
 describe('SubscriptionBusinessService', () => {
   let service: SubscriptionBusinessService;
@@ -134,13 +134,22 @@ describe('SubscriptionBusinessService', () => {
       const activationDate = new Date(Date.UTC(2026, 4, 5));
       const historicalPayments: HistoricalPaymentInput[] = [
         {
-          periodLabel: 'Mayo - Junio',
+          periodLabel: 'Mayo - Mayo',
           startDate: new Date(Date.UTC(2026, 4, 5)),
-          endDate: new Date(Date.UTC(2026, 5, 6)),
+          endDate: new Date(Date.UTC(2026, 4, 6)),
           amount: testPlan.price,
-          paidAt: new Date(2026, 5, 5, 10, 30),
+          paidAt: new Date(2026, 4, 5, 10, 30),
           paymentMethod: 'CASH',
           notes: 'Pago en oficina',
+        },
+        {
+          periodLabel: 'Mayo - Junio',
+          startDate: new Date(Date.UTC(2026, 4, 6)),
+          endDate: new Date(Date.UTC(2026, 5, 6)),
+          amount: testPlan.price,
+          paidAt: new Date(2026, 5, 5, 15, 20),
+          paymentMethod: 'TRANSFER',
+          notes: 'Transferencia bancaria',
         },
         {
           periodLabel: 'Junio - Julio',
@@ -166,27 +175,31 @@ describe('SubscriptionBusinessService', () => {
       });
 
       expect(result.subscription.activationDate).toEqual(activationDate);
-      expect(result.billingPeriods.length).toBe(3);
+      expect(result.billingPeriods.length).toBe(4);
 
       expect(result.billingPeriods[0].status).toBe('PAID');
       expect(result.billingPeriods[0].paymentMethod).toBe('CASH');
       expect(result.billingPeriods[0].startDate).toEqual(new Date(Date.UTC(2026, 4, 5)));
-      expect(result.billingPeriods[0].endDate).toEqual(new Date(Date.UTC(2026, 5, 6)));
+      expect(result.billingPeriods[0].endDate).toEqual(new Date(Date.UTC(2026, 4, 6)));
 
       expect(result.billingPeriods[1].status).toBe('PAID');
       expect(result.billingPeriods[1].paymentMethod).toBe('TRANSFER');
-      expect(result.billingPeriods[1].startDate).toEqual(new Date(Date.UTC(2026, 5, 6)));
-      expect(result.billingPeriods[1].endDate).toEqual(new Date(Date.UTC(2026, 6, 6)));
+      expect(result.billingPeriods[1].startDate).toEqual(new Date(Date.UTC(2026, 4, 6)));
+      expect(result.billingPeriods[1].endDate).toEqual(new Date(Date.UTC(2026, 5, 6)));
 
-      expect(result.billingPeriods[2].status).toBe('PENDING');
-      expect(result.billingPeriods[2].startDate).toEqual(new Date(Date.UTC(2026, 6, 6)));
-      expect(result.billingPeriods[2].endDate).toEqual(new Date(Date.UTC(2026, 7, 6)));
+      expect(result.billingPeriods[2].status).toBe('PAID');
+      expect(result.billingPeriods[2].startDate).toEqual(new Date(Date.UTC(2026, 5, 6)));
+      expect(result.billingPeriods[2].endDate).toEqual(new Date(Date.UTC(2026, 6, 6)));
 
-      expect(result.summary.totalPeriods).toBe(3);
-      expect(result.summary.paidPeriods).toBe(2);
+      expect(result.billingPeriods[3].status).toBe('PENDING');
+      expect(result.billingPeriods[3].startDate).toEqual(new Date(Date.UTC(2026, 6, 6)));
+      expect(result.billingPeriods[3].endDate).toEqual(new Date(Date.UTC(2026, 7, 6)));
+
+      expect(result.summary.totalPeriods).toBe(4);
+      expect(result.summary.paidPeriods).toBe(3);
       expect(result.summary.pendingPeriods).toBe(1);
       expect(result.summary.overduePeriods).toBe(0);
-      expect(result.summary.totalPaid).toBe(100);
+      expect(result.summary.totalPaid).toBe(150);
       expect(result.summary.totalPending).toBe(50);
 
       jest.useRealTimers();
@@ -209,12 +222,13 @@ describe('SubscriptionBusinessService', () => {
         activationDate,
       });
 
-      expect(result.billingPeriods.length).toBe(3);
+      expect(result.billingPeriods.length).toBe(4);
       expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
-      expect(result.billingPeriods[2].status).toBe('PENDING');
+      expect(result.billingPeriods[2].status).toBe('OVERDUE');
+      expect(result.billingPeriods[3].status).toBe('PENDING');
 
-      expect(result.summary.overduePeriods).toBe(1);
+      expect(result.summary.overduePeriods).toBe(2);
       expect(result.summary.pendingPeriods).toBe(2);
       expect(result.summary.totalPending).toBe(100);
       expect(result.subscription.status).toBe('ACTIVE');
@@ -382,9 +396,80 @@ describe('SubscriptionBusinessService', () => {
             },
           ],
         });
-      }).toThrow('El pago 0 no puede usar INITIAL_PAYMENT.');
+      }).toThrow('Método de pago inválido.');
 
       jest.useRealTimers();
+    });
+
+    it('debería rechazar un pago histórico sin período coincidente', () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
+
+      expect(() => {
+        service.createSubscription({
+          clientId: testClient.id,
+          plan: testPlan,
+          kitNumber: 'KIT-001',
+          billingDay: 6,
+          maxOverduePeriods: 2,
+          registrationDate: new Date(),
+          activationDate: new Date(Date.UTC(2026, 4, 5)),
+          historicalPayments: [
+            {
+              periodLabel: 'Mayo - Junio',
+              startDate: new Date(Date.UTC(2026, 4, 10)),
+              endDate: new Date(Date.UTC(2026, 5, 10)),
+              amount: testPlan.price,
+              paidAt: new Date(Date.UTC(2026, 5, 1)),
+              paymentMethod: 'CASH',
+            },
+          ],
+        });
+      }).toThrow('no coincide con un único período');
+
+      jest.useRealTimers();
+    });
+
+    it('debería rechazar un pago histórico cuya etiqueta o fin no coincide con el ciclo', () => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 30)));
+
+      expect(() => {
+        service.createSubscription({
+          clientId: testClient.id,
+          plan: testPlan,
+          kitNumber: 'KIT-001',
+          billingDay: 6,
+          maxOverduePeriods: 2,
+          registrationDate: new Date(),
+          activationDate: new Date(Date.UTC(2026, 4, 5)),
+          historicalPayments: [
+            {
+              periodLabel: 'Mayo - Junio',
+              startDate: new Date(Date.UTC(2026, 4, 5)),
+              endDate: new Date(Date.UTC(2026, 4, 6)),
+              amount: testPlan.price,
+              paidAt: new Date(Date.UTC(2026, 4, 6)),
+              paymentMethod: 'CASH',
+            },
+          ],
+        });
+      }).toThrow('no coincide con el período');
+
+      jest.useRealTimers();
+    });
+
+    it('debería rechazar un máximo de períodos vencidos fuera de 1..3', () => {
+      expect(() => {
+        service.createSubscription({
+          clientId: testClient.id,
+          plan: testPlan,
+          kitNumber: 'KIT-001',
+          billingDay: 6,
+          maxOverduePeriods: 4,
+          registrationDate: new Date(),
+        });
+      }).toThrow('entre 1 y 3');
     });
 
     it('debería rechazar períodos históricos superpuestos', () => {
@@ -489,10 +574,11 @@ describe('SubscriptionBusinessService', () => {
       });
 
       expect(result.subscription.status).toBe('ACTIVE');
-      expect(result.billingPeriods.length).toBe(3);
+      expect(result.billingPeriods.length).toBe(4);
       expect(result.billingPeriods[0].status).toBe('PENDING');
       expect(result.billingPeriods[1].status).toBe('OVERDUE');
-      expect(result.billingPeriods[2].status).toBe('PENDING');
+      expect(result.billingPeriods[2].status).toBe('OVERDUE');
+      expect(result.billingPeriods[3].status).toBe('PENDING');
 
       jest.useRealTimers();
     });
@@ -1347,6 +1433,19 @@ describe('Business Rules', () => {
     it('debería rechazar valores no enteros', () => {
       expect(isValidBillingDay(5.5)).toBe(false);
       expect(isValidBillingDay(NaN)).toBe(false);
+    });
+  });
+
+  describe('billing cycle anchoring', () => {
+    it('acorta el primer periodo al siguiente dia de corte', () => {
+      expect(getNextBillingDayAfter(new Date(Date.UTC(2026, 4, 5)), 6)).toEqual(new Date(Date.UTC(2026, 4, 6)));
+      expect(getNextBillingDayAfter(new Date(Date.UTC(2026, 4, 25)), 6)).toEqual(new Date(Date.UTC(2026, 5, 6)));
+      expect(getNextBillingDayAfter(new Date(Date.UTC(2026, 4, 6)), 6)).toEqual(new Date(Date.UTC(2026, 5, 6)));
+    });
+
+    it('encadena siempre al dia de corte', () => {
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 0, 31)), 28)).toEqual(new Date(Date.UTC(2026, 1, 28)));
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 1, 28)), 28)).toEqual(new Date(Date.UTC(2026, 2, 28)));
     });
   });
 

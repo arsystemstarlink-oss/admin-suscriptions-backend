@@ -9,6 +9,7 @@ import { CreateClientDto, UpdateClientDto } from '../dto';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni, buildClientName, buildClientSortName } from '../../domain/business-rules';
+import { normalizePhoneToE164 } from '../../domain/phone';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
 
 const router = Router();
@@ -105,7 +106,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       organizationId,
       firstName: dto.firstName,
       lastName: dto.lastName,
-      phone: dto.phone,
+      phone: normalizePhoneToE164(dto.phone),
       dni,
       email: dto.email,
       address: dto.address,
@@ -272,7 +273,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     let updated: Client = { ...existing };
     if (dto.firstName !== undefined) updated.firstName = dto.firstName;
     if (dto.lastName !== undefined) updated.lastName = dto.lastName;
-    if (dto.phone !== undefined) updated.phone = dto.phone;
+    if (dto.phone !== undefined) updated.phone = normalizePhoneToE164(dto.phone);
     if (dto.email !== undefined) updated.email = dto.email;
     if (dto.address !== undefined) updated.address = dto.address;
     if (dto.notes !== undefined) updated.notes = dto.notes;

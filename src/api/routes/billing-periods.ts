@@ -13,6 +13,7 @@ import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
+import { validatePaymentMethod } from '../../domain/payment-methods';
 import { getFirestore } from '../../infrastructure/firebase';
 import { stripUndefined } from '../../infrastructure/serialization';
 
@@ -197,6 +198,10 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
     }
 
+    if (dto.paymentMethod !== undefined) {
+      validatePaymentMethod(dto.paymentMethod);
+    }
+
     let paidAt: Date | undefined;
     if (dto.paidAt !== undefined) {
       if (!isValidDateString(dto.paidAt)) {
@@ -258,6 +263,8 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
     if (!dto.paymentMethod || dto.amount === undefined || !dto.paidAt) {
       throw new BusinessError('INVALID_DATA', 'Método de pago, monto y fecha son obligatorios.');
     }
+
+    validatePaymentMethod(dto.paymentMethod);
 
     if (!isValidDateString(dto.paidAt)) {
       throw new BusinessError('INVALID_DATE_FORMAT', `Fecha de pago inválida: ${dto.paidAt}. Use formato YYYY-MM-DD.`);

@@ -5,6 +5,7 @@ import {
   assertPrepaidMonthsLimit,
   getBusinessPlanCatalog,
   getOrganizationBillingDay,
+  isOrganizationPlanLocked,
   isPlanExpired,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
@@ -12,6 +13,7 @@ import {
   validateOrganizationAdminCount,
   validateOrganizationAdminLimit,
   validatePlanConfiguration,
+  assertFuturePlanDates,
 } from '../domain/business-plan';
 import { Organization } from '../domain/entities';
 
@@ -170,6 +172,34 @@ describe('business plan rules', () => {
     ).toThrow('vencimiento del plan activo es obligatoria');
   });
 
+  it('rejects past dates on write validation and accepts them on read-path validation', () => {
+    expect(() =>
+      assertFuturePlanDates({
+        planStatus: 'activo',
+        planExpiresAt: new Date('2026-10-01T00:00:00.000Z'),
+        now,
+      })
+    ).toThrow('debe ser futura');
+
+    expect(() =>
+      assertFuturePlanDates({
+        planStatus: 'prueba',
+        trialEndsAt: new Date('2026-10-01T00:00:00.000Z'),
+        now,
+      })
+    ).toThrow('debe ser futura');
+
+    expect(() =>
+      validatePlanConfiguration({
+        plan: 'basico',
+        clientLimit: 30,
+        planStatus: 'activo',
+        planExpiresAt: new Date('2026-10-01T00:00:00.000Z'),
+      })
+    ).not.toThrow();
+  });
+
+
   it('evaluates trial and paid expiration using UTC instants', () => {
     expect(
       isPlanExpired(
@@ -188,6 +218,45 @@ describe('business plan rules', () => {
         now
       )
     ).toBe(false);
+  });
+
+  it('locks changes only while the paid or trial plan is still valid', () => {
+    expect(isOrganizationPlanLocked(organization(), now)).toBe(true);
+    expect(
+      isOrganizationPlanLocked(
+        organization({ planExpiresAt: new Date('2026-10-22T11:59:59.999Z') }),
+        now
+      )
+    ).toBe(false);
+    expect(
+      isOrganizationPlanLocked(
+        organization({
+          planStatus: 'prueba',
+          trialEndsAt: new Date('2026-10-23T12:00:00.000Z'),
+          planExpiresAt: null,
+        }),
+        now
+      )
+    ).toBe(true);
+    expect(
+      isOrganizationPlanLocked(
+        organization({
+          planStatus: 'prueba',
+          trialEndsAt: new Date('2026-10-22T11:59:59.999Z'),
+          planExpiresAt: null,
+        }),
+        now
+      )
+    ).toBe(false);
+    expect(
+      isOrganizationPlanLocked(
+        organization({ planStatus: 'suspendido', planExpiresAt: null }),
+        now
+      )
+    ).toBe(false);
+    expect(
+      isOrganizationPlanLocked(organization({ planExpiresAt: null }), now)
+    ).toBe(true);
   });
 
   it('derives the billing day from the registration date when it is not stored', () => {

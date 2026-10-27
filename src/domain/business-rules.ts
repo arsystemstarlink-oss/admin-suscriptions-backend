@@ -19,6 +19,17 @@ export function isValidBillingDay(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 28;
 }
 
+export const MIN_OVERDUE_PERIODS = 1;
+export const MAX_OVERDUE_PERIODS = 3;
+
+export function isValidMaxOverduePeriods(value: number): boolean {
+  return (
+    Number.isInteger(value) &&
+    value >= MIN_OVERDUE_PERIODS &&
+    value <= MAX_OVERDUE_PERIODS
+  );
+}
+
 export function isValidSubscriptionStatus(value: string): value is SubscriptionStatus {
   return value === 'ACTIVE' || value === 'SUSPENDED';
 }
@@ -104,6 +115,33 @@ export function getBillingPeriodRange(referenceDate: Date, billingDay: number) {
 
 export function isDateAfter(date: Date, compareTo: Date): boolean {
   return date.getTime() > compareTo.getTime();
+}
+
+/**
+ * Primer día de corte estrictamente posterior a la fecha de referencia.
+ * Se usa para acortar el primer período de una suscripción retroactiva.
+ */
+export function getNextBillingDayAfter(referenceDate: Date, billingDay: number): Date {
+  const year = referenceDate.getUTCFullYear();
+  const month = referenceDate.getUTCMonth();
+  const day = referenceDate.getUTCDate();
+
+  const sameMonth = Date.UTC(year, month, billingDay);
+  if (sameMonth <= Date.UTC(year, month, day)) {
+    return new Date(Date.UTC(year, month + 1, billingDay));
+  }
+
+  return new Date(sameMonth);
+}
+
+/**
+ * Fin de un ciclo mensual anclado al día de corte. Se usa en todos los
+ * encadenamientos (siguiente período, adelantos y períodos retroactivos).
+ */
+export function getNextBillingPeriodEnd(periodStart: Date, billingDay: number): Date {
+  return new Date(
+    Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, billingDay)
+  );
 }
 
 export function areSameDay(dateA: Date, dateB: Date): boolean {

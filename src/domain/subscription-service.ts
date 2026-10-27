@@ -11,11 +11,15 @@ import {
   buildPeriodLabel,
   createId,
   getBillingPeriodRange,
+  getNextBillingDayAfter,
+  getNextBillingPeriodEnd,
   isDateAfter,
   isValidBillingDay,
   isValidBillingPeriodStatus,
+  isValidMaxOverduePeriods,
   isValidSubscriptionStatus,
 } from './business-rules';
+import { validatePaymentMethod } from './payment-methods';
 
 export interface HistoricalPaymentInput {
   periodLabel: string;
@@ -63,6 +67,13 @@ export class SubscriptionBusinessService {
       throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 28.');
     }
 
+    if (!isValidMaxOverduePeriods(maxOverduePeriods)) {
+      throw new BusinessError(
+        'INVALID_MAX_OVERDUE_PERIODS',
+        'El máximo de períodos vencidos debe ser un entero entre 1 y 3.'
+      );
+    }
+
     const subscription: Subscription = {
       id: createId(),
       organizationId,
@@ -72,7 +83,7 @@ export class SubscriptionBusinessService {
       accountNumber,
       billingDay,
       status: 'ACTIVE',
-      maxOverduePeriods: maxOverduePeriods < 1 ? 1 : maxOverduePeriods,
+      maxOverduePeriods,
       activationDate,
       createdAt: new Date(),
     };
@@ -151,9 +162,14 @@ export class SubscriptionBusinessService {
         throw new BusinessError('INVALID_AMOUNT', `El pago ${index} tiene monto diferente al precio del plan.`);
       }
 
-      if (payment.paymentMethod === 'INITIAL_PAYMENT') {
-        throw new BusinessError('INVALID_PAYMENT_METHOD', `El pago ${index} no puede usar INITIAL_PAYMENT.`);
+      if (!payment.periodLabel || !payment.periodLabel.trim()) {
+        throw new BusinessError(
+          'INVALID_HISTORICAL_PAYMENT_PERIOD',
+          `El pago ${index} debe indicar la etiqueta del período.`
+        );
       }
+
+      validatePaymentMethod(payment.paymentMethod);
     });
 
     const sorted = [...historicalPayments].sort(
@@ -185,51 +201,15 @@ export class SubscriptionBusinessService {
     maxOverduePeriods: number,
     now: Date
   ): BillingPeriod[] {
-    const periods: BillingPeriod[] = [];
-    let overdueGenerated = 0;
-
-    const nextMonth = activationDate.getUTCMonth() + 1;
-    const nextMonthYear = nextMonth > 11 ? activationDate.getUTCFullYear() + 1 : activationDate.getUTCFullYear();
-    const nextMonthNormalized = nextMonth > 11 ? 0 : nextMonth;
-    const firstPeriodEnd = new Date(Date.UTC(nextMonthYear, nextMonthNormalized, billingDay));
-
+    const candidates: BillingPeriod[] = [];
     let periodStart = new Date(activationDate);
-    let isFirstPeriod = true;
 
-    while (true) {
-      let periodEnd: Date;
+    while (candidates.length < 120) {
+      const periodEnd = candidates.length === 0
+        ? getNextBillingDayAfter(periodStart, billingDay)
+        : getNextBillingPeriodEnd(periodStart, billingDay);
 
-      const isActivationMonth = isFirstPeriod;
-      if (isFirstPeriod) {
-        periodEnd = firstPeriodEnd;
-        isFirstPeriod = false;
-      } else {
-        periodEnd = new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, periodStart.getUTCDate()));
-      }
-
-      const matchingPayment = historicalPayments.find(
-        (p) => areSameDay(p.startDate, periodStart)
-      );
-
-      let status: BillingPeriodStatus;
-      if (matchingPayment) {
-        status = 'PAID';
-      } else if (isActivationMonth) {
-        status = 'PENDING';
-      } else if (isDateAfter(now, periodEnd) || areSameDay(now, periodEnd)) {
-        if (overdueGenerated >= maxOverduePeriods) {
-          break;
-        }
-        status = 'OVERDUE';
-        overdueGenerated++;
-      } else {
-        if (overdueGenerated >= maxOverduePeriods) {
-          break;
-        }
-        status = 'PENDING';
-      }
-
-      periods.push({
+      candidates.push({
         id: createId(),
         organizationId,
         subscriptionId,
@@ -237,10 +217,7 @@ export class SubscriptionBusinessService {
         startDate: periodStart,
         endDate: periodEnd,
         amount: planPrice,
-        status,
-        paidAt: matchingPayment ? matchingPayment.paidAt : undefined,
-        paymentMethod: matchingPayment?.paymentMethod,
-        notes: matchingPayment?.notes,
+        status: 'PENDING',
         createdAt: new Date(),
       });
 
@@ -249,11 +226,91 @@ export class SubscriptionBusinessService {
       }
 
       periodStart = periodEnd;
-
-      if (periods.length > 120) break;
     }
 
-    return periods;
+    const paymentsByPeriod = new Map<number, HistoricalPaymentInput>();
+
+    historicalPayments.forEach((payment, paymentIndex) => {
+      const matches = candidates
+        .map((period, index) => ({ period, index }))
+        .filter(
+          ({ period }) =>
+            payment.startDate.getTime() < period.endDate.getTime() &&
+            payment.endDate.getTime() > period.startDate.getTime()
+        );
+
+      if (matches.length !== 1) {
+        throw new BusinessError(
+          'INVALID_HISTORICAL_PAYMENT_PERIOD',
+          `El pago ${paymentIndex} no coincide con un único período del ciclo de facturación.`
+        );
+      }
+
+      const { period, index } = matches[0];
+
+      if (
+        !areSameDay(payment.endDate, period.endDate) ||
+        payment.periodLabel.trim() !== period.periodLabel
+      ) {
+        throw new BusinessError(
+          'INVALID_HISTORICAL_PAYMENT_PERIOD',
+          `El pago ${paymentIndex} no coincide con el período ${period.periodLabel} (${period.endDate.toISOString().slice(0, 10)}).`
+        );
+      }
+
+      if (paymentsByPeriod.has(index)) {
+        throw new BusinessError(
+          'INVALID_HISTORICAL_PAYMENT_PERIOD',
+          `El período ${period.periodLabel} tiene más de un pago histórico.`
+        );
+      }
+
+      paymentsByPeriod.set(index, payment);
+    });
+
+    let cutoffIndex = candidates.length - 1;
+    let overdueGenerated = 0;
+    for (let index = 0; index < candidates.length; index++) {
+      if (paymentsByPeriod.has(index)) continue;
+
+      const period = candidates[index];
+      const isActivationPeriod = index === 0;
+      if (isActivationPeriod) continue;
+
+      const periodCompleted = isDateAfter(now, period.endDate) || areSameDay(now, period.endDate);
+      if (!periodCompleted) continue;
+
+      overdueGenerated++;
+      if (overdueGenerated >= maxOverduePeriods) {
+        cutoffIndex = index;
+        break;
+      }
+    }
+
+    const lastPaidIndex = paymentsByPeriod.size > 0
+      ? Math.max(...paymentsByPeriod.keys())
+      : -1;
+    cutoffIndex = Math.max(cutoffIndex, lastPaidIndex, 0);
+
+    return candidates.slice(0, cutoffIndex + 1).map((period, index) => {
+      const payment = paymentsByPeriod.get(index);
+      if (payment) {
+        return {
+          ...period,
+          status: 'PAID' as BillingPeriodStatus,
+          paidAt: payment.paidAt,
+          paymentMethod: payment.paymentMethod,
+          notes: payment.notes,
+        };
+      }
+
+      if (index === 0) {
+        return period;
+      }
+
+      const periodCompleted = isDateAfter(now, period.endDate) || areSameDay(now, period.endDate);
+      return periodCompleted ? { ...period, status: 'OVERDUE' as BillingPeriodStatus } : period;
+    });
   }
 
   private calculateSummary(periods: BillingPeriod[]): SubscriptionSummary {
@@ -303,7 +360,7 @@ export class SubscriptionBusinessService {
     }
 
     const nextStartDate = new Date(currentPeriod.endDate);
-    const nextEndDate = new Date(Date.UTC(nextStartDate.getUTCFullYear(), nextStartDate.getUTCMonth() + 1, nextStartDate.getUTCDate()));
+    const nextEndDate = getNextBillingPeriodEnd(nextStartDate, subscription.billingDay);
 
     return {
       id: createId(),
@@ -347,7 +404,7 @@ export class SubscriptionBusinessService {
     }
 
     const nextStartDate = new Date(anchorPeriod.endDate);
-    const nextEndDate = new Date(Date.UTC(nextStartDate.getUTCFullYear(), nextStartDate.getUTCMonth() + 1, nextStartDate.getUTCDate()));
+    const nextEndDate = getNextBillingPeriodEnd(nextStartDate, subscription.billingDay);
     const now = new Date();
 
     return {
@@ -413,6 +470,8 @@ export class SubscriptionBusinessService {
       throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto pagado debe ser igual al monto del período.');
     }
 
+    validatePaymentMethod(paymentMethod);
+
     return {
       ...billingPeriod,
       status: 'PAID',
@@ -441,6 +500,10 @@ export class SubscriptionBusinessService {
 
     if (paymentMethod !== undefined && !paymentMethod.trim()) {
       throw new BusinessError('INVALID_DATA', 'El método de pago no puede estar vacío.');
+    }
+
+    if (paymentMethod !== undefined) {
+      validatePaymentMethod(paymentMethod);
     }
 
     return {
@@ -504,6 +567,13 @@ export class SubscriptionBusinessService {
 
     if (!isValidBillingDay(subscription.billingDay)) {
       throw new BusinessError('INVALID_SUBSCRIPTION_BILLING_DAY', 'El día de corte de la suscripción es inválido.');
+    }
+
+    if (!isValidMaxOverduePeriods(subscription.maxOverduePeriods)) {
+      throw new BusinessError(
+        'INVALID_MAX_OVERDUE_PERIODS',
+        'El máximo de períodos vencidos debe ser un entero entre 1 y 3.'
+      );
     }
 
     if (!isValidSubscriptionStatus(subscription.status)) {

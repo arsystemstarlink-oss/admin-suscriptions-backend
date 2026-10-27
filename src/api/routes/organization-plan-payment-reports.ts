@@ -12,10 +12,14 @@ import { isSuperAdmin } from '../../domain/auth-context';
 import { createId } from '../../domain/business-rules';
 import {
   CUSTOM_PLAN_MIN_CLIENTS,
+  MAX_PREPAID_MONTHS,
+  addOrganizationBillingMonths,
   assertPlanChangeAllowed,
   assertPrepaidMonthsLimit,
   getOrganizationBillingDay,
   isBusinessPlanKey,
+  isOrganizationPlanChange,
+  isOrganizationPlanLocked,
   isOrganizationPlanPaymentMethod,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
@@ -23,26 +27,9 @@ import {
 } from '../../domain/business-plan';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { requireSuperAdmin } from '../middleware/auth';
+import { parseBusinessPaymentDate } from '../../domain/payment-date';
 
 const router = Router();
-
-function parsePaymentDate(value: unknown): Date {
-  if (typeof value !== 'string' || value.trim() === '') {
-    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago es obligatoria.');
-  }
-  const parsed = new Date(
-    /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00.000Z` : value
-  );
-  if (Number.isNaN(parsed.getTime())) {
-    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago es inválida.');
-  }
-  const now = new Date();
-  const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
-  if (parsed.getTime() >= tomorrow) {
-    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago no puede ser futura.');
-  }
-  return parsed;
-}
 
 function optionalText(value: unknown, maxLength: number): string | undefined {
   if (value === undefined || value === null) return undefined;
@@ -90,7 +77,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       );
     }
 
-    const paidAt = parsePaymentDate(req.body?.paidAt);
+    const paidAt = parseBusinessPaymentDate(req.body?.paidAt);
     const clientLimit =
       plan === 'a-medida' && req.body?.clientLimit === undefined
         ? Math.max(
@@ -172,6 +159,84 @@ router.get('/mine', async (req: Request, res: Response, next: NextFunction) => {
     const reports = await organizationPlanPaymentReportRepository.listByOrganization(organizationId);
     reports.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
     res.json({ reports: reports.map((report) => serializeReport(report)) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/quote', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const auth = getAuth(req);
+    const organizationId = isSuperAdmin(auth)
+      ? (req.query.organizationId as string | undefined)
+      : requireOrganizationId(req);
+    if (!organizationId) {
+      throw new BusinessError('TENANT_REQUIRED', 'Indica la organización de la cotización.');
+    }
+
+    const organization = await organizationRepository.getById(organizationId);
+    if (!organization) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+    }
+
+    const plan = req.query.plan ?? organization.plan ?? 'basico';
+    if (!isBusinessPlanKey(plan)) {
+      throw new BusinessError('INVALID_DATA', 'El plan indicado no es válido.');
+    }
+
+    const now = new Date();
+    const paidAt = req.query.paidAt
+      ? parseBusinessPaymentDate(req.query.paidAt, now, { allowFuture: true })
+      : now;
+    const billingDay = getOrganizationBillingDay(organization, now);
+    const maxPlanExpiresAt = addOrganizationBillingMonths(now, MAX_PREPAID_MONTHS, billingDay);
+    const planLocked = isOrganizationPlanLocked(organization, now);
+    const planChanged = isOrganizationPlanChange({
+      currentPlan: organization.plan,
+      targetPlan: plan,
+      planStatus: organization.planStatus,
+    });
+    const currentExpiry =
+      organization.planStatus === 'prueba'
+        ? organization.trialEndsAt
+        : organization.planExpiresAt;
+
+    const expirationOptions = Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => {
+      const months = index + 1;
+      const newPlanExpiresAt = resolveOrganizationPlanExpiration({
+        paidAt,
+        months,
+        billingDay,
+        planStatus: organization.planStatus,
+        trialEndsAt: organization.trialEndsAt,
+        planExpiresAt: organization.planExpiresAt,
+        currentPlan: organization.plan,
+        targetPlan: plan,
+        now,
+      });
+
+      return {
+        months,
+        newPlanExpiresAt: newPlanExpiresAt.toISOString(),
+        exceedsPrepaidLimit: newPlanExpiresAt.getTime() > maxPlanExpiresAt.getTime(),
+        amount: resolveFixedPlanPaymentAmount(plan, months),
+      };
+    });
+
+    res.json({
+      quote: {
+        organizationId,
+        plan,
+        billingDay,
+        planLocked,
+        planChanged,
+        extendsCurrent: planLocked && !planChanged && Boolean(currentExpiry),
+        currentExpiry: currentExpiry ? currentExpiry.toISOString() : null,
+        paidAt: paidAt.toISOString(),
+        maxPlanExpiresAt: maxPlanExpiresAt.toISOString(),
+        expirations: expirationOptions,
+      },
+    });
   } catch (err) {
     next(err);
   }

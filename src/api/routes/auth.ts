@@ -14,6 +14,7 @@ import { getAuth } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 import { toOrganizationDto } from '../dto/organization';
 import { requireWritablePlan } from '../middleware/organization-plan-access';
+import { normalizePhoneToE164 } from '../../domain/phone';
 
 const router = Router();
 
@@ -141,24 +142,7 @@ async function validateAndCreateUser(input: {
   return user;
 }
 
-export function normalizePhoneToE164(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  let national = digits;
-
-  if (national.startsWith('58') && national.length > 11) {
-    national = national.slice(2);
-  } else if (national.startsWith('0')) {
-    national = national.slice(1);
-  }
-
-  national = national.slice(0, 11);
-
-  if (national.length < 10) {
-    throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
-  }
-
-  return `+58${national}`;
-}
+export { normalizePhoneToE164 };
 
 async function createRefreshSession(
   user: User,
