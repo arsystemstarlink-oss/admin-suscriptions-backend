@@ -33,7 +33,11 @@ import {
   PaymentReport,
   PlanQuoteRequest,
 } from '../domain/entities';
-import { isPlanExpired, validatePlanConfiguration } from '../domain/business-plan';
+import {
+  isPlanExpired,
+  resolveEffectiveClientLimit,
+  validatePlanConfiguration,
+} from '../domain/business-plan';
 
 function toDate(value: any): Date | undefined {
   if (value === undefined || value === null) return undefined;
@@ -431,10 +435,17 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
           message: 'El plan venció. La organización está en modo de solo lectura.',
         };
       }
+      // El tope efectivo se deriva del plan: un valor almacenado desactualizado no
+      // debe bloquear altas cuando el plan vigente concede más espacio.
+      const clientLimit = resolveEffectiveClientLimit(
+        organization.plan,
+        organization.clientLimit
+      );
       if (
         !organization.plan ||
         !organization.planStatus ||
-        !Number.isInteger(organization.clientLimit) ||
+        clientLimit === null ||
+        !Number.isInteger(clientLimit) ||
         !Number.isInteger(organization.clientCount) ||
         organization.clientCount! < 0
       ) {
@@ -446,7 +457,7 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
       try {
         validatePlanConfiguration({
           plan: organization.plan,
-          clientLimit: organization.clientLimit!,
+          clientLimit,
           planStatus: organization.planStatus,
           trialEndsAt: organization.trialEndsAt,
           planExpiresAt: organization.planExpiresAt,
@@ -463,13 +474,13 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
           message: 'La organización está en modo de solo lectura.',
         };
       }
-      if (organization.clientCount! >= organization.clientLimit!) {
+      if (organization.clientCount! >= clientLimit) {
         return {
           code: 'CLIENT_LIMIT_REACHED',
           message: 'La organización alcanzó el límite de clientes de su plan.',
           details: {
             clientCount: organization.clientCount,
-            clientLimit: organization.clientLimit,
+            clientLimit,
           },
         };
       }

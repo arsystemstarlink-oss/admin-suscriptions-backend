@@ -22,7 +22,7 @@ const activeOrganization: Organization = {
   clientLimit: 30,
   planStatus: 'activo',
   trialEndsAt: null,
-  planExpiresAt: new Date('2026-11-01T00:00:00.000Z'),
+  planExpiresAt: new Date('2027-11-01T00:00:00.000Z'),
   clientCount: 2,
   createdAt: new Date('2026-01-01T00:00:00.000Z'),
 };
@@ -58,6 +58,20 @@ describe('requireWritablePlan', () => {
     jest.spyOn(organizationRepository, 'refreshExpiredStatus').mockResolvedValue(activeOrganization);
 
     const next = await invoke('PUT');
+    expect(next).toHaveBeenCalledWith();
+  });
+
+  it('allows writes when the stored client limit is stale for a fixed plan', async () => {
+    const legacyPro = {
+      ...activeOrganization,
+      plan: 'pro' as const,
+      clientLimit: 30,
+      clientCount: 1,
+    };
+    jest.spyOn(organizationRepository, 'getById').mockResolvedValue(legacyPro);
+    jest.spyOn(organizationRepository, 'refreshExpiredStatus').mockResolvedValue(legacyPro);
+
+    const next = await invoke('POST');
     expect(next).toHaveBeenCalledWith();
   });
 
