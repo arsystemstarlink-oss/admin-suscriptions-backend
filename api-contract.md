@@ -1090,7 +1090,7 @@ coleccion completa de conversaciones solo para contar).
 **GET /dashboard/summary** → Response 200 → `DashboardSummary` (1 lectura a `organizationStats`; `generatedAt` = `updatedAt` del doc; `monthlyIncome` cortado en mes calendario UTC)
 
 **GET /dashboard/alerts** → Response 200 → `DashboardAlerts`
-- `expiringSoon`: ciclos (períodos) de suscripciones `ACTIVE` con `endDate` en `[hoy UTC, hoy+7d UTC]`, sin filtrar por estado: incluye `PENDING` y `PAID` (pagados en fecha). Un ciclo por suscripción (el que vence primero), `orderBy endDate asc`, `limit 50` + `hasMore`. Los ciclos futuros adelantados quedan fuera por la ventana.
+- `expiringSoon`: ciclos `PENDING` de suscripciones `ACTIVE` con `endDate` en `[hoy UTC, hoy+7d UTC]`. Los ciclos `PAID` (incluidos los pagados por adelantado) no aparecen porque ya no son cobros pendientes. Un ciclo por suscripción (el que vence primero), `orderBy endDate asc`, `limit 50` + `hasMore`.
 - `overdueDebt.items`: períodos `OVERDUE` de suscripciones `ACTIVE`, `orderBy endDate asc`, `limit 100` + `hasMore`. `overdue.*` es el resumen agregado para el contrato legacy.
 - `topDebtors`: top 5 por `overdueCount desc, oldestOverdueEnd asc`, solo `ACTIVE`.
 - Requiere `organizationId` efectivo (admin: su org; super-admin: `?organizationId=org_X`), si no `403 TENANT_REQUIRED`.
