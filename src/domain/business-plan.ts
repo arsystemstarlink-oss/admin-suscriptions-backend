@@ -277,6 +277,86 @@ export function addOrganizationBillingMonths(
   return new Date(Date.UTC(year, month, Math.min(day, lastDay), 23, 59, 59, 999));
 }
 
+/**
+ * Fecha desde la que corren los meses de un pago: el fin del plazo o de la prueba vigentes
+ * o, si no hay ninguno, el día en que vuelve a activarse.
+ */
+function resolvePlanPaymentBase(input: {
+  paidAt: Date;
+  planStatus?: OrganizationPlanStatus;
+  trialEndsAt?: Date | null;
+  planExpiresAt?: Date | null;
+  now: Date;
+}): { base: Date; term: 'paid' | 'trial' | 'none' } {
+  const { now } = input;
+  if (
+    input.planStatus === 'activo' &&
+    input.planExpiresAt &&
+    input.planExpiresAt.getTime() > now.getTime()
+  ) {
+    return { base: input.planExpiresAt, term: 'paid' };
+  }
+  if (
+    input.planStatus === 'prueba' &&
+    input.trialEndsAt &&
+    input.trialEndsAt.getTime() > now.getTime()
+  ) {
+    return { base: input.trialEndsAt, term: 'trial' };
+  }
+  return {
+    base: new Date(Math.max(input.paidAt.getTime(), now.getTime())),
+    term: 'none',
+  };
+}
+
+/**
+ * Día de corte que rige un pago, para que un mes pagado cubra un mes de servicio. Sin plazo
+ * vigente el ciclo empieza el día del pago y, durante la prueba, el día en que esta termina:
+ * conservar el corte anterior dejaría un primer ciclo de solo días. El pago hecho al darse de
+ * alta (`signupPayment`) conserva el corte del alta: su mes ya corre desde ese día.
+ */
+export function resolvePlanPaymentBillingDay(input: {
+  paidAt: Date;
+  organization: Pick<
+    Organization,
+    'billingDay' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt' | 'createdAt'
+  >;
+  signupPayment?: boolean;
+  now?: Date;
+}): number {
+  const now = input.now ?? new Date();
+  const { base, term } = resolvePlanPaymentBase({
+    paidAt: input.paidAt,
+    planStatus: input.organization.planStatus,
+    trialEndsAt: input.organization.trialEndsAt,
+    planExpiresAt: input.organization.planExpiresAt,
+    now,
+  });
+  if (term === 'paid' || (term === 'trial' && input.signupPayment)) {
+    return getOrganizationBillingDay(input.organization, now);
+  }
+  return normalizeOrganizationBillingDay(base.getUTCDate());
+}
+
+/**
+ * Fecha desde la que se miden los 12 meses de prepago. Durante la prueba cuenta desde su
+ * fin, porque los meses pagados empiezan ahí; así se pueden prepagar 12 meses completos.
+ */
+export function resolvePrepaidLimitStart(input: {
+  organization: Pick<Organization, 'planStatus' | 'trialEndsAt'>;
+  signupPayment?: boolean;
+  now?: Date;
+}): Date {
+  const now = input.now ?? new Date();
+  const { planStatus, trialEndsAt } = input.organization;
+  return planStatus === 'prueba' &&
+    !input.signupPayment &&
+    trialEndsAt &&
+    trialEndsAt.getTime() > now.getTime()
+    ? trialEndsAt
+    : now;
+}
+
 export function resolveOrganizationPlanExpiration(input: {
   paidAt: Date;
   months: number;
@@ -299,18 +379,7 @@ export function resolveOrganizationPlanExpiration(input: {
     return input.planExpiresAt!;
   }
 
-  const paidActive =
-    input.planStatus === 'activo' &&
-    Boolean(input.planExpiresAt && input.planExpiresAt.getTime() > now.getTime());
-  const trialActive =
-    input.planStatus === 'prueba' &&
-    Boolean(input.trialEndsAt && input.trialEndsAt.getTime() > now.getTime());
-
-  const base = paidActive
-    ? input.planExpiresAt!
-    : trialActive
-      ? input.trialEndsAt!
-      : new Date(Math.max(input.paidAt.getTime(), now.getTime()));
+  const { base } = resolvePlanPaymentBase({ ...input, now });
 
   return addOrganizationBillingMonths(base, input.months, input.billingDay);
 }

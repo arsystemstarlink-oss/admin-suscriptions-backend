@@ -76,6 +76,8 @@ export interface OrganizationPlanPaymentReport {
   clientLimit?: number;
   reference?: string;
   notes?: string;
+  /** Pago hecho al darse de alta: su mes corre desde el alta, no desde el fin de la prueba. */
+  signupPayment?: boolean;
   status: OrganizationPlanPaymentReportStatus;
   createdAt: Date;
   createdByUserId: string;

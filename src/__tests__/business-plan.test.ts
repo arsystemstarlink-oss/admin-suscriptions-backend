@@ -16,6 +16,8 @@ import {
   resolveOrganizationPlanExpiration,
   resolveOrganizationPlanPaymentAmount,
   resolvePlanChangeDifference,
+  resolvePlanPaymentBillingDay,
+  resolvePrepaidLimitStart,
   resolveOrganizationAccessStatus,
   resolveOrganizationPlanMonths,
   validateOrganizationAdminCount,
@@ -461,6 +463,162 @@ describe('business plan rules', () => {
         now: new Date('2026-10-25T12:00:00.000Z'),
       }).toISOString()
     ).toBe('2027-11-20T23:59:59.999Z');
+  });
+
+  describe('payment during an active trial', () => {
+    // Alta el 24 de octubre: la prueba de 14 días termina el 7 de noviembre.
+    const now = new Date('2026-10-25T12:00:00.000Z');
+    const trial = {
+      billingDay: 24,
+      planStatus: 'prueba' as const,
+      trialEndsAt: new Date('2026-11-07T12:00:00.000Z'),
+      planExpiresAt: null,
+      createdAt: new Date('2026-10-24T12:00:00.000Z'),
+    };
+
+    const pay = (months: number, signupPayment?: boolean) => {
+      const billingDay = resolvePlanPaymentBillingDay({
+        paidAt: now,
+        organization: trial,
+        signupPayment,
+        now,
+      });
+      return {
+        billingDay,
+        expiry: resolveOrganizationPlanExpiration({
+          ...trial,
+          paidAt: now,
+          months,
+          billingDay,
+          now,
+        }),
+      };
+    };
+
+    it('gives a full month after the trial and moves the billing day to its end', () => {
+      const { billingDay, expiry } = pay(1);
+
+      expect(billingDay).toBe(7);
+      expect(expiry.toISOString()).toBe('2026-12-07T23:59:59.999Z');
+    });
+
+    it('keeps the signup billing day for a payment made when signing up', () => {
+      const { billingDay, expiry } = pay(1, true);
+
+      expect(billingDay).toBe(24);
+      expect(expiry.toISOString()).toBe('2026-11-24T23:59:59.999Z');
+    });
+
+    it('allows prepaying twelve full months counted from the end of the trial', () => {
+      const { billingDay, expiry } = pay(12);
+
+      expect(expiry.toISOString()).toBe('2027-11-07T23:59:59.999Z');
+      expect(() =>
+        assertPrepaidMonthsLimit({
+          newPlanExpiresAt: expiry,
+          billingDay,
+          now: resolvePrepaidLimitStart({ organization: trial, now }),
+        })
+      ).not.toThrow();
+    });
+
+    it('measures the prepaid limit from today once the trial is over or was paid at signup', () => {
+      expect(resolvePrepaidLimitStart({ organization: trial, signupPayment: true, now })).toBe(now);
+      expect(
+        resolvePrepaidLimitStart({
+          organization: { ...trial, trialEndsAt: new Date('2026-10-01T12:00:00.000Z') },
+          now,
+        })
+      ).toBe(now);
+    });
+  });
+
+  describe('payment after the plan lapsed', () => {
+    const lapsed = {
+      billingDay: 20,
+      planStatus: 'vencido' as const,
+      trialEndsAt: null,
+      planExpiresAt: new Date('2026-09-20T23:59:59.999Z'),
+      createdAt: new Date('2026-01-20T00:00:00.000Z'),
+    };
+
+    const pay = (date: string, months = 1) => {
+      const at = new Date(`${date}T12:00:00.000Z`);
+      const billingDay = resolvePlanPaymentBillingDay({ paidAt: at, organization: lapsed, now: at });
+      return {
+        at,
+        billingDay,
+        expiry: resolveOrganizationPlanExpiration({
+          ...lapsed,
+          paidAt: at,
+          months,
+          billingDay,
+          now: at,
+        }),
+      };
+    };
+
+    it.each(['2026-10-05', '2026-10-19', '2026-10-20', '2026-10-21'])(
+      'covers a full month when paying on %s',
+      (date) => {
+        const { at, expiry } = pay(date);
+        const days = (expiry.getTime() - at.getTime()) / (24 * 60 * 60 * 1000);
+
+        expect(days).toBeGreaterThanOrEqual(30);
+        expect(days).toBeLessThanOrEqual(32);
+      }
+    );
+
+    it('moves the billing day to the payment day', () => {
+      const { billingDay, expiry } = pay('2026-10-19');
+
+      expect(billingDay).toBe(19);
+      expect(expiry.toISOString()).toBe('2026-11-19T23:59:59.999Z');
+    });
+
+    it('caps the new billing day at 28 for payments at the end of the month', () => {
+      const { billingDay, expiry } = pay('2027-01-31');
+
+      expect(billingDay).toBe(28);
+      expect(expiry.toISOString()).toBe('2027-02-28T23:59:59.999Z');
+    });
+
+    it('keeps a twelve-month payment inside the prepaid cap', () => {
+      const { at, billingDay, expiry } = pay('2026-10-19', 12);
+
+      expect(expiry.toISOString()).toBe('2027-10-19T23:59:59.999Z');
+      expect(() =>
+        assertPrepaidMonthsLimit({ newPlanExpiresAt: expiry, billingDay, now: at })
+      ).not.toThrow();
+    });
+
+    it('keeps the billing day while a paid term is active', () => {
+      const now = new Date('2026-10-19T12:00:00.000Z');
+
+      expect(
+        resolvePlanPaymentBillingDay({
+          paidAt: now,
+          now,
+          organization: {
+            ...lapsed,
+            planStatus: 'activo',
+            planExpiresAt: new Date('2026-11-20T23:59:59.999Z'),
+          },
+        })
+      ).toBe(20);
+    });
+
+    it('restarts the cycle when the status still says active but the term ended', () => {
+      const now = new Date('2026-10-19T12:00:00.000Z');
+
+      expect(
+        resolvePlanPaymentBillingDay({
+          paidAt: now,
+          now,
+          organization: { ...lapsed, planStatus: 'activo' },
+        })
+      ).toBe(19);
+    });
   });
 
   it('rejects expirations beyond the 12-month prepaid cap', () => {

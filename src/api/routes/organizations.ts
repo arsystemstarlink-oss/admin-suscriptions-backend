@@ -40,6 +40,8 @@ import {
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanPaymentAmount,
+  resolvePlanPaymentBillingDay,
+  resolvePrepaidLimitStart,
   isOrganizationPlanChangeWithinTerm,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
@@ -715,7 +717,11 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
 
     const { paidAt, amount, method, plan, months } = req.body ?? {};
     const parsedPaidAt = parseBusinessPaymentDate(paidAt);
-    const billingDay = getOrganizationBillingDay(current);
+    // El vencimiento manual heredado (sin months) conserva el corte de la organización.
+    const billingDay =
+      months !== undefined
+        ? resolvePlanPaymentBillingDay({ paidAt: parsedPaidAt, organization: current })
+        : getOrganizationBillingDay(current);
     // El tope vigente se deriva del plan para comparar bajadas contra el espacio real.
     const currentCapacity = resolveEffectiveClientLimit(current.plan, current.clientLimit);
     let newPlanExpiresAt: Date;
@@ -753,7 +759,11 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     if (!['basico', 'pro', 'negocio', 'a-medida'].includes(plan)) {
       throw new BusinessError('INVALID_PLAN', 'El plan seleccionado no es válido.');
     }
-    assertPrepaidMonthsLimit({ newPlanExpiresAt, billingDay });
+    assertPrepaidMonthsLimit({
+      newPlanExpiresAt,
+      billingDay,
+      now: resolvePrepaidLimitStart({ organization: current }),
+    });
     if (
       req.body?.notes !== undefined &&
       (typeof req.body.notes !== 'string' || req.body.notes.length > 1000)

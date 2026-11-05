@@ -61,7 +61,7 @@ interface Organization {
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit: number;
   planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
-  billingDay: number; // día de corte mensual (1-28), derivado de la fecha de alta
+  billingDay: number; // día de corte mensual (1-28), derivado de la fecha de alta; cambia al reactivar un plan sin tiempo vigente
   trialEndsAt: string | null;
   planExpiresAt: string | null;
   clientCount: number;
@@ -555,9 +555,11 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 // Meses: se suman al vencimiento vigente, también al cambiar de plan. Con months = 0 el cambio
 // conserva el vencimiento y solo se cobra la diferencia.
 // Diferencia: (precio nuevo - precio actual) × días entre paidAt y el vencimiento ÷ (365/12), a 2 decimales.
-// Tope: el vencimiento resultante no puede superar 12 meses desde hoy (PREPAID_LIMIT_REACHED).
+// Tope: el vencimiento resultante no puede superar 12 meses desde hoy, o desde el fin de una prueba vigente (PREPAID_LIMIT_REACHED).
 // El tope de clientes siempre se deriva del plan en los planes fijos.
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
+// Sin plan vigente (vencido, suspendido) el ciclo empieza el dia del pago y billingDay pasa a ese dia (max. 28).
+// En una prueba vigente los meses corren desde su fin y billingDay pasa a ese dia, salvo el pago del alta (signupPayment), que conserva el corte del alta.
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
 //         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)
@@ -970,7 +972,8 @@ de plan con tiempo vigente agrega al monto la diferencia de precio por los dias 
 `months = 0`, solo cobra esa diferencia y conserva el vencimiento. El monto queda fijado al
 reportar; si el plazo vence antes de aprobar un reporte con `months = 0`, la aprobacion responde
 `INVALID_PLAN_MONTHS` y el reporte debe rechazarse. El vencimiento resultante no puede superar
-12 meses desde hoy (`PREPAID_LIMIT_REACHED`).
+12 meses desde hoy, o desde el fin de una prueba vigente (`PREPAID_LIMIT_REACHED`). El reporte creado por
+el alta de Pro o Negocio lleva `signupPayment: true` y conserva el corte del alta.
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
@@ -995,7 +998,7 @@ reportar; si el plazo vence antes de aprobar un reporte con `months = 0`, la apr
     extendsCurrent: boolean;
     currentExpiry: string | null;
     paidAt: string;
-    maxPlanExpiresAt: string;  // tope de prepago (12 meses)
+    maxPlanExpiresAt: string;  // tope de prepago (12 meses desde hoy o desde el fin de una prueba vigente)
     expirations: Array<{
       months: number;          // 1-12; 0 solo si el cambio de plan admite pagar solo la diferencia
       newPlanExpiresAt: string;

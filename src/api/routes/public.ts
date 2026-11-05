@@ -397,6 +397,7 @@ router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: 
         clientLimit,
         reference: input.payment.reference,
         notes: input.payment.notes,
+        signupPayment: true,
         status: 'PENDING',
         createdAt: now,
         createdByUserId: user.id,

@@ -18,7 +18,6 @@ import {
   addOrganizationBillingMonths,
   assertPlanChangeAllowed,
   assertPrepaidMonthsLimit,
-  getOrganizationBillingDay,
   isBusinessPlanKey,
   isOrganizationPlanChange,
   isOrganizationPlanChangeWithinTerm,
@@ -27,6 +26,8 @@ import {
   resolveOrganizationPlanMonths,
   resolveOrganizationPlanPaymentAmount,
   resolvePlanChangeDifference,
+  resolvePlanPaymentBillingDay,
+  resolvePrepaidLimitStart,
   validateOrganizationAdminLimit,
   isOrganizationPlanPaymentMethod,
   resolveClientLimitForPlan,
@@ -129,7 +130,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto del pago debe ser mayor que cero.');
     }
 
-    const previewBillingDay = getOrganizationBillingDay(organization);
+    const previewBillingDay = resolvePlanPaymentBillingDay({ paidAt, organization });
     const previewExpiry = resolveOrganizationPlanExpiration({
       paidAt,
       months,
@@ -143,6 +144,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     assertPrepaidMonthsLimit({
       newPlanExpiresAt: previewExpiry,
       billingDay: previewBillingDay,
+      now: resolvePrepaidLimitStart({ organization }),
     });
 
     const pending = await organizationPlanPaymentReportRepository.findPendingByOrganization(organizationId);
@@ -212,8 +214,12 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
     const paidAt = req.query.paidAt
       ? parseBusinessPaymentDate(req.query.paidAt, now, { allowFuture: true })
       : now;
-    const billingDay = getOrganizationBillingDay(organization, now);
-    const maxPlanExpiresAt = addOrganizationBillingMonths(now, MAX_PREPAID_MONTHS, billingDay);
+    const billingDay = resolvePlanPaymentBillingDay({ paidAt, organization, now });
+    const maxPlanExpiresAt = addOrganizationBillingMonths(
+      resolvePrepaidLimitStart({ organization, now }),
+      MAX_PREPAID_MONTHS,
+      billingDay
+    );
     const planLocked = isOrganizationPlanLocked(organization, now);
     const planChanged = isOrganizationPlanChange({
       currentPlan: organization.plan,
@@ -418,7 +424,11 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       );
     }
 
-    const billingDay = getOrganizationBillingDay(organization);
+    const billingDay = resolvePlanPaymentBillingDay({
+      paidAt: report.paidAt,
+      organization,
+      signupPayment: report.signupPayment,
+    });
     const newPlanExpiresAt = resolveOrganizationPlanExpiration({
       paidAt: report.paidAt,
       months: report.months,
@@ -429,7 +439,11 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       currentPlan: organization.plan,
       targetPlan: report.plan,
     });
-    assertPrepaidMonthsLimit({ newPlanExpiresAt, billingDay });
+    assertPrepaidMonthsLimit({
+      newPlanExpiresAt,
+      billingDay,
+      now: resolvePrepaidLimitStart({ organization, signupPayment: report.signupPayment }),
+    });
 
     const payment: OrganizationPlanPayment = {
       id: createId(),
