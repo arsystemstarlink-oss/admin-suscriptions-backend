@@ -39,10 +39,8 @@ import {
   assertFuturePlanDates,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
-  resolveOrganizationPlanPaymentAmount,
   resolvePlanPaymentBillingDay,
   resolvePrepaidLimitStart,
-  isOrganizationPlanChangeWithinTerm,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
@@ -720,21 +718,18 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     // El vencimiento manual heredado (sin months) conserva el corte de la organización.
     const billingDay =
       months !== undefined
-        ? resolvePlanPaymentBillingDay({ paidAt: parsedPaidAt, organization: current })
+        ? resolvePlanPaymentBillingDay({
+            paidAt: parsedPaidAt,
+            organization: current,
+            targetPlan: plan as BusinessPlanKey,
+          })
         : getOrganizationBillingDay(current);
     // El tope vigente se deriva del plan para comparar bajadas contra el espacio real.
     const currentCapacity = resolveEffectiveClientLimit(current.plan, current.clientLimit);
     let newPlanExpiresAt: Date;
     let renewalMonths = 1;
     if (months !== undefined) {
-      const parsedMonths = resolveOrganizationPlanMonths(months, {
-        allowDifferenceOnly: isOrganizationPlanChangeWithinTerm({
-          currentPlan: current.plan,
-          targetPlan: plan as BusinessPlanKey,
-          planStatus: current.planStatus,
-          planExpiresAt: current.planExpiresAt,
-        }),
-      });
+      const parsedMonths = resolveOrganizationPlanMonths(months);
       renewalMonths = parsedMonths;
       newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt: parsedPaidAt,
@@ -772,16 +767,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const paymentPlan = plan as BusinessPlanKey;
-    // El vencimiento manual heredado no pasa por la cotización: solo se cobra el precio del plan.
-    const fixedAmount =
-      months !== undefined
-        ? resolveOrganizationPlanPaymentAmount({
-            plan: paymentPlan,
-            months: renewalMonths,
-            paidAt: parsedPaidAt,
-            organization: current,
-          })
-        : resolveFixedPlanPaymentAmount(paymentPlan, renewalMonths);
+    const fixedAmount = resolveFixedPlanPaymentAmount(paymentPlan, renewalMonths);
     const effectiveAmount = fixedAmount !== null ? fixedAmount : amount;
     if (
       typeof effectiveAmount !== 'number' ||

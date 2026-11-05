@@ -543,18 +543,18 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit?: number; // requerido para A medida (>= 151); ignorado en planes fijos
-  months?: number; // 1-12, o 0 en un cambio de plan con tiempo vigente; el servidor calcula newPlanExpiresAt con el día de corte
+  months?: number; // 1-12; el servidor calcula newPlanExpiresAt con el día de corte
   newPlanExpiresAt?: string; // legado; solo si no se envía months
   notes?: string;
 }
 // Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
-// Monto: en planes fijos es priceUsdMonthly × months (total), más la diferencia de un cambio de plan
-// con tiempo vigente; en A medida es el amount enviado.
+// Monto: en planes fijos es priceUsdMonthly × months (total); en A medida es el amount enviado.
 // Si se envía newPlanExpiresAt sin months, el monto fijo equivale a 1 mes.
-// Meses: se suman al vencimiento vigente, también al cambiar de plan. Con months = 0 el cambio
-// conserva el vencimiento y solo se cobra la diferencia.
-// Diferencia: (precio nuevo - precio actual) × días entre paidAt y el vencimiento ÷ (365/12), a 2 decimales.
+// Meses: mismo plan → se suman al vencimiento actual.
+// Cambio entre planes fijos con tiempo vigente → el saldo se convierte en días del plan nuevo:
+// días restantes × precio actual ÷ precio nuevo, hacia arriba. Los meses se suman al terminar esos
+// días y billingDay pasa a ese día (max. 28). Hacia A medida se conserva el vencimiento y se suman los meses.
 // Tope: el vencimiento resultante no puede superar 12 meses desde hoy, o desde el fin de una prueba vigente (PREPAID_LIMIT_REACHED).
 // El tope de clientes siempre se deriva del plan en los planes fijos.
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
@@ -967,18 +967,17 @@ interface PlanQuoteRequest {
 
 El admin reporta el pago de su propia organizacion; el super-admin lo revisa. El monto de
 los planes fijos lo define el servidor como `BUSINESS_PLAN_PRICES[plan] × months` (total),
-no el cliente. Los meses se suman al vencimiento vigente, tambien al cambiar de plan. Un cambio
-de plan con tiempo vigente agrega al monto la diferencia de precio por los dias restantes y, con
-`months = 0`, solo cobra esa diferencia y conserva el vencimiento. El monto queda fijado al
-reportar; si el plazo vence antes de aprobar un reporte con `months = 0`, la aprobacion responde
-`INVALID_PLAN_MONTHS` y el reporte debe rechazarse. El vencimiento resultante no puede superar
+no el cliente. Mismo plan suma meses al vencimiento. Un cambio entre planes fijos con tiempo vigente
+convierte el saldo en dias del plan nuevo (`dias restantes × precio actual ÷ precio nuevo`, hacia
+arriba), suma los meses al terminar esos dias y mueve `billingDay` a ese dia. El saldo se calcula al
+aprobar el reporte. Hacia A medida se conserva el vencimiento. El vencimiento resultante no puede superar
 12 meses desde hoy, o desde el fin de una prueba vigente (`PREPAID_LIMIT_REACHED`). El reporte creado por
 el alta de Pro o Negocio lleva `signupPayment: true` y conserva el corte del alta.
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
 | GET | /organization-plan-payment-reports/quote | Cotiza bloqueo de plan, vencimientos y monto (fuente unica del backend) |
-| POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12, o 0 al subir dentro del plazo) |
+| POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12) |
 | GET | /organization-plan-payment-reports/mine | Admin lista sus reportes |
 | GET | /organization-plan-payment-reports?status=PENDING | Super-admin lista reportes y los enriquece con `organizationName` |
 | POST | /organization-plan-payment-reports/:id/review | Super-admin aprueba (aplica el pago del plan) o rechaza |
@@ -994,13 +993,13 @@ el alta de Pro o Negocio lleva `signupPayment: true` y conserva el corte del alt
     billingDay: number;
     planLocked: boolean;       // plan/trial vigente: no permite bajar de plan ni de tope
     planChanged: boolean;
-    planDifferenceAmount: number; // diferencia por el tiempo restante; ya incluida en cada amount
-    extendsCurrent: boolean;
+    planChangeCreditDays: number; // dias del plan nuevo por el saldo convertido; 0 si no aplica
+    extendsCurrent: boolean;      // los meses se suman al vencimiento vigente
     currentExpiry: string | null;
     paidAt: string;
     maxPlanExpiresAt: string;  // tope de prepago (12 meses desde hoy o desde el fin de una prueba vigente)
     expirations: Array<{
-      months: number;          // 1-12; 0 solo si el cambio de plan admite pagar solo la diferencia
+      months: number;          // 1-12
       newPlanExpiresAt: string;
       exceedsPrepaidLimit: boolean;
       amount: number | null;   // null para A medida
@@ -1016,7 +1015,7 @@ el alta de Pro o Negocio lleva `signupPayment: true` y conserva el corte del alt
 // POST /organization-plan-payment-reports
 {
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
-  months: number; // 1-12, o 0 en un cambio de plan con tiempo vigente
+  months: number; // 1-12
   method: 'transferencia' | 'usdt' | 'efectivo';
   paidAt: string;
   amount?: number; // requerido solo para A medida; monto total acordado

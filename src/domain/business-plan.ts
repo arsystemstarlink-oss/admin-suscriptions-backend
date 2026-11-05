@@ -52,16 +52,11 @@ export function isValidPrepaidMonths(value: unknown): value is number {
 
 /**
  * Resuelve los meses de un pago o reporte de plan. Sin `months` se asume un solo mes,
- * igual que el monto fijo legado de un período. `0` solo se acepta en una subida de plan
- * dentro del plazo vigente: paga la diferencia y conserva el vencimiento sin sumar meses.
+ * igual que el monto fijo legado de un período.
  */
-export function resolveOrganizationPlanMonths(
-  value: unknown,
-  options: { allowDifferenceOnly?: boolean } = {}
-): number {
+export function resolveOrganizationPlanMonths(value: unknown): number {
   if (value === undefined || value === null) return 1;
   const months = typeof value === 'number' ? value : Number(value);
-  if (months === 0 && options.allowDifferenceOnly) return 0;
   if (!isValidPrepaidMonths(months)) {
     throw new BusinessError(
       'INVALID_PLAN_MONTHS',
@@ -82,21 +77,6 @@ export function isOrganizationPlanChange(input: {
   );
 }
 
-/** Cambio de plan con tiempo ya pagado: no pierde ese tiempo y conserva el vencimiento. */
-export function isOrganizationPlanChangeWithinTerm(input: {
-  currentPlan?: BusinessPlanKey;
-  targetPlan?: BusinessPlanKey;
-  planStatus?: OrganizationPlanStatus;
-  planExpiresAt?: Date | null;
-  now?: Date;
-}): boolean {
-  const now = input.now ?? new Date();
-  return (
-    isOrganizationPlanChange(input) &&
-    Boolean(input.planExpiresAt && input.planExpiresAt.getTime() > now.getTime())
-  );
-}
-
 export function resolveFixedPlanPaymentAmount(
   plan: BusinessPlanKey,
   months: number
@@ -106,72 +86,11 @@ export function resolveFixedPlanPaymentAmount(
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const AVERAGE_DAYS_PER_MONTH = 365 / 12;
 
 function toUtcDayNumber(date: Date): number {
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) / MS_PER_DAY;
 }
 
-function roundToCents(amount: number): number {
-  return Math.round(amount * 100) / 100;
-}
-
-/**
- * Diferencia de precio entre planes por los días pagados que faltan desde la fecha de
- * pago hasta el vencimiento. Es 0 si no hay tiempo pagado que compensar y también cuando
- * alguno de los planes no tiene precio fijo: A medida se negocia con un monto acordado.
- */
-export function resolvePlanChangeDifference(input: {
-  targetPlan: BusinessPlanKey;
-  paidAt: Date;
-  organization: Pick<Organization, 'plan' | 'planStatus' | 'planExpiresAt'>;
-  now?: Date;
-}): number {
-  const { targetPlan, paidAt, organization, now } = input;
-  const withinTerm = isOrganizationPlanChangeWithinTerm({
-    currentPlan: organization.plan,
-    targetPlan,
-    planStatus: organization.planStatus,
-    planExpiresAt: organization.planExpiresAt,
-    now,
-  });
-  if (!withinTerm) return 0;
-
-  const currentPrice = BUSINESS_PLAN_PRICES[organization.plan!];
-  const targetPrice = BUSINESS_PLAN_PRICES[targetPlan];
-  if (currentPrice === null || targetPrice === null) return 0;
-
-  const remainingDays = Math.max(
-    0,
-    toUtcDayNumber(organization.planExpiresAt!) - toUtcDayNumber(paidAt)
-  );
-  const monthlyDifference = Math.max(0, targetPrice - currentPrice);
-  return roundToCents((monthlyDifference * remainingDays) / AVERAGE_DAYS_PER_MONTH);
-}
-
-/**
- * Monto que define el servidor para un pago de plan: los meses a sumar más la diferencia
- * de un cambio de plan dentro del plazo. `null` en A medida, que usa un monto acordado.
- */
-export function resolveOrganizationPlanPaymentAmount(input: {
-  plan: BusinessPlanKey;
-  months: number;
-  paidAt: Date;
-  organization: Pick<Organization, 'plan' | 'planStatus' | 'planExpiresAt'>;
-  now?: Date;
-}): number | null {
-  const monthsAmount = resolveFixedPlanPaymentAmount(input.plan, input.months);
-  if (monthsAmount === null) return null;
-  return roundToCents(
-    monthsAmount +
-      resolvePlanChangeDifference({
-        targetPlan: input.plan,
-        paidAt: input.paidAt,
-        organization: input.organization,
-        now: input.now,
-      })
-  );
-}
 
 export const BUSINESS_PLAN_TRIAL_DAYS: Record<BusinessPlanKey, number> = {
   basico: 14,
@@ -278,49 +197,89 @@ export function addOrganizationBillingMonths(
 }
 
 /**
- * Fecha desde la que corren los meses de un pago: el fin del plazo o de la prueba vigentes
- * o, si no hay ninguno, el día en que vuelve a activarse.
+ * Fecha desde la que corren los meses de un pago: el fin del plazo o de la prueba vigentes,
+ * el fin del saldo convertido de un cambio de plan o, si no hay nada de eso, el día en que
+ * vuelve a activarse. El saldo se convierte en días del plan nuevo según la relación de
+ * precios, redondeando a favor del cliente. A medida no tiene precio fijo: conserva el
+ * vencimiento y el saldo se tiene en cuenta al acordar el monto.
  */
 function resolvePlanPaymentBase(input: {
   paidAt: Date;
   planStatus?: OrganizationPlanStatus;
   trialEndsAt?: Date | null;
   planExpiresAt?: Date | null;
+  currentPlan?: BusinessPlanKey;
+  targetPlan?: BusinessPlanKey;
   now: Date;
-}): { base: Date; term: 'paid' | 'trial' | 'none' } {
+}): { base: Date; term: 'paid' | 'trial' | 'converted' | 'none'; convertedDays: number } {
   const { now } = input;
+  const start = new Date(Math.max(input.paidAt.getTime(), now.getTime()));
   if (
     input.planStatus === 'activo' &&
     input.planExpiresAt &&
     input.planExpiresAt.getTime() > now.getTime()
   ) {
-    return { base: input.planExpiresAt, term: 'paid' };
+    const currentPrice = input.currentPlan && BUSINESS_PLAN_PRICES[input.currentPlan];
+    const targetPrice = input.targetPlan && BUSINESS_PLAN_PRICES[input.targetPlan];
+    if (isOrganizationPlanChange(input) && currentPrice && targetPrice) {
+      const remainingDays = Math.max(
+        0,
+        toUtcDayNumber(input.planExpiresAt) - toUtcDayNumber(start)
+      );
+      const convertedDays = Math.ceil((remainingDays * currentPrice) / targetPrice);
+      return {
+        base: new Date(start.getTime() + convertedDays * MS_PER_DAY),
+        term: 'converted',
+        convertedDays,
+      };
+    }
+    return { base: input.planExpiresAt, term: 'paid', convertedDays: 0 };
   }
   if (
     input.planStatus === 'prueba' &&
     input.trialEndsAt &&
     input.trialEndsAt.getTime() > now.getTime()
   ) {
-    return { base: input.trialEndsAt, term: 'trial' };
+    return { base: input.trialEndsAt, term: 'trial', convertedDays: 0 };
   }
-  return {
-    base: new Date(Math.max(input.paidAt.getTime(), now.getTime())),
-    term: 'none',
-  };
+  return { base: start, term: 'none', convertedDays: 0 };
+}
+
+/**
+ * Días del plan nuevo que recibe la organización por el tiempo pagado que le queda.
+ * El monto del pago no cambia: el saldo se devuelve en tiempo, no en dinero.
+ */
+export function resolvePlanChangeCreditDays(input: {
+  targetPlan: BusinessPlanKey;
+  paidAt: Date;
+  organization: Pick<Organization, 'plan' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt'>;
+  now?: Date;
+}): number {
+  return resolvePlanPaymentBase({
+    paidAt: input.paidAt,
+    planStatus: input.organization.planStatus,
+    trialEndsAt: input.organization.trialEndsAt,
+    planExpiresAt: input.organization.planExpiresAt,
+    currentPlan: input.organization.plan,
+    targetPlan: input.targetPlan,
+    now: input.now ?? new Date(),
+  }).convertedDays;
 }
 
 /**
  * Día de corte que rige un pago, para que un mes pagado cubra un mes de servicio. Sin plazo
- * vigente el ciclo empieza el día del pago y, durante la prueba, el día en que esta termina:
- * conservar el corte anterior dejaría un primer ciclo de solo días. El pago hecho al darse de
- * alta (`signupPayment`) conserva el corte del alta: su mes ya corre desde ese día.
+ * vigente el ciclo empieza el día del pago; durante la prueba, el día en que esta termina; y
+ * al cambiar de plan, el día en que termina el saldo convertido. Conservar el corte anterior
+ * dejaría un primer ciclo de solo días. El pago hecho al darse de alta (`signupPayment`)
+ * conserva el corte del alta: su mes ya corre desde ese día.
  */
 export function resolvePlanPaymentBillingDay(input: {
   paidAt: Date;
   organization: Pick<
     Organization,
-    'billingDay' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt' | 'createdAt'
+    'plan' | 'billingDay' | 'planStatus' | 'trialEndsAt' | 'planExpiresAt' | 'createdAt'
   >;
+  targetPlan?: BusinessPlanKey;
   signupPayment?: boolean;
   now?: Date;
 }): number {
@@ -330,6 +289,8 @@ export function resolvePlanPaymentBillingDay(input: {
     planStatus: input.organization.planStatus,
     trialEndsAt: input.organization.trialEndsAt,
     planExpiresAt: input.organization.planExpiresAt,
+    currentPlan: input.organization.plan,
+    targetPlan: input.targetPlan,
     now,
   });
   if (term === 'paid' || (term === 'trial' && input.signupPayment)) {
@@ -369,16 +330,6 @@ export function resolveOrganizationPlanExpiration(input: {
   now?: Date;
 }): Date {
   const now = input.now ?? new Date();
-  if (input.months === 0) {
-    if (!isOrganizationPlanChangeWithinTerm({ ...input, now })) {
-      throw new BusinessError(
-        'INVALID_PLAN_MONTHS',
-        'Pagar solo la diferencia requiere un cambio de plan con tiempo vigente.'
-      );
-    }
-    return input.planExpiresAt!;
-  }
-
   const { base } = resolvePlanPaymentBase({ ...input, now });
 
   return addOrganizationBillingMonths(base, input.months, input.billingDay);

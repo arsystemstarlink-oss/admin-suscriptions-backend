@@ -48,8 +48,8 @@ const reports = organizationPlanPaymentReportRepository as unknown as {
 const users = userRepository as unknown as { listByOrganization: jest.Mock };
 
 const REMAINING_DAYS = 100;
-// (40 - 25) USD × 100 días ÷ (365 / 12)
-const DIFFERENCE = 49.32;
+// 100 dias x 25 USD / 40 USD = 62,5, redondeado a favor del cliente.
+const CREDIT_DAYS = 63;
 
 const today = new Date();
 const paidAt = today.toISOString().slice(0, 10);
@@ -128,42 +128,48 @@ describe('organization plan change routes', () => {
       body: JSON.stringify({ method: 'usdt', paidAt, ...body }),
     });
 
-  it('quotes an upgrade with the difference and without losing the paid term', async () => {
+  it('quotes an upgrade at the full price with the remaining time converted', async () => {
     const result = await quote('negocio');
+    const convertedEnd = new Date(
+      Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + CREDIT_DAYS)
+    );
+    const days =
+      (new Date(result.expirations[0].newPlanExpiresAt).getTime() - convertedEnd.getTime()) /
+      (24 * 60 * 60 * 1000);
 
     expect(result.planChanged).toBe(true);
-    expect(result.planDifferenceAmount).toBe(DIFFERENCE);
+    expect(result.planChangeCreditDays).toBe(CREDIT_DAYS);
+    expect(result.extendsCurrent).toBe(false);
+    expect(result.billingDay).toBe(Math.min(convertedEnd.getUTCDate(), 28));
     expect(result.expirations[0]).toMatchObject({
-      months: 0,
-      amount: DIFFERENCE,
-      newPlanExpiresAt: expiry.toISOString(),
+      months: 1,
+      amount: 40,
       exceedsPrepaidLimit: false,
     });
-    expect(result.expirations[1]).toMatchObject({ months: 1, amount: 89.32 });
-    expect(new Date(result.expirations[1].newPlanExpiresAt).getTime()).toBeGreaterThan(
-      expiry.getTime()
-    );
+    expect(days).toBeGreaterThanOrEqual(28);
+    expect(days).toBeLessThanOrEqual(32);
   });
 
-  it('quotes a renewal without difference or a difference-only option', async () => {
+  it('quotes a renewal without converting time', async () => {
     const result = await quote('pro');
 
-    expect(result.planDifferenceAmount).toBe(0);
+    expect(result.planChangeCreditDays).toBe(0);
+    expect(result.extendsCurrent).toBe(true);
+    expect(result.billingDay).toBe(proOrganization.billingDay);
     expect(result.expirations[0]).toMatchObject({ months: 1, amount: 25 });
-    expect(result.expirations.some((option: { months: number }) => option.months === 0)).toBe(false);
   });
 
-  it('stores the server amount when reporting only the difference', async () => {
-    const response = await report({ plan: 'negocio', months: 0, amount: 1 });
+  it('stores the server price when reporting an upgrade', async () => {
+    const response = await report({ plan: 'negocio', months: 1, amount: 1 });
 
     expect(response.status).toBe(201);
     expect(reports.create).toHaveBeenCalledWith(
-      expect.objectContaining({ plan: 'negocio', months: 0, amount: DIFFERENCE })
+      expect.objectContaining({ plan: 'negocio', months: 1, amount: 40 })
     );
   });
 
-  it('rejects zero months when the plan stays the same', async () => {
-    const response = await report({ plan: 'pro', months: 0 });
+  it('rejects zero months', async () => {
+    const response = await report({ plan: 'negocio', months: 0 });
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain('INVALID_PLAN_MONTHS');

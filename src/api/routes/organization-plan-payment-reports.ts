@@ -20,12 +20,11 @@ import {
   assertPrepaidMonthsLimit,
   isBusinessPlanKey,
   isOrganizationPlanChange,
-  isOrganizationPlanChangeWithinTerm,
   isOrganizationPlanLocked,
   resolveEffectiveClientLimit,
+  resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanMonths,
-  resolveOrganizationPlanPaymentAmount,
-  resolvePlanChangeDifference,
+  resolvePlanChangeCreditDays,
   resolvePlanPaymentBillingDay,
   resolvePrepaidLimitStart,
   validateOrganizationAdminLimit,
@@ -79,14 +78,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('INVALID_PAYMENT_METHOD', 'Método de pago inválido.');
     }
 
-    const months = resolveOrganizationPlanMonths(req.body?.months, {
-      allowDifferenceOnly: isOrganizationPlanChangeWithinTerm({
-        currentPlan: organization.plan,
-        targetPlan: plan,
-        planStatus: organization.planStatus,
-        planExpiresAt: organization.planExpiresAt,
-      }),
-    });
+    const months = resolveOrganizationPlanMonths(req.body?.months);
 
     const paidAt = parseBusinessPaymentDate(req.body?.paidAt);
     // El tope vigente se deriva del plan, no del valor almacenado, para que el bloqueo de
@@ -124,13 +116,17 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       );
     }
 
-    const fixedAmount = resolveOrganizationPlanPaymentAmount({ plan, months, paidAt, organization });
+    const fixedAmount = resolveFixedPlanPaymentAmount(plan, months);
     const amount = fixedAmount !== null ? fixedAmount : Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto del pago debe ser mayor que cero.');
     }
 
-    const previewBillingDay = resolvePlanPaymentBillingDay({ paidAt, organization });
+    const previewBillingDay = resolvePlanPaymentBillingDay({
+      paidAt,
+      organization,
+      targetPlan: plan,
+    });
     const previewExpiry = resolveOrganizationPlanExpiration({
       paidAt,
       months,
@@ -214,7 +210,12 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
     const paidAt = req.query.paidAt
       ? parseBusinessPaymentDate(req.query.paidAt, now, { allowFuture: true })
       : now;
-    const billingDay = resolvePlanPaymentBillingDay({ paidAt, organization, now });
+    const billingDay = resolvePlanPaymentBillingDay({
+      paidAt,
+      organization,
+      targetPlan: plan,
+      now,
+    });
     const maxPlanExpiresAt = addOrganizationBillingMonths(
       resolvePrepaidLimitStart({ organization, now }),
       MAX_PREPAID_MONTHS,
@@ -231,29 +232,15 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         ? organization.trialEndsAt
         : organization.planExpiresAt;
     const effectiveClientLimit = resolveEffectiveClientLimit(plan, organization.clientLimit);
-    const planChangeWithinTerm = isOrganizationPlanChangeWithinTerm({
-      currentPlan: organization.plan,
-      targetPlan: plan,
-      planStatus: organization.planStatus,
-      planExpiresAt: organization.planExpiresAt,
-      now,
-    });
-    const planDifferenceAmount = resolvePlanChangeDifference({
+    const planChangeCreditDays = resolvePlanChangeCreditDays({
       targetPlan: plan,
       paidAt,
       organization,
       now,
     });
-    // "Solo la diferencia" (0 meses) se ofrece si hay algo que cobrar: A medida usa un
-    // monto acordado y el último día del plazo ya no queda diferencia por pagar.
-    const offerDifferenceOnly =
-      planChangeWithinTerm && (plan === 'a-medida' || planDifferenceAmount > 0);
-    const monthOptions = [
-      ...(offerDifferenceOnly ? [0] : []),
-      ...Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => index + 1),
-    ];
 
-    const expirationOptions = monthOptions.map((months) => {
+    const expirationOptions = Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => {
+      const months = index + 1;
       const newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt,
         months,
@@ -270,7 +257,7 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         months,
         newPlanExpiresAt: newPlanExpiresAt.toISOString(),
         exceedsPrepaidLimit: newPlanExpiresAt.getTime() > maxPlanExpiresAt.getTime(),
-        amount: resolveOrganizationPlanPaymentAmount({ plan, months, paidAt, organization, now }),
+        amount: resolveFixedPlanPaymentAmount(plan, months),
       };
     });
 
@@ -284,8 +271,8 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         clientLimit: effectiveClientLimit,
         clientCount: organization.clientCount ?? null,
         adminLimit: BUSINESS_PLAN_ADMIN_LIMITS[plan],
-        planDifferenceAmount,
-        extendsCurrent: planLocked && Boolean(currentExpiry),
+        planChangeCreditDays,
+        extendsCurrent: planLocked && planChangeCreditDays === 0 && Boolean(currentExpiry),
         currentExpiry: currentExpiry ? currentExpiry.toISOString() : null,
         paidAt: paidAt.toISOString(),
         maxPlanExpiresAt: maxPlanExpiresAt.toISOString(),
@@ -427,6 +414,7 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
     const billingDay = resolvePlanPaymentBillingDay({
       paidAt: report.paidAt,
       organization,
+      targetPlan: report.plan,
       signupPayment: report.signupPayment,
     });
     const newPlanExpiresAt = resolveOrganizationPlanExpiration({
