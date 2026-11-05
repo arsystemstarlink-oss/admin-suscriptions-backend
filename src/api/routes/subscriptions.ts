@@ -107,7 +107,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const organizationId = resolveCreateOrganizationId(req);
 
     if (!dto.kitNumber || !dto.kitNumber.trim()) {
-      throw new BusinessError('INVALID_DATA', 'El número de kit es obligatorio.');
+      throw new BusinessError('INVALID_DATA', 'El código del servicio es obligatorio.');
     }
 
     const client = await clientRepository.getByIdScoped(dto.clientId, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);

@@ -31,19 +31,19 @@ Variables: `{1}` nombre completo del cliente, `{2}` fecha de vencimiento (`YYYY-
 
 #### Aviso de vencimiento
 
-Variables: `{1}` nombre completo, `{2}` kit, `{3}` fecha de vencimiento (`YYYY-MM-DD`).
+Variables: `{1}` nombre completo, `{2}` código del servicio (`kitNumber`), `{3}` fecha de vencimiento (`YYYY-MM-DD`).
 
 #### Aviso de suspensión
 
-- Variables: `{1}` nombre completo, `{2}` kit.
+- Variables: `{1}` nombre completo, `{2}` código del servicio (`kitNumber`).
 
 ## Resumen de Logica de Notificaciones
 
 | Condicion | Tipo | Template | Variables |
 |---|---|---|---|
 | `ACTIVE` + `PENDING` + uno de los días configurados | `reminder` | Recordatorio de pago | `{1}` nombre, `{2}` fecha |
-| `ACTIVE` + `PENDING` + vencimiento hoy | `suspension-warning` | Aviso de vencimiento | `{1}` nombre, `{2}` kit, `{3}` fecha |
-| Cambio a `SUSPENDED` | `suspended-notice` | Aviso de suspensión | `{1}` nombre, `{2}` kit |
+| `ACTIVE` + `PENDING` + vencimiento hoy | `suspension-warning` | Aviso de vencimiento | `{1}` nombre, `{2}` código del servicio (`kitNumber`), `{3}` fecha |
+| Cambio a `SUSPENDED` | `suspended-notice` | Aviso de suspensión | `{1}` nombre, `{2}` código del servicio (`kitNumber`) |
 | `SUSPENDED` (sin cambio) | — | Silencio | — |
 
 ---

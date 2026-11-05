@@ -543,16 +543,18 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit?: number; // requerido para A medida (>= 151); ignorado en planes fijos
-  months?: number; // 1-12; el servidor calcula newPlanExpiresAt con el día de corte
+  months?: number; // 1-12, o 0 en un cambio de plan con tiempo vigente; el servidor calcula newPlanExpiresAt con el día de corte
   newPlanExpiresAt?: string; // legado; solo si no se envía months
   notes?: string;
 }
 // Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
-// Monto: en planes fijos es priceUsdMonthly × months (total); en A medida es el amount enviado.
+// Monto: en planes fijos es priceUsdMonthly × months (total), más la diferencia de un cambio de plan
+// con tiempo vigente; en A medida es el amount enviado.
 // Si se envía newPlanExpiresAt sin months, el monto fijo equivale a 1 mes.
-// Meses: mismo plan → se suman al vencimiento actual; cambio de plan → el nuevo plazo
-// inicia en paidAt/now y no se suma el tiempo restante del plan anterior.
+// Meses: se suman al vencimiento vigente, también al cambiar de plan. Con months = 0 el cambio
+// conserva el vencimiento y solo se cobra la diferencia.
+// Diferencia: (precio nuevo - precio actual) × días entre paidAt y el vencimiento ÷ (365/12), a 2 decimales.
 // Tope: el vencimiento resultante no puede superar 12 meses desde hoy (PREPAID_LIMIT_REACHED).
 // El tope de clientes siempre se deriva del plan en los planes fijos.
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
@@ -725,8 +727,8 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 {
   clientId: string;
   planId: string;
-  kitNumber: string;           // Se convierte a UPPERCASE automaticamente
-  accountNumber?: string;      // Numero de cuenta Starlink (ej: "ACC-8381534-78084-24")
+  kitNumber: string;           // Codigo del servicio en formato libre (kit, ONT, contrato...); se convierte a UPPERCASE automaticamente
+  accountNumber?: string;      // Cuenta en el proveedor, formato libre (ej: "ACC-8381534-78084-24")
   billingDay: number;          // 1-28
   maxOverduePeriods: number;   // minimo 1
   activationDate?: string;     // Formato YYYY-MM-DD, no futura
@@ -963,14 +965,17 @@ interface PlanQuoteRequest {
 
 El admin reporta el pago de su propia organizacion; el super-admin lo revisa. El monto de
 los planes fijos lo define el servidor como `BUSINESS_PLAN_PRICES[plan] × months` (total),
-no el cliente. Mismo plan suma meses al vencimiento; cambio de plan reinicia el plazo desde
-la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
-(`PREPAID_LIMIT_REACHED`).
+no el cliente. Los meses se suman al vencimiento vigente, tambien al cambiar de plan. Un cambio
+de plan con tiempo vigente agrega al monto la diferencia de precio por los dias restantes y, con
+`months = 0`, solo cobra esa diferencia y conserva el vencimiento. El monto queda fijado al
+reportar; si el plazo vence antes de aprobar un reporte con `months = 0`, la aprobacion responde
+`INVALID_PLAN_MONTHS` y el reporte debe rechazarse. El vencimiento resultante no puede superar
+12 meses desde hoy (`PREPAID_LIMIT_REACHED`).
 
 | Metodo | Path | Descripcion |
 |--------|------|-------------|
 | GET | /organization-plan-payment-reports/quote | Cotiza bloqueo de plan, vencimientos y monto (fuente unica del backend) |
-| POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12) |
+| POST | /organization-plan-payment-reports | Admin reporta pago (plan actual o superior, meses 1-12, o 0 al subir dentro del plazo) |
 | GET | /organization-plan-payment-reports/mine | Admin lista sus reportes |
 | GET | /organization-plan-payment-reports?status=PENDING | Super-admin lista reportes y los enriquece con `organizationName` |
 | POST | /organization-plan-payment-reports/:id/review | Super-admin aprueba (aplica el pago del plan) o rechaza |
@@ -986,12 +991,13 @@ la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
     billingDay: number;
     planLocked: boolean;       // plan/trial vigente: no permite bajar de plan ni de tope
     planChanged: boolean;
+    planDifferenceAmount: number; // diferencia por el tiempo restante; ya incluida en cada amount
     extendsCurrent: boolean;
     currentExpiry: string | null;
     paidAt: string;
     maxPlanExpiresAt: string;  // tope de prepago (12 meses)
     expirations: Array<{
-      months: number;          // 1-12
+      months: number;          // 1-12; 0 solo si el cambio de plan admite pagar solo la diferencia
       newPlanExpiresAt: string;
       exceedsPrepaidLimit: boolean;
       amount: number | null;   // null para A medida
@@ -1007,7 +1013,7 @@ la fecha de pago. El vencimiento resultante no puede superar 12 meses desde hoy
 // POST /organization-plan-payment-reports
 {
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
-  months: number; // 1-12
+  months: number; // 1-12, o 0 en un cambio de plan con tiempo vigente
   method: 'transferencia' | 'usdt' | 'efectivo';
   paidAt: string;
   amount?: number; // requerido solo para A medida; monto total acordado
@@ -1481,7 +1487,7 @@ Authorization: Bearer {accessToken}
 - **Nombre:** `subscription_suspension_warning_1day_2v_hxfcc8ae438db9df662a0e1f7d801e946b`
 - **Variables:**
   - `{1}` = Nombre del cliente (string)
-  - `{2}` = Número de KIT (string)
+  - `{2}` = Código del servicio, `kitNumber` (string)
   - `{3}` = Fecha de vencimiento (YYYY-MM-DD)
 - **Uso:** Enviar cuando la suscripción está por vencer o vencida
 
@@ -1494,7 +1500,7 @@ Authorization: Bearer {accessToken}
 | Regla | Detalle |
 |-------|---------|
 | billingDay | 1-28 |
-| kitNumber | Se convierte a UPPERCASE automaticamente |
+| kitNumber | Código del servicio, formato libre. Se convierte a UPPERCASE automaticamente |
 | accountNumber | Formato libre (ej: "ACC-8381534-78084-24") |
 | activationDate | Formato YYYY-MM-DD, no futura |
 | paidAt | Formato YYYY-MM-DD (solo fecha, sin hora) |

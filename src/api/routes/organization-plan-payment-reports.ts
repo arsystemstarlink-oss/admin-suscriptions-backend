@@ -21,13 +21,15 @@ import {
   getOrganizationBillingDay,
   isBusinessPlanKey,
   isOrganizationPlanChange,
+  isOrganizationPlanChangeWithinTerm,
   isOrganizationPlanLocked,
   resolveEffectiveClientLimit,
   resolveOrganizationPlanMonths,
+  resolveOrganizationPlanPaymentAmount,
+  resolvePlanChangeDifference,
   validateOrganizationAdminLimit,
   isOrganizationPlanPaymentMethod,
   resolveClientLimitForPlan,
-  resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanExpiration,
 } from '../../domain/business-plan';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
@@ -76,7 +78,14 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       throw new BusinessError('INVALID_PAYMENT_METHOD', 'Método de pago inválido.');
     }
 
-    const months = resolveOrganizationPlanMonths(req.body?.months);
+    const months = resolveOrganizationPlanMonths(req.body?.months, {
+      allowDifferenceOnly: isOrganizationPlanChangeWithinTerm({
+        currentPlan: organization.plan,
+        targetPlan: plan,
+        planStatus: organization.planStatus,
+        planExpiresAt: organization.planExpiresAt,
+      }),
+    });
 
     const paidAt = parseBusinessPaymentDate(req.body?.paidAt);
     // El tope vigente se deriva del plan, no del valor almacenado, para que el bloqueo de
@@ -114,7 +123,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       );
     }
 
-    const fixedAmount = resolveFixedPlanPaymentAmount(plan, months);
+    const fixedAmount = resolveOrganizationPlanPaymentAmount({ plan, months, paidAt, organization });
     const amount = fixedAmount !== null ? fixedAmount : Number(req.body?.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BusinessError('INVALID_PAYMENT_AMOUNT', 'El monto del pago debe ser mayor que cero.');
@@ -216,9 +225,29 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         ? organization.trialEndsAt
         : organization.planExpiresAt;
     const effectiveClientLimit = resolveEffectiveClientLimit(plan, organization.clientLimit);
+    const planChangeWithinTerm = isOrganizationPlanChangeWithinTerm({
+      currentPlan: organization.plan,
+      targetPlan: plan,
+      planStatus: organization.planStatus,
+      planExpiresAt: organization.planExpiresAt,
+      now,
+    });
+    const planDifferenceAmount = resolvePlanChangeDifference({
+      targetPlan: plan,
+      paidAt,
+      organization,
+      now,
+    });
+    // "Solo la diferencia" (0 meses) se ofrece si hay algo que cobrar: A medida usa un
+    // monto acordado y el último día del plazo ya no queda diferencia por pagar.
+    const offerDifferenceOnly =
+      planChangeWithinTerm && (plan === 'a-medida' || planDifferenceAmount > 0);
+    const monthOptions = [
+      ...(offerDifferenceOnly ? [0] : []),
+      ...Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => index + 1),
+    ];
 
-    const expirationOptions = Array.from({ length: MAX_PREPAID_MONTHS }, (_, index) => {
-      const months = index + 1;
+    const expirationOptions = monthOptions.map((months) => {
       const newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt,
         months,
@@ -235,7 +264,7 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         months,
         newPlanExpiresAt: newPlanExpiresAt.toISOString(),
         exceedsPrepaidLimit: newPlanExpiresAt.getTime() > maxPlanExpiresAt.getTime(),
-        amount: resolveFixedPlanPaymentAmount(plan, months),
+        amount: resolveOrganizationPlanPaymentAmount({ plan, months, paidAt, organization, now }),
       };
     });
 
@@ -249,7 +278,8 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
         clientLimit: effectiveClientLimit,
         clientCount: organization.clientCount ?? null,
         adminLimit: BUSINESS_PLAN_ADMIN_LIMITS[plan],
-        extendsCurrent: planLocked && !planChanged && Boolean(currentExpiry),
+        planDifferenceAmount,
+        extendsCurrent: planLocked && Boolean(currentExpiry),
         currentExpiry: currentExpiry ? currentExpiry.toISOString() : null,
         paidAt: paidAt.toISOString(),
         maxPlanExpiresAt: maxPlanExpiresAt.toISOString(),

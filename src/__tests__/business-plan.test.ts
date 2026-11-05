@@ -14,6 +14,8 @@ import {
   resolveEffectiveClientLimit,
   resolveFixedPlanPaymentAmount,
   resolveOrganizationPlanExpiration,
+  resolveOrganizationPlanPaymentAmount,
+  resolvePlanChangeDifference,
   resolveOrganizationAccessStatus,
   resolveOrganizationPlanMonths,
   validateOrganizationAdminCount,
@@ -338,30 +340,125 @@ describe('business plan rules', () => {
     ).toBe('2026-12-07T23:59:59.999Z');
   });
 
-  it('resets the term when the active plan changes instead of summing both plans', () => {
-    const base = {
-      paidAt: new Date('2026-10-25T12:00:00.000Z'),
-      months: 12,
+  describe('plan change within the paid term', () => {
+    const paidAt = new Date('2026-10-25T12:00:00.000Z');
+    const changeNow = new Date('2026-10-25T12:00:00.000Z');
+    const expiry = new Date('2027-09-20T23:59:59.999Z');
+    const proActive = {
+      plan: 'pro' as const,
+      planStatus: 'activo' as const,
+      planExpiresAt: expiry,
+    };
+    const expirationBase = {
+      paidAt,
       billingDay: 20,
       planStatus: 'activo' as const,
       trialEndsAt: null,
-      planExpiresAt: new Date('2026-11-20T23:59:59.999Z'),
-      now: new Date('2026-10-25T12:00:00.000Z'),
+      planExpiresAt: expiry,
+      currentPlan: 'pro' as const,
+      targetPlan: 'negocio' as const,
+      now: changeNow,
     };
 
-    expect(
-      resolveOrganizationPlanExpiration({
-        ...base,
-        currentPlan: 'basico',
-        targetPlan: 'pro',
-      }).toISOString()
-    ).toBe('2027-10-20T23:59:59.999Z');
+    it('keeps the current expiry when only the difference is paid', () => {
+      expect(resolveOrganizationPlanExpiration({ ...expirationBase, months: 0 })).toEqual(expiry);
+    });
 
+    it('adds the extra months on top of the current expiry', () => {
+      expect(
+        resolveOrganizationPlanExpiration({ ...expirationBase, months: 1 }).toISOString()
+      ).toBe('2027-10-20T23:59:59.999Z');
+    });
+
+    it('charges the price difference for the 330 remaining days', () => {
+      expect(
+        resolvePlanChangeDifference({
+          targetPlan: 'negocio',
+          paidAt,
+          organization: proActive,
+          now: changeNow,
+        })
+      ).toBe(162.74);
+    });
+
+    it('adds the months at the new price to the difference', () => {
+      expect(
+        resolveOrganizationPlanPaymentAmount({
+          plan: 'negocio',
+          months: 0,
+          paidAt,
+          organization: proActive,
+          now: changeNow,
+        })
+      ).toBe(162.74);
+      expect(
+        resolveOrganizationPlanPaymentAmount({
+          plan: 'negocio',
+          months: 1,
+          paidAt,
+          organization: proActive,
+          now: changeNow,
+        })
+      ).toBe(202.74);
+    });
+
+    it('charges no difference on a renewal, after expiry or during a trial', () => {
+      const difference = (organization: Parameters<typeof resolvePlanChangeDifference>[0]['organization']) =>
+        resolvePlanChangeDifference({ targetPlan: 'negocio', paidAt, organization, now: changeNow });
+
+      expect(difference({ ...proActive, plan: 'negocio' })).toBe(0);
+      expect(difference({ ...proActive, planExpiresAt: new Date('2026-10-01T23:59:59.999Z') })).toBe(0);
+      expect(difference({ plan: 'basico', planStatus: 'prueba', planExpiresAt: null })).toBe(0);
+    });
+
+    it('leaves the amount of a custom plan to the agreed price', () => {
+      expect(
+        resolvePlanChangeDifference({
+          targetPlan: 'a-medida',
+          paidAt,
+          organization: proActive,
+          now: changeNow,
+        })
+      ).toBe(0);
+      expect(
+        resolveOrganizationPlanPaymentAmount({
+          plan: 'a-medida',
+          months: 0,
+          paidAt,
+          organization: proActive,
+          now: changeNow,
+        })
+      ).toBeNull();
+    });
+
+    it('accepts zero months only for a plan change within the term', () => {
+      expect(resolveOrganizationPlanMonths(0, { allowDifferenceOnly: true })).toBe(0);
+      expect(() => resolveOrganizationPlanMonths(0)).toThrow('entre 1 y 12');
+      expect(() =>
+        resolveOrganizationPlanExpiration({ ...expirationBase, months: 0, targetPlan: 'pro' })
+      ).toThrow('cambio de plan con tiempo vigente');
+      expect(() =>
+        resolveOrganizationPlanExpiration({
+          ...expirationBase,
+          months: 0,
+          planExpiresAt: new Date('2026-10-01T23:59:59.999Z'),
+        })
+      ).toThrow('cambio de plan con tiempo vigente');
+    });
+  });
+
+  it('stacks months on the current expiry when the active plan stays the same', () => {
     expect(
       resolveOrganizationPlanExpiration({
-        ...base,
+        paidAt: new Date('2026-10-25T12:00:00.000Z'),
+        months: 12,
+        billingDay: 20,
+        planStatus: 'activo',
+        trialEndsAt: null,
+        planExpiresAt: new Date('2026-11-20T23:59:59.999Z'),
         currentPlan: 'pro',
         targetPlan: 'pro',
+        now: new Date('2026-10-25T12:00:00.000Z'),
       }).toISOString()
     ).toBe('2027-11-20T23:59:59.999Z');
   });

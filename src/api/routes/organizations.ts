@@ -39,6 +39,8 @@ import {
   assertFuturePlanDates,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
+  resolveOrganizationPlanPaymentAmount,
+  isOrganizationPlanChangeWithinTerm,
 } from '../../domain/business-plan';
 import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
@@ -719,7 +721,14 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     let newPlanExpiresAt: Date;
     let renewalMonths = 1;
     if (months !== undefined) {
-      const parsedMonths = resolveOrganizationPlanMonths(months);
+      const parsedMonths = resolveOrganizationPlanMonths(months, {
+        allowDifferenceOnly: isOrganizationPlanChangeWithinTerm({
+          currentPlan: current.plan,
+          targetPlan: plan as BusinessPlanKey,
+          planStatus: current.planStatus,
+          planExpiresAt: current.planExpiresAt,
+        }),
+      });
       renewalMonths = parsedMonths;
       newPlanExpiresAt = resolveOrganizationPlanExpiration({
         paidAt: parsedPaidAt,
@@ -753,7 +762,16 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
     }
 
     const paymentPlan = plan as BusinessPlanKey;
-    const fixedAmount = resolveFixedPlanPaymentAmount(paymentPlan, renewalMonths);
+    // El vencimiento manual heredado no pasa por la cotización: solo se cobra el precio del plan.
+    const fixedAmount =
+      months !== undefined
+        ? resolveOrganizationPlanPaymentAmount({
+            plan: paymentPlan,
+            months: renewalMonths,
+            paidAt: parsedPaidAt,
+            organization: current,
+          })
+        : resolveFixedPlanPaymentAmount(paymentPlan, renewalMonths);
     const effectiveAmount = fixedAmount !== null ? fixedAmount : amount;
     if (
       typeof effectiveAmount !== 'number' ||
