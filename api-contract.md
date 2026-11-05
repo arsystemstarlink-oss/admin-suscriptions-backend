@@ -560,6 +560,7 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
 // Sin plan vigente (vencido, suspendido) el ciclo empieza el dia del pago y billingDay pasa a ese dia (max. 28).
 // En una prueba vigente los meses corren desde su fin y billingDay pasa a ese dia, salvo el pago del alta (signupPayment), que conserva el corte del alta.
+// Si planExpiresAt se edito a mano (PUT /organizations/:id con plan activo), billingDay pasa al dia de esa fecha (max. 28).
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
 //         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)

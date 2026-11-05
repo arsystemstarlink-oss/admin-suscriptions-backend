@@ -601,6 +601,35 @@ describe('business plan rules', () => {
       ).toBe(20);
     });
 
+    it('renews a full month when the expiry was edited away from the billing day', () => {
+      const now = new Date('2026-09-01T12:00:00.000Z');
+      const edited = {
+        ...lapsed,
+        plan: 'pro' as const,
+        planStatus: 'activo' as const,
+        planExpiresAt: new Date('2026-09-15T23:59:59.999Z'),
+      };
+      const billingDay = resolvePlanPaymentBillingDay({
+        paidAt: now,
+        now,
+        organization: edited,
+        targetPlan: 'pro',
+      });
+
+      expect(billingDay).toBe(15);
+      expect(
+        resolveOrganizationPlanExpiration({
+          ...edited,
+          paidAt: now,
+          months: 1,
+          billingDay,
+          currentPlan: 'pro',
+          targetPlan: 'pro',
+          now,
+        }).toISOString()
+      ).toBe('2026-10-15T23:59:59.999Z');
+    });
+
     it('restarts the cycle when the status still says active but the term ended', () => {
       const now = new Date('2026-10-19T12:00:00.000Z');
 

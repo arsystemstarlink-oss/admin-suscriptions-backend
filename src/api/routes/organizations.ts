@@ -39,6 +39,7 @@ import {
   assertFuturePlanDates,
   resolveClientLimitForPlan,
   resolveFixedPlanPaymentAmount,
+  normalizeOrganizationBillingDay,
   resolvePlanPaymentBillingDay,
   resolvePrepaidLimitStart,
 } from '../../domain/business-plan';
@@ -692,7 +693,11 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       plan,
       clientLimit: clientLimit!,
       planStatus,
-      billingDay: getOrganizationBillingDay(existing),
+      // Un vencimiento editado a mano define el corte; los pagos siguientes parten de esa fecha.
+      billingDay:
+        planStatus === 'activo' && planExpiresAt
+          ? normalizeOrganizationBillingDay(planExpiresAt.getUTCDate())
+          : getOrganizationBillingDay(existing),
       trialEndsAt,
       planExpiresAt,
       ...(planWasChanged ? { planUpdatedAt: new Date(), planUpdatedBy: actor.userId } : {}),

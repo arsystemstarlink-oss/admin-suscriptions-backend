@@ -267,10 +267,10 @@ export function resolvePlanChangeCreditDays(input: {
 }
 
 /**
- * Día de corte que rige un pago, para que un mes pagado cubra un mes de servicio. Sin plazo
- * vigente el ciclo empieza el día del pago; durante la prueba, el día en que esta termina; y
- * al cambiar de plan, el día en que termina el saldo convertido. Conservar el corte anterior
- * dejaría un primer ciclo de solo días. El pago hecho al darse de alta (`signupPayment`)
+ * Día de corte que rige un pago, para que un mes pagado cubra un mes de servicio: es el día
+ * desde el que corren los meses (ver `resolvePlanPaymentBase`). En una renovación coincide con
+ * el corte guardado, salvo que el vencimiento se haya editado a mano. Conservar un corte que
+ * no coincide dejaría un ciclo de solo días. El pago hecho al darse de alta (`signupPayment`)
  * conserva el corte del alta: su mes ya corre desde ese día.
  */
 export function resolvePlanPaymentBillingDay(input: {
@@ -293,7 +293,7 @@ export function resolvePlanPaymentBillingDay(input: {
     targetPlan: input.targetPlan,
     now,
   });
-  if (term === 'paid' || (term === 'trial' && input.signupPayment)) {
+  if (term === 'trial' && input.signupPayment) {
     return getOrganizationBillingDay(input.organization, now);
   }
   return normalizeOrganizationBillingDay(base.getUTCDate());
