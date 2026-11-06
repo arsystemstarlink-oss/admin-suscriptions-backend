@@ -201,6 +201,10 @@ async function runDailyJobForOrganizationUnlocked(
   if (!organization) {
     throw new Error(`Organización ${organizationId} no encontrada para el Daily Job.`);
   }
+  if (organization.active === false) {
+    console.info(`[Daily Job] Se omite la organización ${organizationId}: está desactivada.`);
+    return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
+  }
   const currentOrganization = await organizationRepository.refreshExpiredStatus(organization, now);
   const clientLimit = resolveEffectiveClientLimit(currentOrganization.plan, currentOrganization.clientLimit);
   const clientCount = currentOrganization.clientCount;
@@ -658,6 +662,31 @@ export async function scheduleOrganization(organizationId: string): Promise<bool
   scheduledTasks.set(organizationId, task);
   console.log(`[Scheduler] Cron programado para org ${organizationId}: "${config.cronSchedule}" (timezone: ${SCHEDULER_TIMEZONE}).`);
   return true;
+}
+
+export function unscheduleOrganization(organizationId: string): void {
+  const existing = scheduledTasks.get(organizationId);
+  if (existing) {
+    existing.stop();
+    scheduledTasks.delete(organizationId);
+    console.log(`[Scheduler] Cron detenido para org ${organizationId}.`);
+  }
+}
+
+/**
+ * Alinea el cron con el estado de la organización al crearla, activarla o desactivarla. Si
+ * falla no debe tumbar la operación: el reinicio del servidor vuelve a programar todas.
+ */
+export async function syncOrganizationSchedule(organization: { id: string; active: boolean }): Promise<void> {
+  try {
+    if (organization.active) {
+      await scheduleOrganization(organization.id);
+    } else {
+      unscheduleOrganization(organization.id);
+    }
+  } catch (error) {
+    console.error(`[Scheduler] Error sincronizando el cron de la org ${organization.id}:`, error);
+  }
 }
 
 export async function rescheduleAllOrganizations(): Promise<void> {

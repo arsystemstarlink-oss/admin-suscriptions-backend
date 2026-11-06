@@ -2,6 +2,7 @@ import { BusinessError } from './entities';
 import { isValidDateString, parseDateOnly } from './business-rules';
 import { normalizeVenezuelanPhoneDigits } from './phone';
 import { validatePaymentMethod } from './payment-methods';
+import { assertPaidAtNotFuture } from './payment-date';
 
 export { phonesMatch } from './phone';
 
@@ -36,10 +37,6 @@ export function validateReportPaidAt(paidAt: string, periodStartDate: Date): Dat
   if (parsed.getTime() < startDay.getTime()) {
     throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago no puede ser anterior al inicio del período.');
   }
-  const today = new Date();
-  const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
-  if (parsed.getTime() > todayUtc.getTime()) {
-    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago no puede ser futura.');
-  }
+  assertPaidAtNotFuture(parsed);
   return parsed;
 }

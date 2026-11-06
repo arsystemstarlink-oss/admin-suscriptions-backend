@@ -12,6 +12,14 @@ import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../in
 import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
 import { parseDateOnly, isValidDateString, createId, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
 import { validatePaymentMethod } from '../../domain/payment-methods';
+import { assertPaidAtNotFuture } from '../../domain/payment-date';
+import { invalidateBadges } from '../../infrastructure/badge-cache';
+import {
+  createSubscriptionSchema,
+  parseBody,
+  registerAdvancePaymentSchema,
+  updateSubscriptionSchema,
+} from '../validation';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 import { getFirestore } from '../../infrastructure/firebase';
@@ -102,7 +110,7 @@ async function enrichRadarSubscriptions(
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: CreateSubscriptionDto = req.body;
+    const dto = parseBody<CreateSubscriptionDto>(createSubscriptionSchema, req.body);
     const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
@@ -131,10 +139,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
     let activationDate: Date | undefined;
     if (dto.activationDate) {
-      activationDate = parseDateOnly(dto.activationDate);
-      if (isNaN(activationDate.getTime())) {
+      if (!isValidDateString(dto.activationDate)) {
         throw new BusinessError('INVALID_ACTIVATION_DATE', 'Fecha de activación inválida.');
       }
+      activationDate = parseDateOnly(dto.activationDate);
     }
 
     if (dto.historicalPayments && !Array.isArray(dto.historicalPayments)) {
@@ -148,6 +156,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const historicalPayments: HistoricalPaymentInput[] | undefined = dto.historicalPayments?.map((p) => {
       if (!isValidDateString(p.paidAt)) {
         throw new BusinessError('INVALID_DATE_FORMAT', `Fecha de pago inválida: ${p.paidAt}. Use formato YYYY-MM-DD.`);
+      }
+      if (!isValidDateString(p.startDate) || !isValidDateString(p.endDate)) {
+        throw new BusinessError('INVALID_DATE_FORMAT', 'Las fechas del período deben tener formato YYYY-MM-DD.');
       }
       return {
         periodLabel: p.periodLabel,
@@ -365,7 +376,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: UpdateSubscriptionDto = req.body;
+    const dto = parseBody<UpdateSubscriptionDto>(updateSubscriptionSchema, req.body);
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
 
@@ -505,15 +516,12 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
-    const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
-    if (!existing) {
-      throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
-    }
 
-    await billingPeriodRepository.deleteBySubscriptionId(req.params.id, organizationId);
-    await subscriptionRepository.delete(req.params.id);
+    await subscriptionTransactions.deleteSubscription(req.params.id, organizationId, auth.userId);
     scheduleStatsRecompute(organizationId);
+    invalidateBadges(organizationId);
     res.status(204).send();
   } catch (err) {
     next(err);
@@ -522,7 +530,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
 router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: RegisterAdvancePaymentDto = req.body;
+    const dto = parseBody<RegisterAdvancePaymentDto>(registerAdvancePaymentSchema, req.body);
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
 
@@ -537,6 +545,7 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
     }
 
     const paidAt = parseDateOnly(dto.paidAt);
+    assertPaidAtNotFuture(paidAt);
 
     const result = await subscriptionTransactions.run(req.params.id, organizationId, async (transaction) => {
       const { subscription, periods: allPeriods } = transaction;

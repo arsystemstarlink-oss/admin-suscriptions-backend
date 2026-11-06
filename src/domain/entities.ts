@@ -337,6 +337,7 @@ export type DomainEventType =
   | 'client.created'
   | 'subscription.created'
   | 'subscription.updated'
+  | 'subscription.deleted'
   | 'subscription.suspended'
   | 'subscription.reactivated'
   | 'subscription.plan_changed'

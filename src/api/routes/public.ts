@@ -44,6 +44,7 @@ import { authService } from '../../domain/auth-service';
 import { createRefreshSession } from '../../domain/auth-session';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
+import { syncOrganizationSchedule } from '../../infrastructure/scheduler';
 import { pushService } from '../../infrastructure/push-service';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
 import { toOrganizationDto } from '../dto/organization';
@@ -420,11 +421,8 @@ router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: 
       throw error;
     }
 
-    try {
-      await organizationRepository.createWithAdmin(organization, user, undefined, planReport);
-    } catch (error) {
-      throw error;
-    }
+    await organizationRepository.createWithAdmin(organization, user, undefined, planReport);
+    await syncOrganizationSchedule(organization);
 
     await syncUserCustomClaims({
       uid: user.id,

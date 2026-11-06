@@ -194,6 +194,8 @@ export function parseDateOnly(dateStr: string): Date {
 }
 
 export function isValidDateString(dateStr: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  // Date.UTC desborda fechas inexistentes (31 de febrero pasa a marzo): debe conservar el texto.
   const date = parseDateOnly(dateStr);
-  return !isNaN(date.getTime()) && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
+  return !isNaN(date.getTime()) && date.toISOString().slice(0, 10) === dateStr;
 }

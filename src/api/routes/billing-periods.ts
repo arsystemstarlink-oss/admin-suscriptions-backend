@@ -14,6 +14,8 @@ import { applyPeriodPayment, subscriptionTransactions } from '../../infrastructu
 import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { validatePaymentMethod } from '../../domain/payment-methods';
+import { assertPaidAtNotFuture } from '../../domain/payment-date';
+import { parseBody, registerPaymentSchema, updateBillingPeriodSchema } from '../validation';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -188,7 +190,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: UpdateBillingPeriodDto = req.body;
+    const dto = parseBody<UpdateBillingPeriodDto>(updateBillingPeriodSchema, req.body);
     const organizationId = requireOrganizationId(req);
     const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
 
@@ -206,6 +208,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         throw new BusinessError('INVALID_DATE_FORMAT', `Fecha de pago inválida: ${dto.paidAt}. Use formato YYYY-MM-DD.`);
       }
       paidAt = parseDateOnly(dto.paidAt);
+      assertPaidAtNotFuture(paidAt);
     }
 
     const updatedPeriod = businessService.updateBillingPeriodPaymentData({
@@ -249,7 +252,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: RegisterPaymentDto = req.body;
+    const dto = parseBody<RegisterPaymentDto>(registerPaymentSchema, req.body);
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
     const period = await billingPeriodRepository.getByIdScoped(req.params.id, organizationId);
@@ -269,6 +272,7 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const paidAt = parseDateOnly(dto.paidAt);
+    assertPaidAtNotFuture(paidAt);
 
     const payment = await subscriptionTransactions.run(
       period.subscriptionId,

@@ -11,10 +11,16 @@ import {
   billingPeriodRepository,
   paymentReportRepository,
   whatsappMessageRepository,
+  whatsappConversationRepository,
   pushSubscriptionRepository,
   domainEventRepository,
   schedulerConfigRepository,
+  schedulerLogRepository,
+  jobLockRepository,
+  organizationPlanPaymentRepository,
+  organizationPlanPaymentReportRepository,
 } from '../../infrastructure/repositories';
+import { syncOrganizationSchedule, unscheduleOrganization } from '../../infrastructure/scheduler';
 import {
   AdminInvite,
   BusinessError,
@@ -258,6 +264,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     await organizationRepository.createWithTwilioClaim(organization);
+    await syncOrganizationSchedule(organization);
     res.status(201).json(toOrganizationDto(organization));
   } catch (err) {
     next(err);
@@ -349,6 +356,7 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
     }
 
     await organizationRepository.createWithAdmin(organization, user, inviteData?.invite);
+    await syncOrganizationSchedule(organization);
     await syncUserCustomClaims({
       uid: user.id,
       role: user.role,
@@ -705,6 +713,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     const saved = await organizationRepository.updateOrganization(updated, existing);
+    if (saved.active !== existing.active) {
+      await syncOrganizationSchedule(saved);
+    }
     res.json(toOrganizationDto(await organizationRepository.refreshExpiredStatus(saved)));
   } catch (err) {
     next(err);
@@ -844,10 +855,11 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     const orgId = existing.id;
+    unscheduleOrganization(orgId);
 
     const users = await userRepository.listByOrganization(orgId);
-    await refreshTokenSessionRepository.revokeAllForUsers(users.map((user) => user.id));
     for (const user of users) {
+      await refreshTokenSessionRepository.deleteByField('userId', user.id);
       try {
         await admin.auth().deleteUser(user.id);
       } catch (firebaseError: any) {
@@ -867,7 +879,13 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
     await whatsappMessageRepository.deleteByFields([['organizationId', orgId]]);
     await pushSubscriptionRepository.deleteByFields([['organizationId', orgId]]);
     await domainEventRepository.deleteByFields([['organizationId', orgId]]);
+    await whatsappConversationRepository.deleteByFields([['organizationId', orgId]]);
+    await adminInviteRepository.deleteByFields([['organizationId', orgId]]);
+    await organizationPlanPaymentRepository.deleteByFields([['organizationId', orgId]]);
+    await organizationPlanPaymentReportRepository.deleteByFields([['organizationId', orgId]]);
+    await schedulerLogRepository.deleteByFields([['organizationId', orgId]]);
     await schedulerConfigRepository.delete(orgId);
+    await jobLockRepository.remove(orgId);
 
     await deleteOrganizationStats(orgId);
     await organizationRepository.deleteWithTwilioClaim(orgId, existing.twilio?.phoneNumber);

@@ -27,6 +27,9 @@ export async function requireWritablePlan(
     if (!organization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
     }
+    if (organization.active === false) {
+      throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
+    }
     const current = await organizationRepository.refreshExpiredStatus(organization);
 
     // Los planes fijos mandan sobre el límite almacenado. Así una organización con

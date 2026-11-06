@@ -103,6 +103,11 @@ export async function persistOrganizationStats(organizationId: string): Promise<
 }
 
 export async function deleteOrganizationStats(organizationId: string): Promise<void> {
+  const pending = pendingRecomputes.get(organizationId);
+  if (pending) {
+    clearTimeout(pending);
+    pendingRecomputes.delete(organizationId);
+  }
   recordWrite();
   await getFirestore().collection(STATS_COLLECTION).doc(organizationId).delete();
   statsCache.delete(organizationId);

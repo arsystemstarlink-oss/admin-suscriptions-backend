@@ -11,6 +11,7 @@ import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni, buildClientName, buildClientSortName } from '../../domain/business-rules';
 import { normalizePhoneToE164 } from '../../domain/phone';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { createClientSchema, parseBody, updateClientSchema } from '../validation';
 
 const router = Router();
 
@@ -81,7 +82,7 @@ async function enrichClients(
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: CreateClientDto = req.body;
+    const dto = parseBody<CreateClientDto>(createClientSchema, req.body);
     const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
@@ -262,7 +263,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: UpdateClientDto = req.body;
+    const dto = parseBody<UpdateClientDto>(updateClientSchema, req.body);
     const organizationId = requireOrganizationId(req);
     const existing = await clientRepository.getByIdScoped(req.params.id, organizationId);
 
@@ -329,16 +330,6 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
     if (!existing) {
       throw new BusinessError('NOT_FOUND', 'Cliente no encontrado.');
-    }
-
-    const subscriptions = await subscriptionRepository.listByClientId(req.params.id, organizationId);
-    const activeSubscriptions = subscriptions.filter((s) => s.status === 'ACTIVE');
-
-    if (activeSubscriptions.length > 0) {
-      throw new BusinessError(
-        'CLIENT_HAS_ACTIVE_SUBSCRIPTIONS',
-        `No se puede eliminar el cliente. Tiene ${activeSubscriptions.length} suscripción(es) activa(s). Suspéndalas o elimínelas primero.`
-      );
     }
 
     const deleted = await clientRepository.deleteAndDecrementClientCount(

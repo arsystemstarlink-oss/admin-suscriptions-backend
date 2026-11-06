@@ -629,6 +629,10 @@ El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infra
 
 Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`. Cada suscripción se guarda en su propia transacción (períodos, radar y eventos juntos). Si una falla, no se notifica por ella, el job sigue con las demás y la ejecución queda con `status: error` y los contadores de lo que sí se guardó. Si una suscripción cambió mientras el job corría (un pago, una edición), se omite sin escribir nada y se reevalúa en la siguiente ejecución.
 
+Ciclo de vida del cron
+
+Crear o activar una organización programa su cron; desactivarla o eliminarla lo detiene, sin reiniciar el servidor. Esto afecta a la instancia que atiende la petición: con varias instancias, las demás lo aplican al reiniciarse, aunque el job de una organización desactivada no procesa nada en ninguna.
+
 Consistencia de escrituras
 
 Los pagos de períodos, la revisión de reportes, los pagos adelantados y la edición de suscripciones se ejecutan en una transacción que relee la suscripción y todos sus períodos (`src/infrastructure/billing-transactions.ts`). Dos operaciones simultáneas no pueden validar contra el mismo estado. El ID de un período se deriva de su suscripción y fecha de inicio, de modo que una suscripción no puede tener dos períodos que empiecen el mismo día. Un pago de plan y la aprobación de su reporte se guardan juntos, y se rechazan con `PLAN_CONCURRENT_UPDATE` si el plan cambió desde que se calculó el vencimiento.

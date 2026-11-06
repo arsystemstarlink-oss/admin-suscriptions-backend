@@ -5,12 +5,13 @@ import { BusinessError } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
+import { createPlanSchema, parseBody, updatePlanSchema } from '../validation';
 
 const router = Router();
 
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: CreatePlanDto = req.body;
+    const dto = parseBody<CreatePlanDto>(createPlanSchema, req.body);
     const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
@@ -121,7 +122,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const dto: UpdatePlanDto = req.body;
+    const dto = parseBody<UpdatePlanDto>(updatePlanSchema, req.body);
     const organizationId = requireOrganizationId(req);
     const existing = await planRepository.getByIdScoped(req.params.id, organizationId);
 

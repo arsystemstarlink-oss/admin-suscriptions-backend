@@ -24,6 +24,8 @@ Auth: Authorization: Bearer {accessToken}
 - Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP), `POST /api/auth/refresh` (60 / 15 min por IP) e invitaciones `/api/auth/invite/*` (30 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
 - Alta conjunta de organización y administrador: `POST /api/organizations/onboard` (10 intentos / 15 min por IP). El alta crea una invitación de un solo uso (7 días) en vez de exigir contraseña; también acepta `password` por compatibilidad.
 - Un administrador con `mustChangePassword: true` solo puede usar `/api/auth/me` y `/api/auth/change-password` hasta cambiar su contraseña inicial (`403 PASSWORD_CHANGE_REQUIRED` en el resto).
+- Una organización desactivada (`active: false`) responde `403 ORGANIZATION_INACTIVE` al iniciar sesión, renovar sesión, aceptar invitaciones y en cualquier escritura. Un access token ya emitido conserva la lectura hasta expirar. Su Daily Job no se ejecuta.
+- En clientes, planes, suscripciones y períodos, un campo con tipo o longitud incorrectos responde `400 INVALID_DATA`. Una fecha inexistente (`2026-02-31`) responde `400 INVALID_DATE_FORMAT` y una fecha de pago futura `400 INVALID_PAYMENT_DATE`.
 - Una organización vencida o suspendida permanece en solo lectura: el backend bloquea sus escrituras y conserva las lecturas. `/api/public/*` mantiene su acceso normal.
 - Headers de seguridad HTTP vía Helmet.
 - `POST /communications/webhook` (público) valida firma Twilio (obligatoria en production).
@@ -592,7 +594,8 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 **DELETE /organizations/:id**
 ```typescript
 // Response 204
-// Errors: 404 ORGANIZATION_NOT_FOUND | 400 INVALID_DATA (tiene usuarios asignados)
+// Elimina también sus usuarios y todos los datos de la organización, y detiene su cron.
+// Errors: 404 ORGANIZATION_NOT_FOUND
 ```
 
 ---
@@ -649,6 +652,7 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 
 **DELETE /clients/:id** → Response 204
 // El borrado y decremento de clientCount son atómicos e idempotentes.
+// Errors: 409 CLIENT_HAS_ACTIVE_SUBSCRIPTIONS | 409 CLIENT_HAS_SUBSCRIPTIONS (suspendidas: conservan deuda; hay que eliminarlas primero)
 
 ---
 
@@ -770,6 +774,7 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 ```
 
 **DELETE /subscriptions/:id** → Response 204
+// Elimina de forma atómica la suscripción, sus períodos y sus reportes de pago, y registra subscription.deleted.
 > Elimina tambien todos los periodos de facturacion asociados a la suscripcion.
 
 ---

@@ -1,4 +1,10 @@
-import { runDailyJobForOrganization } from '../infrastructure/scheduler';
+import cron from 'node-cron';
+import {
+  runDailyJobForOrganization,
+  stopScheduler,
+  syncOrganizationSchedule,
+  unscheduleOrganization,
+} from '../infrastructure/scheduler';
 import { Plan, Subscription, BillingPeriod, Organization, WhatsAppMessage } from '../domain/entities';
 
 jest.mock('../infrastructure/repositories', () => ({
@@ -782,6 +788,61 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       const created = firstChange().createdPeriods[0];
       expect(created.startDate).toEqual(new Date(Date.UTC(2026, 10, 10)));
       expect(created.endDate).toEqual(new Date(Date.UTC(2026, 11, 10)));
+    });
+  });
+
+  it('no procesa una organización desactivada aunque su cron siga programado en otra instancia', async () => {
+    mockedOrganizations.getById.mockResolvedValue({ ...makeOrganization('org_A'), active: false });
+
+    const result = await runDailyJobForOrganization('org_A');
+
+    expect(result).toMatchObject({ overdue: 0, generated: 0, notifications: 0 });
+    expect(mockedBillingPeriods.listPendingOverdueCandidates).not.toHaveBeenCalled();
+    expect(mockedApplyChange).not.toHaveBeenCalled();
+  });
+
+  describe('ciclo de vida del cron', () => {
+    const task = { stop: jest.fn() };
+    let schedule: jest.SpyInstance;
+
+    beforeEach(() => {
+      task.stop.mockClear();
+      schedule = jest.spyOn(cron, 'schedule').mockReturnValue(task as unknown as cron.ScheduledTask);
+    });
+
+    afterEach(() => {
+      stopScheduler();
+      schedule.mockRestore();
+    });
+
+    it('programa una organización activa y detiene el cron al desactivarla', async () => {
+      await syncOrganizationSchedule({ id: 'org_A', active: true });
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(schedule.mock.calls[0][0]).toBe('0 0 * * *');
+
+      await syncOrganizationSchedule({ id: 'org_A', active: false });
+      expect(task.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('volver a sincronizar no deja dos crons para la misma organización', async () => {
+      await syncOrganizationSchedule({ id: 'org_A', active: true });
+      await syncOrganizationSchedule({ id: 'org_A', active: true });
+
+      expect(schedule).toHaveBeenCalledTimes(2);
+      expect(task.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it('detener una organización sin cron no falla', () => {
+      expect(() => unscheduleOrganization('org_sin_cron')).not.toThrow();
+    });
+
+    it('un error al leer la configuración no se propaga a quien crea la organización', async () => {
+      mockedSchedulerConfig.getConfig.mockRejectedValueOnce(new Error('firestore caído'));
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      await expect(syncOrganizationSchedule({ id: 'org_A', active: true })).resolves.toBeUndefined();
+
+      consoleError.mockRestore();
     });
   });
 

@@ -34,6 +34,11 @@ jest.mock('../../infrastructure/push-service', () => ({
   pushService: { sendBroadcastToOrganization: jest.fn(async () => 0) },
 }));
 jest.mock('../../infrastructure/badge-cache', () => ({ invalidateBadges: jest.fn() }));
+// El recálculo diferido se dispararía tras terminar las pruebas; el inmediato del job sigue siendo real.
+jest.mock('../../infrastructure/stats-service', () => ({
+  ...jest.requireActual('../../infrastructure/stats-service'),
+  scheduleStatsRecompute: jest.fn(),
+}));
 
 const ORG = 'org_1';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -376,6 +381,55 @@ describe('transacciones contra el emulador de Firestore', () => {
 
       expect(payment.status).toBe(200);
       expect((await read('billingPeriods', duePeriod.id))?.status).toBe('PAID');
+    });
+  });
+
+  describe('borrados', () => {
+    it('eliminar una suscripción borra sus períodos y reportes en una sola operación', async () => {
+      await seed('subscriptions', subscription);
+      await seed('billingPeriods', openPeriod);
+      await seed('billingPeriods', { ...openPeriod, id: 'period_other', subscriptionId: 'sub_other' });
+      await seed('paymentReports', {
+        id: 'report_1',
+        organizationId: ORG,
+        subscriptionId: subscription.id,
+        billingPeriodId: openPeriod.id,
+        status: 'PENDING',
+      } as { id: string });
+
+      const response = await send('DELETE', `/subscriptions/${subscription.id}`, {});
+
+      expect(response.status).toBe(204);
+      expect(await read('subscriptions', subscription.id)).toBeUndefined();
+      expect(await read('billingPeriods', openPeriod.id)).toBeUndefined();
+      expect(await read('paymentReports', 'report_1')).toBeUndefined();
+      expect(await read('billingPeriods', 'period_other')).toBeDefined();
+      expect(await count('domainEvents', 'type', 'subscription.deleted')).toBe(1);
+    });
+
+    it('no elimina un cliente con una suscripción suspendida y su contador no cambia', async () => {
+      await seed('organizations', organization);
+      await seed('clients', { id: subscription.clientId, organizationId: ORG } as { id: string });
+      await seed('subscriptions', { ...subscription, status: 'SUSPENDED' });
+
+      await expect(
+        clientRepository.deleteAndDecrementClientCount(subscription.clientId, ORG)
+      ).rejects.toMatchObject({ code: 'CLIENT_HAS_SUBSCRIPTIONS' });
+
+      expect(await read('clients', subscription.clientId)).toBeDefined();
+      expect((await read('organizations', ORG))?.clientCount).toBe(1);
+    });
+
+    it('elimina un cliente sin suscripciones y descuenta el contador', async () => {
+      await seed('organizations', organization);
+      await seed('clients', { id: subscription.clientId, organizationId: ORG } as { id: string });
+
+      await expect(
+        clientRepository.deleteAndDecrementClientCount(subscription.clientId, ORG)
+      ).resolves.toBe(true);
+
+      expect(await read('clients', subscription.clientId)).toBeUndefined();
+      expect((await read('organizations', ORG))?.clientCount).toBe(0);
     });
   });
 

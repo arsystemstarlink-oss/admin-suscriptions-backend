@@ -2,6 +2,14 @@ import { BusinessError } from './entities';
 
 const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Único criterio de "fecha de pago futura": posterior al día actual en UTC. */
+export function assertPaidAtNotFuture(paidAt: Date, now = new Date()): void {
+  const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+  if (paidAt.getTime() >= tomorrow) {
+    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago no puede ser futura.');
+  }
+}
+
 /**
  * Normaliza una fecha de pago de negocio. Acepta `YYYY-MM-DD` (se interpreta
  * al mediodía UTC para evitar desfases) o una fecha ISO completa. Rechaza
@@ -27,10 +35,7 @@ export function parseBusinessPaymentDate(
     return parsed;
   }
 
-  const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
-  if (parsed.getTime() >= tomorrow) {
-    throw new BusinessError('INVALID_PAYMENT_DATE', 'La fecha de pago no puede ser futura.');
-  }
+  assertPaidAtNotFuture(parsed, now);
 
   return parsed;
 }

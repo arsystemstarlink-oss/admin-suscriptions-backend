@@ -529,15 +529,34 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   async deleteAndDecrementClientCount(id: string, organizationId: string): Promise<boolean> {
     const clientRef = this.db.collection(this.collectionName).doc(id);
     const organizationRef = this.db.collection('organizations').doc(organizationId);
+    const subscriptionsQuery = this.db
+      .collection('subscriptions')
+      .where('organizationId', '==', organizationId)
+      .where('clientId', '==', id);
 
     return this.db.runTransaction(async (transaction) => {
-      const [clientSnapshot, organizationSnapshot] = await Promise.all([
+      const [clientSnapshot, organizationSnapshot, subscriptions] = await Promise.all([
         transaction.get(clientRef),
         transaction.get(organizationRef),
+        transaction.get(subscriptionsQuery),
       ]);
-      recordDocReads(2);
+      recordDocReads(2 + subscriptions.size);
       if (!clientSnapshot.exists || clientSnapshot.data()?.organizationId !== organizationId) {
         return false;
+      }
+      // Una suscripción suspendida conserva deuda: eliminar al cliente la dejaría sin dueño.
+      const activeCount = subscriptions.docs.filter((doc) => doc.data().status === 'ACTIVE').length;
+      if (activeCount > 0) {
+        throw new BusinessError(
+          'CLIENT_HAS_ACTIVE_SUBSCRIPTIONS',
+          `No se puede eliminar el cliente. Tiene ${activeCount} suscripción(es) activa(s). Suspéndalas o elimínelas primero.`
+        );
+      }
+      if (!subscriptions.empty) {
+        throw new BusinessError(
+          'CLIENT_HAS_SUBSCRIPTIONS',
+          `No se puede eliminar el cliente. Tiene ${subscriptions.size} suscripción(es) suspendida(s). Elimínelas primero.`
+        );
       }
 
       if (!organizationSnapshot.exists) {
@@ -1680,6 +1699,12 @@ export class OrganizationPlanPaymentReportFirestoreRepository extends FirestoreR
   }
 }
 
+export class OrganizationPlanPaymentFirestoreRepository extends FirestoreRepository<OrganizationPlanPayment> {
+  constructor() {
+    super('organizationPlanPayments');
+  }
+}
+
 export class PlanQuoteRequestFirestoreRepository extends FirestoreRepository<PlanQuoteRequest> {
   constructor() {
     super('planQuoteRequests');
@@ -1719,6 +1744,11 @@ export class JobLockFirestoreRepository {
     }
   }
 
+  async remove(organizationId: string): Promise<void> {
+    recordWrite();
+    await this.db.collection(this.collectionName).doc(organizationId).delete();
+  }
+
   async release(organizationId: string, instanceId: string): Promise<void> {
     const lockRef = this.db.collection(this.collectionName).doc(organizationId);
     recordDocReads();
@@ -1747,5 +1777,6 @@ export const domainEventRepository = new DomainEventFirestoreRepository();
 export const paymentReportRepository = new PaymentReportFirestoreRepository();
 export const organizationPlanPaymentReportRepository =
   new OrganizationPlanPaymentReportFirestoreRepository();
+export const organizationPlanPaymentRepository = new OrganizationPlanPaymentFirestoreRepository();
 export const planQuoteRequestRepository = new PlanQuoteRequestFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();

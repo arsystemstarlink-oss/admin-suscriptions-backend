@@ -22,6 +22,7 @@
     "backfill:billing-periods": "ts-node scripts/backfill-billing-period-fields.ts",
     "migrate:business-rules": "ts-node scripts/migrate-business-rules.ts",
     "rebuild:stats": "ts-node scripts/rebuild-stats.ts",
+    "audit:billing": "ts-node scripts/audit-billing-consistency.ts",
     "verify:backfills": "ts-node scripts/verify-backfills.ts",
     "measure:endpoints": "ts-node scripts/measure-endpoints.ts",
     "test:endpoints": "ts-node scripts/test-endpoints.ts",
@@ -45,7 +46,8 @@
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^3.0.3",
     "twilio": "^6.0.2",
-    "web-push": "^3.6.7"
+    "web-push": "^3.6.7",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",

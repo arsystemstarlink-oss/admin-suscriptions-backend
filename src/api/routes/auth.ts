@@ -113,6 +113,15 @@ async function validateAndCreateUser(input: {
 
 export { normalizePhoneToE164 };
 
+/** Un admin de una organización desactivada no puede abrir ni renovar sesión. */
+async function assertOrganizationActive(user: User): Promise<void> {
+  if (user.role !== 'admin' || !user.organizationId) return;
+  const organization = await organizationRepository.getById(user.organizationId);
+  if (organization?.active === false) {
+    throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
+  }
+}
+
 async function resolveInvite(token: unknown): Promise<{
   invite: AdminInvite;
   user: User;
@@ -171,6 +180,7 @@ router.post('/invite/accept', async (req: Request, res: Response, next: NextFunc
 
     const { invite, user } = await resolveInvite(token);
     const trimmedName = typeof name === 'string' ? name.trim() : '';
+    await assertOrganizationActive(user);
 
     const consumed = await adminInviteRepository.consume(invite.id);
     if (!consumed) {
@@ -239,6 +249,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     if (!isValidPassword) {
       throw new BusinessError('INVALID_CREDENTIALS', 'Credenciales inválidas.');
     }
+    await assertOrganizationActive(user);
 
     const accessToken = authService.generateAccessToken(user);
     const rememberMe = req.body?.rememberMe !== false;
@@ -303,6 +314,7 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     if (!user) {
       throw new BusinessError('USER_NOT_FOUND', 'Usuario no encontrado.');
     }
+    await assertOrganizationActive(user);
 
     const rememberMe = session.rememberMe !== false;
     const { token: newRefreshToken, jti: newJti, expiresAt: newExpiresAt } =

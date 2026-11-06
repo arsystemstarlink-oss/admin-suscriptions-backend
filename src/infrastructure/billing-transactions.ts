@@ -113,6 +113,55 @@ class SubscriptionTransactionRepository extends FirestoreRepository<{ id: string
   }
 
   /**
+   * Elimina la suscripción junto con sus períodos y reportes de pago, para que no queden
+   * huérfanos ni reportes pendientes que ya no se pueden aprobar.
+   */
+  async deleteSubscription(subscriptionId: string, organizationId: string, actorUserId: string): Promise<void> {
+    const db = this.db;
+    const subscriptionRef = db.collection('subscriptions').doc(subscriptionId);
+    const related = (collection: string) =>
+      db
+        .collection(collection)
+        .where('organizationId', '==', organizationId)
+        .where('subscriptionId', '==', subscriptionId);
+
+    await db.runTransaction(async (transaction) => {
+      const subscription = await transaction.get(subscriptionRef);
+      recordDocReads();
+      if (!subscription.exists || subscription.data()?.organizationId !== organizationId) {
+        throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
+      }
+      const periods = await transaction.get(related('billingPeriods'));
+      const reports = await transaction.get(related('paymentReports'));
+      recordDocReads(periods.size + reports.size);
+
+      [...periods.docs, ...reports.docs].forEach((doc) => {
+        recordWrite();
+        transaction.delete(doc.ref);
+      });
+      recordWrite();
+      transaction.delete(subscriptionRef);
+
+      const event: DomainEvent = {
+        id: createId(),
+        type: 'subscription.deleted',
+        organizationId,
+        actorUserId,
+        entity: 'subscription',
+        entityId: subscriptionId,
+        payload: {
+          kitNumber: subscription.data()?.kitNumber,
+          deletedPeriods: periods.size,
+          deletedReports: reports.size,
+        },
+        createdAt: new Date(),
+      };
+      recordWrite();
+      transaction.set(db.collection('domainEvents').doc(event.id), this.serialize(event));
+    });
+  }
+
+  /**
    * Guarda de forma atómica lo que el job decidió para una suscripción. Si cambió mientras
    * corría (un pago, una edición) no escribe nada: la siguiente ejecución la reevalúa con
    * datos frescos. Solo toca los campos que le corresponden, no el documento completo.
