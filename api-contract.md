@@ -123,6 +123,7 @@ interface Subscription {
   clientId: string; planId: string; kitNumber: string;
   accountNumber?: string;
   billingDay: number; status: SubscriptionStatus;
+  suspensionSource?: 'AUTOMATIC' | 'MANUAL'; // solo con status SUSPENDED. AUTOMATIC: por deuda, se levanta al saldarla. MANUAL: solo la levanta un admin. Sin valor en documentos anteriores: se trata como AUTOMATIC
   maxOverduePeriods: number; activationDate?: string; createdAt: string;
 }
 
@@ -745,6 +746,8 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 ```typescript
 // Request (partial)
 { planId?: string; kitNumber?: string; accountNumber?: string; billingDay?: number; maxOverduePeriods?: number; status?: SubscriptionStatus }
+// status: pasar de ACTIVE a SUSPENDED fija suspensionSource = MANUAL; volver a ACTIVE lo limpia y, si ningún período cubre el ciclo de hoy, crea uno PENDING (los meses suspendida no generan deuda)
+// billingDay: rige desde el ciclo siguiente, sin prorrateo. El ciclo de transición va del fin del actual al nuevo día de corte y dura al menos 28 días (de 20 a 5: 46 días; de 5 a 20: 46 días)
 // kitNumber se convierte a UPPERCASE automaticamente
 // Response 200 → Subscription
 ```
@@ -805,6 +808,7 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 // Response 200
 {
   billingPeriod: BillingPeriod;
+  currentPeriod?: BillingPeriod; // período creado al reactivar; ausente si otro período ya cubre el ciclo de hoy
   subscription: { id: string; status: SubscriptionStatus; previousStatus: SubscriptionStatus; reactivated: boolean };
 }
 ```
@@ -1378,7 +1382,7 @@ POST /subscriptions
 - El primer mes de activacion siempre nace `PENDING` (el cliente pago para activar, aunque el pago no este registrado aun)
 - Periodos siguientes pasados → `OVERDUE`, periodo actual → `PENDING` (maximo `maxOverduePeriods` vencidos)
 - Si overdueCount >= maxOverduePeriods → suscripcion `SUSPENDED` y NO se genera el periodo actual (los meses durante la suspension no generan deuda)
-- El primer mes de activacion nunca pasa a `OVERDUE`, ni siquiera por el Daily Job
+- El primer mes de activacion nunca pasa a `OVERDUE`, ni siquiera por el Daily Job. Si sigue impago al terminar, el Daily Job genera igual el siguiente periodo
 - Al pagar todos los vencidos, la suscripcion se reactiva y se genera el periodo actual desde hoy + billingDay
 - Frontend muestra periodos vencidos con boton "Registrar Pago"
 
@@ -1407,9 +1411,11 @@ POST /billing-periods/:id/pay
 { paymentMethod: "CASH", amount: 50, paidAt: "2026-07-31" }
 ```
 - amount debe coincidir con el amount del periodo
+- Un periodo sigue `PENDING` durante su dia de corte y pasa a `OVERDUE` desde el dia siguiente (dias UTC)
 - La reactivacion requiere pagar TODOS los periodos vencidos (overdueCount === 0)
+- Una suspension con `suspensionSource: MANUAL` no se levanta al pagar: se reactiva con `PUT /subscriptions/:id`
 - Si la suscripcion estaba `SUSPENDED` y se reactiva → `reactivated: true`
-- Al reactivar se genera el periodo actual `PENDING` desde hoy + billingDay (respuesta: `currentPeriod`)
+- Al reactivar se genera el periodo actual `PENDING` desde hoy + billingDay (respuesta: `currentPeriod`), salvo que otro periodo ya cubra ese ciclo
 
 ### 5. Editar datos de pago de periodo ya pagado
 

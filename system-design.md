@@ -266,7 +266,7 @@ Método:
 USDT
 Overdue
 
-El período terminó y no fue pagado.
+El período terminó y no fue pagado. Sigue Pending durante todo su día de corte (en día UTC) y pasa a Overdue desde el día siguiente. Excepción: el primer período de una suscripción retroactiva nunca pasa a Overdue, pero si sigue impago al terminar se genera igual el siguiente.
 
 Ejemplo:
 
@@ -338,6 +338,18 @@ Período:
 5 Julio
 -
 5 Agosto
+Cambio de fecha de corte
+
+Rige desde el ciclo siguiente, sin prorrateo. El ciclo de transición va del fin del actual al nuevo día de corte, se cobra completo y dura al menos 28 días.
+
+Ejemplo:
+
+Corte de 20 a 5, ciclo actual termina el 20 Agosto:
+
+20 Agosto
+-
+5 Octubre
+
 6. Generación automática de períodos
 
 Los períodos no son creados manualmente.
@@ -446,7 +458,15 @@ Suspended
 →
 Active
 
-Se genera el período actual desde hoy + fecha de corte como PENDING.
+Se genera el período actual desde hoy + fecha de corte como PENDING, salvo que otro período ya cubra ese ciclo.
+
+Origen de la suspensión (suspensionSource):
+
+AUTOMATIC: por deuda. Se levanta sola al pagar todos los períodos vencidos.
+
+MANUAL: la aplicó un administrador. Pagar no la levanta; solo otro cambio manual a ACTIVE, que también retoma desde el ciclo de hoy.
+
+Los documentos anteriores sin este campo se tratan como AUTOMATIC.
 
 8. Cambio de plan
 
@@ -595,7 +615,7 @@ Daily Job
 
 El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infrastructure/scheduler.ts`) se lista cada organización activa y se registra un `cron.schedule` **individual** con la expresión `cronSchedule` propia de cada org (`schedulerConfig/{orgId}`) y el timezone de `SCHEDULER_TIMEZONE`. Cada tick ejecuta `runDailyJobForOrganization(orgId)` de forma aislada, escaneando solo los datos de esa org y enviando notificaciones (WhatsApp/Push) dentro de la org. Se respeta el `enabled` de cada org: si una org está desactivada (`enabled=false`) o su expresión cron es inválida, no se programa cron para ella. Los cambios en `PUT /scheduler/config` reprograman el cron de la org en caliente (sin reiniciar). El run manual (`POST /scheduler/run`) ejecuta por org sin importar `enabled`. La configuración del scheduler **siempre es por organización**: no existe una configuración global y `POST /scheduler/run` requiere indicar la org destino (`?organizationId=org_X`), devolviendo `TENANT_REQUIRED` si falta.
 
-Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`.
+Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`. Si falla el guardado de períodos o suscripciones, la ejecución se aborta antes de notificar y queda con `status: error` y contadores en cero, aunque una parte de los cambios ya se haya escrito.
 
 Migración
 

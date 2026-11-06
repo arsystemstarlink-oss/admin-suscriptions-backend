@@ -302,13 +302,16 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
           throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
         }
 
-        generatedPeriod = businessService.generateCurrentPeriod({
+        generatedPeriod = businessService.generateReactivationPeriod({
           subscription: evaluatedSubscription,
           plan,
+          periods: allPeriods,
           now: new Date(),
         });
-        currentPeriod = generatedPeriod;
-        periodsForRadar = [...allPeriods, generatedPeriod];
+        if (generatedPeriod) {
+          currentPeriod = generatedPeriod;
+          periodsForRadar = [...allPeriods, generatedPeriod];
+        }
       }
 
       updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);

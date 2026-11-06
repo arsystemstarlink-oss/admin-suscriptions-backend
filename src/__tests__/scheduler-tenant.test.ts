@@ -91,6 +91,7 @@ import {
   clientRepository,
   jobLockRepository,
   organizationRepository,
+  schedulerLogRepository,
   whatsappMessageRepository,
 } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
@@ -106,6 +107,7 @@ const mockedPush = pushService as jest.Mocked<typeof pushService>;
 const mockedOrganizations = organizationRepository as jest.Mocked<typeof organizationRepository>;
 const mockedWhatsApp = whatsappService as jest.Mocked<typeof whatsappService>;
 const mockedWhatsAppMessages = whatsappMessageRepository as jest.Mocked<typeof whatsappMessageRepository>;
+const mockedSchedulerLogs = schedulerLogRepository as jest.Mocked<typeof schedulerLogRepository>;
 
 function makePlan(orgId: string, id = `plan_${orgId}`): Plan {
   return {
@@ -680,5 +682,138 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       expect.objectContaining({ templateName: 'HX_org_A_warning' }),
       organization
     );
+  });
+
+  describe('día de corte y período de activación', () => {
+    const orgA = 'org_A';
+    // 00:00 en Caracas: la hora real del cron por defecto.
+    const CRON_HOUR_UTC = 4;
+
+    function arrangeJob(subscription: Subscription, period: BillingPeriod): void {
+      mockedOrganizations.getById.mockResolvedValue({
+        ...makeOrganization(orgA),
+        twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+        whatsappNotifications: {
+          rules: { reminderDaysBefore: [], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
+          templates: { dueDateWarning: 'HX_org_A_warning' },
+        },
+      });
+      mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([period]);
+      mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([]);
+      mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([period]);
+      mockedSubscriptions.listByIds.mockResolvedValue([subscription]);
+      mockedClients.listByOrganization.mockResolvedValue([
+        {
+          id: subscription.clientId,
+          organizationId: orgA,
+          firstName: 'Ana',
+          lastName: 'López',
+          phone: '+584123456789',
+          createdAt: new Date(),
+        },
+      ]);
+      mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+      mockedWhatsApp.sendTemplate.mockResolvedValue('SM_warning');
+    }
+
+    const dueToday = (): BillingPeriod => ({
+      ...makePeriod(orgA, `sub_${orgA}`, 'period_due'),
+      startDate: new Date(Date.UTC(2026, 5, 10)),
+      endDate: new Date(Date.UTC(2026, 6, 10)),
+    });
+
+    it('a la hora real del cron avisa el día de corte y no vence ni genera todavía', async () => {
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 10, CRON_HOUR_UTC)));
+      arrangeJob({ ...makeSubscription(orgA), currentPeriodId: 'period_due' }, dueToday());
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result).toMatchObject({ overdue: 0, generated: 0, notifications: 1 });
+      expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({ templateName: 'HX_org_A_warning' }),
+        expect.anything()
+      );
+    });
+
+    it('al día siguiente del corte lo marca vencido y genera el próximo ciclo', async () => {
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 11, CRON_HOUR_UTC)));
+      arrangeJob({ ...makeSubscription(orgA), billingDay: 10, currentPeriodId: 'period_due' }, dueToday());
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result).toMatchObject({ overdue: 1, generated: 1, notifications: 0 });
+      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      expect(created.startDate).toEqual(new Date(Date.UTC(2026, 6, 10)));
+      expect(created.endDate).toEqual(new Date(Date.UTC(2026, 7, 10)));
+    });
+
+    it('el período de activación impago sigue PENDING pero no frena la generación', async () => {
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 11, CRON_HOUR_UTC)));
+      const activationDate = new Date(Date.UTC(2026, 5, 20));
+      const period = { ...dueToday(), startDate: activationDate };
+      arrangeJob(
+        { ...makeSubscription(orgA), billingDay: 10, activationDate, currentPeriodId: period.id },
+        period
+      );
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result).toMatchObject({ overdue: 0, generated: 1, suspended: 0 });
+      expect(mockedBillingPeriods.updateMany).not.toHaveBeenCalled();
+      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      expect(created.startDate).toEqual(period.endDate);
+      expect(created.endDate).toEqual(new Date(Date.UTC(2026, 7, 10)));
+      expect(mockedSubscriptions.updateMany.mock.calls[0][0][0].currentPeriodId).toBe(created.id);
+    });
+
+    it('una suscripción retenida por su período de activación retoma sin acumular deuda atrasada', async () => {
+      jest.setSystemTime(new Date(Date.UTC(2026, 10, 20, CRON_HOUR_UTC)));
+      const activationDate = new Date(Date.UTC(2026, 5, 20));
+      const period = { ...dueToday(), startDate: activationDate };
+      arrangeJob(
+        { ...makeSubscription(orgA), billingDay: 10, activationDate, currentPeriodId: period.id },
+        period
+      );
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result).toMatchObject({ overdue: 0, generated: 1, suspended: 0 });
+      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      expect(created.startDate).toEqual(new Date(Date.UTC(2026, 10, 10)));
+      expect(created.endDate).toEqual(new Date(Date.UTC(2026, 11, 10)));
+    });
+  });
+
+  describe('fallos al persistir', () => {
+    const orgA = 'org_A';
+
+    it('registra error, no notifica y propaga el fallo', async () => {
+      jest.setSystemTime(new Date(Date.UTC(2026, 6, 11, 4)));
+      const subA = { ...makeSubscription(orgA), currentPeriodId: `period_${orgA}` };
+      const period = {
+        ...makePeriod(orgA, subA.id),
+        startDate: new Date(Date.UTC(2026, 5, 10)),
+        endDate: new Date(Date.UTC(2026, 6, 10)),
+      };
+      mockedOrganizations.getById.mockResolvedValue(makeOrganization(orgA));
+      setPeriods([period]);
+      mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([]);
+      mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+      mockedClients.listByOrganization.mockResolvedValue([]);
+      mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+      mockedBillingPeriods.updateMany.mockRejectedValueOnce(new Error('firestore caído'));
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      await expect(runDailyJobForOrganization(orgA)).rejects.toThrow('firestore caído');
+
+      expect(mockedBillingPeriods.createMany).not.toHaveBeenCalled();
+      expect(mockedSubscriptions.updateMany).not.toHaveBeenCalled();
+      expect(mockedPush.sendBroadcastToOrganization).not.toHaveBeenCalled();
+      expect(mockedSchedulerLogs.create).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', error: 'firestore caído' })
+      );
+      expect(mockedJobLock.release).toHaveBeenCalledWith(orgA, expect.any(String));
+      consoleError.mockRestore();
+    });
   });
 });

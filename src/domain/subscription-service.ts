@@ -14,6 +14,7 @@ import {
   getNextBillingDayAfter,
   getNextBillingPeriodEnd,
   isDateAfter,
+  isPeriodPastDue,
   isValidBillingDay,
   isValidBillingPeriodStatus,
   isValidMaxOverduePeriods,
@@ -104,6 +105,9 @@ export class SubscriptionBusinessService {
         new Date()
       ).map((period) => ({ ...period, clientId, planId: plan.id }));
       subscription.status = this.evaluateInitialSubscriptionStatus(subscription, billingPeriods);
+      if (subscription.status === 'SUSPENDED') {
+        subscription.suspensionSource = 'AUTOMATIC';
+      }
     } else {
       const { startDate, endDate, periodLabel } = getBillingPeriodRange(registrationDate, billingDay);
 
@@ -277,8 +281,7 @@ export class SubscriptionBusinessService {
       const isActivationPeriod = index === 0;
       if (isActivationPeriod) continue;
 
-      const periodCompleted = isDateAfter(now, period.endDate) || areSameDay(now, period.endDate);
-      if (!periodCompleted) continue;
+      if (!isPeriodPastDue(period.endDate, now)) continue;
 
       overdueGenerated++;
       if (overdueGenerated >= maxOverduePeriods) {
@@ -308,8 +311,9 @@ export class SubscriptionBusinessService {
         return period;
       }
 
-      const periodCompleted = isDateAfter(now, period.endDate) || areSameDay(now, period.endDate);
-      return periodCompleted ? { ...period, status: 'OVERDUE' as BillingPeriodStatus } : period;
+      return isPeriodPastDue(period.endDate, now)
+        ? { ...period, status: 'OVERDUE' as BillingPeriodStatus }
+        : period;
     });
   }
 
@@ -343,14 +347,20 @@ export class SubscriptionBusinessService {
     currentPeriod: BillingPeriod;
     subscription: Subscription;
     plan: Plan;
+    /** El primer período de activación nunca vence: no debe frenar a los siguientes aunque siga PENDING. */
+    allowPendingCurrent?: boolean;
   }): BillingPeriod {
-    const { currentPeriod, subscription, plan } = params;
+    const { currentPeriod, subscription, plan, allowPendingCurrent } = params;
 
     if (subscription.status === 'SUSPENDED') {
       throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede generar un período para una suscripción suspendida.');
     }
 
-    if (currentPeriod.status !== 'PAID' && currentPeriod.status !== 'OVERDUE') {
+    if (
+      currentPeriod.status !== 'PAID' &&
+      currentPeriod.status !== 'OVERDUE' &&
+      !(allowPendingCurrent && currentPeriod.status === 'PENDING')
+    ) {
       throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede generar un nuevo período cuando el período actual está PAID o OVERDUE.');
     }
 
@@ -453,6 +463,25 @@ export class SubscriptionBusinessService {
     };
   }
 
+  /**
+   * Período actual a crear al reactivar una suscripción. Devuelve undefined si otro
+   * período ya cubre ese rango, para no cobrar dos veces el mismo ciclo.
+   */
+  generateReactivationPeriod(params: {
+    subscription: Subscription;
+    plan: Plan;
+    periods: BillingPeriod[];
+    now: Date;
+  }): BillingPeriod | undefined {
+    const candidate = this.generateCurrentPeriod(params);
+    const alreadyCovered = params.periods.some(
+      (period) =>
+        period.startDate.getTime() < candidate.endDate.getTime() &&
+        period.endDate.getTime() > candidate.startDate.getTime()
+    );
+    return alreadyCovered ? undefined : candidate;
+  }
+
   applyPaymentToBillingPeriod(params: {
     billingPeriod: BillingPeriod;
     paymentMethod: string;
@@ -525,7 +554,7 @@ export class SubscriptionBusinessService {
         return period;
       }
 
-      if (isDateAfter(referenceDate, period.endDate)) {
+      if (isPeriodPastDue(period.endDate, referenceDate)) {
         return {
           ...period,
           status: 'OVERDUE',
@@ -543,13 +572,19 @@ export class SubscriptionBusinessService {
       return {
         ...subscription,
         status: 'SUSPENDED',
+        suspensionSource: 'AUTOMATIC',
       };
     }
 
-    if (overdueCount === 0 && subscription.status === 'SUSPENDED') {
+    if (
+      overdueCount === 0 &&
+      subscription.status === 'SUSPENDED' &&
+      subscription.suspensionSource !== 'MANUAL'
+    ) {
       return {
         ...subscription,
         status: 'ACTIVE',
+        suspensionSource: undefined,
       };
     }
 

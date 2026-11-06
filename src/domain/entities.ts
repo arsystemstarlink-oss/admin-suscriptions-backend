@@ -1,5 +1,6 @@
 export type UserRole = 'super-admin' | 'admin';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED';
+export type SubscriptionSuspensionSource = 'AUTOMATIC' | 'MANUAL';
 export type BillingPeriodStatus = 'PENDING' | 'PAID' | 'OVERDUE';
 export type BusinessPlanKey = 'basico' | 'pro' | 'negocio' | 'a-medida';
 export type OrganizationPlanStatus = 'prueba' | 'activo' | 'vencido' | 'suspendido';
@@ -182,6 +183,11 @@ export interface Subscription {
   accountNumber?: string;
   billingDay: number;
   status: SubscriptionStatus;
+  /**
+   * Origen de la suspensión: AUTOMATIC por deuda (se levanta al saldarla) o MANUAL
+   * (solo la levanta un admin). Sin valor en documentos anteriores: se trata como AUTOMATIC.
+   */
+  suspensionSource?: SubscriptionSuspensionSource;
   maxOverduePeriods: number;
   activationDate?: Date;
   createdAt: Date;

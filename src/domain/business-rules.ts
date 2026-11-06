@@ -19,6 +19,11 @@ export function isValidBillingDay(value: number): boolean {
   return Number.isInteger(value) && value >= 1 && value <= 28;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Duración mínima de un ciclo cobrado completo: la del mes más corto. */
+const MIN_BILLING_CYCLE_DAYS = 28;
+
 export const MIN_OVERDUE_PERIODS = 1;
 export const MAX_OVERDUE_PERIODS = 3;
 
@@ -118,6 +123,20 @@ export function isDateAfter(date: Date, compareTo: Date): boolean {
 }
 
 /**
+ * Un período vence al terminar su día de corte (en día UTC, como sus fechas):
+ * sigue PENDING durante ese día y pasa a estar vencido desde el día siguiente.
+ */
+export function isPeriodPastDue(endDate: Date, referenceDate: Date): boolean {
+  const referenceDay = Date.UTC(
+    referenceDate.getUTCFullYear(),
+    referenceDate.getUTCMonth(),
+    referenceDate.getUTCDate()
+  );
+  const dueDay = Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate());
+  return referenceDay > dueDay;
+}
+
+/**
  * Primer día de corte estrictamente posterior a la fecha de referencia.
  * Se usa para acortar el primer período de una suscripción retroactiva.
  */
@@ -137,11 +156,19 @@ export function getNextBillingDayAfter(referenceDate: Date, billingDay: number):
 /**
  * Fin de un ciclo mensual anclado al día de corte. Se usa en todos los
  * encadenamientos (siguiente período, adelantos y períodos retroactivos).
+ *
+ * Si el día de corte cambió, el ciclo de transición nunca dura menos de
+ * MIN_BILLING_CYCLE_DAYS: se cobra completo, así que se extiende al corte siguiente
+ * en lugar de cobrar un mes por unos pocos días.
  */
 export function getNextBillingPeriodEnd(periodStart: Date, billingDay: number): Date {
-  return new Date(
-    Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, billingDay)
-  );
+  const year = periodStart.getUTCFullYear();
+  const month = periodStart.getUTCMonth();
+  const end = new Date(Date.UTC(year, month + 1, billingDay));
+  const durationDays = (end.getTime() - periodStart.getTime()) / MS_PER_DAY;
+  return durationDays < MIN_BILLING_CYCLE_DAYS
+    ? new Date(Date.UTC(year, month + 2, billingDay))
+    : end;
 }
 
 export function areSameDay(dateA: Date, dateB: Date): boolean {

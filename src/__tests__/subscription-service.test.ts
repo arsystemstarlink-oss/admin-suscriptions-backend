@@ -1282,6 +1282,112 @@ describe('SubscriptionBusinessService', () => {
       expect(result[0].status).toBe('PENDING');
       expect(result[1].status).toBe('PENDING');
     });
+
+    it('debería mantener PENDING durante todo el día de corte y vencer al día siguiente', () => {
+      const period: BillingPeriod = {
+        id: 'period_1',
+        organizationId: 'org_test_1',
+        subscriptionId: 'sub_1',
+        periodLabel: 'Junio - Julio',
+        startDate: new Date('2026-06-05'),
+        endDate: new Date('2026-07-05'),
+        amount: 50,
+        status: 'PENDING',
+        createdAt: new Date(),
+      };
+
+      expect(service.markPendingPeriodsOverdue([period], new Date('2026-07-05T23:59:59Z'))[0].status).toBe('PENDING');
+      expect(service.markPendingPeriodsOverdue([period], new Date('2026-07-06T00:00:00Z'))[0].status).toBe('OVERDUE');
+    });
+  });
+
+  describe('suspensión manual y reactivación', () => {
+    const plan: Plan = {
+      id: 'plan_1',
+      organizationId: 'org_test_1',
+      name: 'Plan',
+      price: 50,
+      description: 'Plan',
+      active: true,
+      createdAt: new Date(),
+    };
+    const subscription: Subscription = {
+      id: 'sub_1',
+      organizationId: 'org_test_1',
+      clientId: 'client_1',
+      planId: 'plan_1',
+      kitNumber: 'KIT',
+      billingDay: 5,
+      status: 'SUSPENDED',
+      maxOverduePeriods: 2,
+      createdAt: new Date(),
+    };
+    const paidPeriod: BillingPeriod = {
+      id: 'period_1',
+      organizationId: 'org_test_1',
+      subscriptionId: 'sub_1',
+      periodLabel: 'Julio - Agosto',
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 7, 5)),
+      amount: 50,
+      status: 'PAID',
+      createdAt: new Date(),
+    };
+
+    it('debería marcar como AUTOMATIC la suspensión por deuda', () => {
+      const result = service.evaluateSubscriptionStatus(
+        { ...subscription, status: 'ACTIVE', maxOverduePeriods: 1 },
+        [{ ...paidPeriod, status: 'OVERDUE' }]
+      );
+
+      expect(result.status).toBe('SUSPENDED');
+      expect(result.suspensionSource).toBe('AUTOMATIC');
+    });
+
+    it('no debería levantar una suspensión MANUAL al saldar la deuda', () => {
+      const result = service.evaluateSubscriptionStatus(
+        { ...subscription, suspensionSource: 'MANUAL' },
+        [paidPeriod]
+      );
+
+      expect(result.status).toBe('SUSPENDED');
+      expect(result.suspensionSource).toBe('MANUAL');
+    });
+
+    it('debería levantar una suspensión AUTOMATIC o sin origen al saldar la deuda', () => {
+      for (const suspensionSource of ['AUTOMATIC', undefined] as const) {
+        const result = service.evaluateSubscriptionStatus(
+          { ...subscription, suspensionSource },
+          [paidPeriod]
+        );
+
+        expect(result.status).toBe('ACTIVE');
+        expect(result.suspensionSource).toBeUndefined();
+      }
+    });
+
+    it('no debería generar un período si otro ya cubre el ciclo actual', () => {
+      const result = service.generateReactivationPeriod({
+        subscription: { ...subscription, status: 'ACTIVE' },
+        plan,
+        periods: [paidPeriod],
+        now: new Date(Date.UTC(2026, 6, 20)),
+      });
+
+      expect(result).toBeUndefined();
+    });
+
+    it('debería generar el ciclo actual si ningún período lo cubre', () => {
+      const result = service.generateReactivationPeriod({
+        subscription: { ...subscription, status: 'ACTIVE' },
+        plan,
+        periods: [paidPeriod],
+        now: new Date(Date.UTC(2026, 9, 20)),
+      });
+
+      expect(result?.startDate).toEqual(new Date(Date.UTC(2026, 9, 5)));
+      expect(result?.endDate).toEqual(new Date(Date.UTC(2026, 10, 5)));
+    });
   });
 
   describe('evaluateSubscriptionStatus', () => {
@@ -1446,6 +1552,15 @@ describe('Business Rules', () => {
     it('encadena siempre al dia de corte', () => {
       expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 0, 31)), 28)).toEqual(new Date(Date.UTC(2026, 1, 28)));
       expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 1, 28)), 28)).toEqual(new Date(Date.UTC(2026, 2, 28)));
+    });
+
+    it('al cambiar el día de corte el ciclo de transición no dura menos de un mes', () => {
+      // Corte de 20 a 5: terminaría en 16 días, se extiende al corte siguiente.
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 7, 20)), 5)).toEqual(new Date(Date.UTC(2026, 9, 5)));
+      // Corte de 5 a 20: el primer corte posterior al mes ya cumple la duración mínima.
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 7, 5)), 20)).toEqual(new Date(Date.UTC(2026, 8, 20)));
+      // Corte de 5 a 4: 30 días, sin extensión.
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 7, 5)), 4)).toEqual(new Date(Date.UTC(2026, 8, 4)));
     });
   });
 

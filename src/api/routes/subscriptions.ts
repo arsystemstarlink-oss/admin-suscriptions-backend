@@ -7,7 +7,7 @@ import {
   domainEventRepository,
 } from '../../infrastructure/repositories';
 import { CreateSubscriptionDto, RegisterAdvancePaymentDto, UpdateSubscriptionDto } from '../dto';
-import { BusinessError, Subscription } from '../../domain/entities';
+import { BillingPeriod, BusinessError, Subscription } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { parseDateOnly, isValidDateString, createId, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
@@ -432,6 +432,12 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     if (dto.status !== undefined) {
       updated = { ...updated, status: dto.status };
+      // Solo la transición fija el origen: reenviar el mismo estado no cambia una suspensión por deuda.
+      if (existing.status === 'ACTIVE' && dto.status === 'SUSPENDED') {
+        updated.suspensionSource = 'MANUAL';
+      } else if (existing.status === 'SUSPENDED' && dto.status === 'ACTIVE') {
+        updated.suspensionSource = undefined;
+      }
     }
 
     const overdueCount = allPeriods.filter((period) => period.status === 'OVERDUE').length;
@@ -443,12 +449,51 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     businessService.validateSubscription(updated);
-    if (allPeriods.length > 0) {
-      updated = applyRadarToSubscription(updated, allPeriods);
+
+    // Igual que al reactivar por pago: se retoma desde el ciclo de hoy, de modo que los
+    // meses que pasó suspendida no generen deuda.
+    let reactivationPeriod: BillingPeriod | undefined;
+    if (existing.status === 'SUSPENDED' && updated.status === 'ACTIVE') {
+      const plan = await planRepository.getByIdScoped(updated.planId, organizationId);
+      if (!plan) {
+        throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+      }
+      reactivationPeriod = businessService.generateReactivationPeriod({
+        subscription: updated,
+        plan,
+        periods: allPeriods,
+        now: new Date(),
+      });
     }
-    await subscriptionRepository.update(updated);
+
+    const periodsForRadar = reactivationPeriod ? [...allPeriods, reactivationPeriod] : allPeriods;
+    if (periodsForRadar.length > 0) {
+      updated = applyRadarToSubscription(updated, periodsForRadar);
+    }
+
+    if (reactivationPeriod) {
+      const db = getFirestore();
+      const batch = db.batch();
+      batch.set(db.collection('billingPeriods').doc(reactivationPeriod.id), stripUndefined(reactivationPeriod));
+      batch.set(db.collection('subscriptions').doc(updated.id), stripUndefined(updated));
+      await batch.commit();
+    } else {
+      await subscriptionRepository.update(updated);
+    }
 
     try {
+      if (reactivationPeriod) {
+        await domainEventRepository.create({
+          id: createId(),
+          type: 'billing_period.generated',
+          organizationId,
+          actorUserId: auth.userId,
+          entity: 'billingPeriod',
+          entityId: reactivationPeriod.id,
+          payload: { subscriptionId: updated.id, reactivation: true },
+          createdAt: new Date(),
+        });
+      }
       await domainEventRepository.create({
         id: createId(),
         type: 'subscription.updated',

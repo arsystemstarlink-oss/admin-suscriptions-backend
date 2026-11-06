@@ -14,7 +14,7 @@ import {
   jobLockRepository,
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
-import { isDateAfter, areSameDay, createId } from '../domain/business-rules';
+import { isDateAfter, isPeriodPastDue, areSameDay, createId } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
@@ -427,9 +427,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     }
 
     if (finalSubscription.status === 'ACTIVE') {
-      if (
-        isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate)
-      ) {
+      // Un PENDING sigue vigente durante su día de corte: el ciclo avanza cuando pasa a
+      // OVERDUE. El período de activación nunca vence, así que avanza al terminar ese día.
+      const isActivationPeriod = activationPeriodIds.has(currentPeriod.id);
+      const cycleFinished =
+        currentPeriod.status === 'PENDING'
+          ? isActivationPeriod && isPeriodPastDue(currentPeriod.endDate, now)
+          : isDateAfter(now, currentPeriod.endDate) || areSameDay(now, currentPeriod.endDate);
+      if (cycleFinished) {
         const alreadyExists = subscriptionPeriods.some(
           (p) => p.id !== currentPeriod.id && p.startDate.getTime() === currentPeriod.endDate.getTime()
         );
@@ -440,11 +445,18 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
             const plan = plansById.get(subscription.planId);
             if (!plan) continue;
 
-            const nextPeriod = businessService.createNextBillingPeriod({
+            const chainedPeriod = businessService.createNextBillingPeriod({
               currentPeriod,
               subscription,
               plan,
+              allowPendingCurrent: isActivationPeriod,
             });
+            // Una suscripción retenida por su período de activación retoma desde el ciclo
+            // de hoy: el tiempo que estuvo sin generar no se convierte en deuda de golpe.
+            const nextPeriod =
+              isActivationPeriod && isPeriodPastDue(chainedPeriod.endDate, now)
+                ? businessService.generateCurrentPeriod({ subscription, plan, now })
+                : chainedPeriod;
 
             const scopedNextPeriod = { ...nextPeriod, organizationId };
             pendingPeriodCreates.push(scopedNextPeriod);
@@ -491,26 +503,21 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     }
   }
 
+  // Un fallo aquí aborta la ejecución: no se avisa a clientes de cambios que no quedaron
+  // guardados y el log registra `error` en lugar de `success`.
   try {
     if (pendingPeriodUpdates.size > 0) {
       await billingPeriodRepository.updateMany([...pendingPeriodUpdates.values()]);
     }
-  } catch (error) {
-    console.error('[Daily Job] Error persistiendo períodos actualizados:', error);
-  }
-  try {
     if (pendingPeriodCreates.length > 0) {
       await billingPeriodRepository.createMany(pendingPeriodCreates);
     }
-  } catch (error) {
-    console.error('[Daily Job] Error persistiendo períodos generados:', error);
-  }
-  try {
     if (pendingSubscriptionUpdates.size > 0) {
       await subscriptionRepository.updateMany([...pendingSubscriptionUpdates.values()]);
     }
   } catch (error) {
-    console.error('[Daily Job] Error persistiendo suscripciones:', error);
+    console.error(`[Daily Job] Error persistiendo cambios (org ${organizationId}):`, error);
+    throw error;
   }
   try {
     if (pendingEvents.length > 0) {

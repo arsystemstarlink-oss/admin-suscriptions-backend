@@ -118,6 +118,20 @@ export class FirestoreRepository<T extends Identifiable> {
     return stripUndefined(entity);
   }
 
+  /**
+   * Para `update`: un campo de primer nivel en `undefined` se elimina del documento. Solo
+   * omitirlo lo dejaría intacto, y la API respondería como si se hubiera borrado.
+   */
+  protected serializeForUpdate<U extends object>(entity: U): any {
+    const data = this.serialize(entity);
+    Object.entries(entity).forEach(([key, value]) => {
+      if (value === undefined) {
+        data[key] = admin.firestore.FieldValue.delete();
+      }
+    });
+    return data;
+  }
+
   protected deserialize(data: any): T {
     const deserialized: any = { ...data };
 
@@ -160,7 +174,7 @@ export class FirestoreRepository<T extends Identifiable> {
     this.logOperation('WRITE', entity.id);
     recordWrite();
     const docRef = this.db.collection(this.collectionName).doc(entity.id);
-    await docRef.update(this.serialize(entity));
+    await docRef.update(this.serializeForUpdate(entity));
   }
 
   async createMany(entities: T[]): Promise<void> {
@@ -187,7 +201,7 @@ export class FirestoreRepository<T extends Identifiable> {
       chunk.forEach((entity) => {
         this.logOperation('WRITE', entity.id);
         recordWrite();
-        batch.update(this.db.collection(this.collectionName).doc(entity.id), this.serialize(entity));
+        batch.update(this.db.collection(this.collectionName).doc(entity.id), this.serializeForUpdate(entity));
       });
       await batch.commit();
     }
