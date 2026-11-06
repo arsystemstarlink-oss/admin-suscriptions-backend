@@ -10,7 +10,7 @@ import planReportsRouter from '../api/routes/organization-plan-payment-reports';
 import whatsappRouter from '../api/routes/whatsapp';
 import { errorHandler } from '../api/middleware/error-handler';
 import { parsePagination } from '../api/validation';
-import { clientRepository, userRepository, whatsappConversationRepository } from '../infrastructure/repositories';
+import { clientRepository, subscriptionRepository, userRepository, whatsappConversationRepository } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
 import { Client, User, WhatsAppMessage } from '../domain/entities';
 
@@ -331,6 +331,79 @@ describe('flujos de consistencia', () => {
       const { subscriptions } = await response.json();
 
       expect(subscriptions[0].currentPeriod.periodLabel).toBe('Enero - Febrero');
+    });
+
+    describe('filtros por vencer y pendientes', () => {
+      const dayFromNow = (days: number) =>
+        new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + days));
+      const seedSub = (id: string, fields: Record<string, unknown>) =>
+        fake.seed('subscriptions', {
+          ...subscription,
+          id,
+          kitNumber: `KIT-${id}`,
+          currentPeriodId: `period_${id}`,
+          currentPeriodStartDate: dayFromNow(-20),
+          ...fields,
+        });
+      const idsFor = async (query: string) => {
+        const response = await send('GET', `/subscriptions?${query}`);
+        const { subscriptions, pagination } = await response.json();
+        return { ids: subscriptions.map((sub: { id: string }) => sub.id), total: pagination.total };
+      };
+
+      beforeEach(() => {
+        seedSub('later', { currentPeriodStatus: 'PENDING', currentPeriodEndDate: dayFromNow(5), pendingPeriods: 1 });
+        seedSub('soon', { currentPeriodStatus: 'PENDING', currentPeriodEndDate: dayFromNow(1), pendingPeriods: 1 });
+        seedSub('far', { currentPeriodStatus: 'PENDING', currentPeriodEndDate: dayFromNow(20), pendingPeriods: 1 });
+        seedSub('paid', { currentPeriodStatus: 'PAID', currentPeriodEndDate: dayFromNow(2), pendingPeriods: 0 });
+        seedSub('off', { status: 'SUSPENDED', currentPeriodStatus: 'PENDING', currentPeriodEndDate: dayFromNow(1), pendingPeriods: 1 });
+      });
+
+      it('en una búsqueda, "por vencer" deja solo lo que vence pronto, de lo más próximo a lo más lejano', async () => {
+        expect(await idsFor('search=KIT&expiring=true')).toEqual({ ids: ['soon', 'later'], total: 2 });
+      });
+
+      it('en una búsqueda, "pendientes" excluye pagadas y suspendidas', async () => {
+        const { ids, total } = await idsFor('search=KIT&pending=true');
+
+        expect([...ids].sort()).toEqual(['far', 'later', 'soon']);
+        expect(total).toBe(3);
+      });
+
+      it('filtra las suscripciones de un cliente sin requerir un índice con clientId', async () => {
+        const page = jest.spyOn(subscriptionRepository, 'listByClientNamePage');
+
+        expect(await idsFor(`clientId=${client.id}&expiring=true`)).toEqual({ ids: ['soon', 'later'], total: 2 });
+        expect(page).not.toHaveBeenCalled();
+        page.mockRestore();
+      });
+
+      it('con estado suspendido devuelve vacío sin consultar', async () => {
+        const expiringPage = jest.spyOn(subscriptionRepository, 'listExpiringPage');
+
+        expect(await idsFor('status=SUSPENDED&expiring=true')).toEqual({ ids: [], total: 0 });
+        expect(await idsFor('status=SUSPENDED&pending=true')).toEqual({ ids: [], total: 0 });
+        expect(expiringPage).not.toHaveBeenCalled();
+        expiringPage.mockRestore();
+      });
+
+      it('sin búsqueda delega en la consulta paginada que corresponde', async () => {
+        const empty = { items: [], total: 0, hasMore: false };
+        const expiringPage = jest.spyOn(subscriptionRepository, 'listExpiringPage').mockResolvedValue(empty);
+        const namePage = jest.spyOn(subscriptionRepository, 'listByClientNamePage').mockResolvedValue(empty);
+
+        await idsFor('expiring=true&hasOverduePeriods=true');
+        expect(expiringPage).toHaveBeenCalledWith(expect.objectContaining({ organizationId: ORG, hasDebt: true }));
+        expect(namePage).not.toHaveBeenCalled();
+
+        await idsFor('pending=true');
+        expect(namePage).toHaveBeenCalledWith(
+          expect.objectContaining({ organizationId: ORG, status: 'ACTIVE', pendingOnly: true })
+        );
+
+        expiringPage.mockRestore();
+        namePage.mockRestore();
+      });
     });
 
     it('la cotización de A medida usa el mismo tope que el reporte', async () => {

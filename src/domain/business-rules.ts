@@ -193,6 +193,17 @@ export function parseDateOnly(dateStr: string): Date {
   return new Date(Date.UTC(year, month - 1, day));
 }
 
+/**
+ * Ventana inclusiva de 7 días en UTC para "por vencer". Empieza al inicio del día
+ * para no excluir vencimientos de hoy por la diferencia horaria con endDate.
+ */
+export function getExpiringWindow(now: Date = new Date()): { start: Date; end: Date } {
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 7);
+  return { start, end };
+}
+
 export function isValidDateString(dateStr: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
   // Date.UTC desborda fechas inexistentes (31 de febrero pasa a marzo): debe conservar el texto.

@@ -10,7 +10,7 @@ import { BillingPeriod, BusinessError, Subscription } from '../../domain/entitie
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
-import { parseDateOnly, isValidDateString, createId, buildPeriodLabel, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
+import { getExpiringWindow, parseDateOnly, isValidDateString, createId, buildPeriodLabel, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
 import { validatePaymentMethod } from '../../domain/payment-methods';
 import { assertPaidAtNotFuture } from '../../domain/payment-date';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
@@ -47,6 +47,21 @@ function compareSubscriptionsByClientName(a: any, b: any): number {
   const keyB = clientSortKey(b);
   if (keyA !== keyB) return keyA < keyB ? -1 : 1;
   return (toTime(b.createdAt) ?? 0) - (toTime(a.createdAt) ?? 0);
+}
+
+function compareSubscriptionsByCurrentPeriodEnd(a: any, b: any): number {
+  return (toTime(a.currentPeriodEndDate) ?? Infinity) - (toTime(b.currentPeriodEndDate) ?? Infinity);
+}
+
+function isExpiringSubscription(sub: Subscription, window: { start: Date; end: Date }): boolean {
+  const endTime = toTime(sub.currentPeriodEndDate);
+  return (
+    sub.status === 'ACTIVE' &&
+    sub.currentPeriodStatus === 'PENDING' &&
+    endTime !== undefined &&
+    endTime >= window.start.getTime() &&
+    endTime <= window.end.getTime()
+  );
 }
 
 async function enrichRadarSubscriptions(
@@ -252,28 +267,57 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const parsedStatus = status === 'ACTIVE' || status === 'SUSPENDED' ? status : undefined;
     const parsedHasDebt =
       hasOverduePeriods !== undefined ? hasOverduePeriods === 'true' : undefined;
+    const expiring = req.query.expiring === 'true';
+    const pending = req.query.pending === 'true';
+    const hasDueFilter = expiring || pending;
+    const expiringWindow = getExpiringWindow();
 
-    if (search) {
-      const [matchedClients, kitMatches] = await Promise.all([
-        clientRepository.searchBounded(organizationId, search, 100),
-        subscriptionRepository.searchByKitNumberBounded(organizationId, search, 100),
-      ]);
-      const clientIds = matchedClients.map((c) => c.id);
-      const found = clientIds.length
-        ? await subscriptionRepository.listByClientIds(clientIds, organizationId)
-        : [];
-      const byId = new Map(found.map((sub) => [sub.id, sub]));
-      kitMatches.forEach((sub) => byId.set(sub.id, sub));
+    // Ambos filtros solo incluyen suscripciones ACTIVE.
+    if (hasDueFilter && parsedStatus === 'SUSPENDED') {
+      return res.json({
+        subscriptions: [],
+        pagination: { total: 0, limit, offset, hasMore: false },
+      });
+    }
 
-      let subscriptions = [...byId.values()];
+    // Una búsqueda o un solo cliente dan un conjunto acotado: se filtra en memoria,
+    // sin necesitar un índice por cada combinación con clientId.
+    if (search || (clientId && hasDueFilter)) {
+      let subscriptions: Subscription[];
+      if (search) {
+        const [matchedClients, kitMatches] = await Promise.all([
+          clientRepository.searchBounded(organizationId, search, 100),
+          subscriptionRepository.searchByKitNumberBounded(organizationId, search, 100),
+        ]);
+        const clientIds = matchedClients.map((c) => c.id);
+        const found = clientIds.length
+          ? await subscriptionRepository.listByClientIds(clientIds, organizationId)
+          : [];
+        const byId = new Map(found.map((sub) => [sub.id, sub]));
+        kitMatches.forEach((sub) => byId.set(sub.id, sub));
+        subscriptions = [...byId.values()];
+      } else {
+        subscriptions = await subscriptionRepository.listByClientIds([clientId!], organizationId);
+      }
+
       if (clientId) subscriptions = subscriptions.filter((sub) => sub.clientId === clientId);
       if (parsedStatus) subscriptions = subscriptions.filter((sub) => sub.status === parsedStatus);
       if (parsedHasDebt !== undefined) {
         subscriptions = subscriptions.filter((sub) => (sub.hasDebt ?? false) === parsedHasDebt);
       }
+      if (expiring) {
+        subscriptions = subscriptions.filter((sub) => isExpiringSubscription(sub, expiringWindow));
+      }
+      if (pending) {
+        subscriptions = subscriptions.filter(
+          (sub) => sub.status === 'ACTIVE' && (sub.pendingPeriods ?? 0) > 0
+        );
+      }
 
       const enriched = await enrichRadarSubscriptions(subscriptions, organizationId);
-      const sorted = [...enriched].sort(compareSubscriptionsByClientName);
+      const sorted = [...enriched].sort(
+        expiring ? compareSubscriptionsByCurrentPeriodEnd : compareSubscriptionsByClientName
+      );
       const total = sorted.length;
       const paginated = sorted.slice(offset, offset + limit);
       return res.json({
@@ -282,16 +326,28 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    const page = await subscriptionRepository.listByClientNamePage({
-      organizationId,
-      status: parsedStatus,
-      clientId,
-      hasDebt: parsedHasDebt,
-      limit,
-      offset,
-      cursor,
-      requireTotal: !cursor,
-    });
+    // Un ciclo actual PENDING ya implica pendingPeriods > 0: "expiring" cubre también "pending".
+    const page = expiring
+      ? await subscriptionRepository.listExpiringPage({
+          organizationId,
+          window: expiringWindow,
+          hasDebt: parsedHasDebt,
+          limit,
+          offset,
+          cursor,
+          requireTotal: !cursor,
+        })
+      : await subscriptionRepository.listByClientNamePage({
+          organizationId,
+          status: pending ? 'ACTIVE' : parsedStatus,
+          clientId,
+          hasDebt: parsedHasDebt,
+          pendingOnly: pending,
+          limit,
+          offset,
+          cursor,
+          requireTotal: !cursor,
+        });
 
     const missingRadar = page.items.filter(
       (sub) => sub.radarRank === undefined || sub.radarRank === null

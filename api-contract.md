@@ -712,9 +712,11 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 
 Lista por defecto todas las suscripciones de la organización, ordenadas alfabéticamente por el nombre del cliente (campo denormalizado `clientSortName`, con desempate por `createdAt`). El orden por nombre también aplica cuando se envía `search`.
 
+`expiring=true` devuelve las suscripciones activas cuyo ciclo actual sigue pendiente y vence en los próximos 7 días, de la más próxima a la más lejana. `pending=true` devuelve las activas con períodos pendientes. El filtrado ocurre en el servidor, así que `pagination.total` cuenta todas las coincidencias.
+
 ```typescript
 // Query params
-{ clientId?: string; status?: SubscriptionStatus; search?: string; hasOverduePeriods?: boolean; limit?: number; offset?: number; cursor?: string }
+{ clientId?: string; status?: SubscriptionStatus; search?: string; hasOverduePeriods?: boolean; expiring?: boolean; pending?: boolean; limit?: number; offset?: number; cursor?: string }
 // Response 200
 { subscriptions: SubscriptionWithDetails[]; pagination }
 ```

@@ -844,11 +844,13 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     status?: 'ACTIVE' | 'SUSPENDED';
     clientId?: string;
     hasDebt?: boolean;
+    /** Solo las que tienen períodos pendientes: el radar asigna rank 1 cuando pendingPeriods > 0. */
+    pendingOnly?: boolean;
     limit: number;
     offset?: number;
     cursor?: string;
     requireTotal?: boolean;
-  }): Promise<{ items: Subscription[]; total?: number; hasMore: boolean; nextCursor?: string }> {
+  }): Promise<SubscriptionPage> {
     const filters: QueryFilter[] = [['organizationId', '==', params.organizationId]];
     if (params.status) {
       filters.push(['status', '==', params.status]);
@@ -859,8 +861,46 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     if (params.hasDebt !== undefined) {
       filters.push(['hasDebt', '==', params.hasDebt]);
     }
+    if (params.pendingOnly) {
+      filters.push(['radarRank', '==', 1]);
+    }
 
-    const orderByFields = ['clientSortName'];
+    return this.fetchPage(filters, 'clientSortName', params);
+  }
+
+  /**
+   * Suscripciones ACTIVE cuyo ciclo actual sigue PENDING y vence dentro de la
+   * ventana, de la más próxima a la más lejana.
+   */
+  async listExpiringPage(params: {
+    organizationId: string;
+    window: { start: Date; end: Date };
+    hasDebt?: boolean;
+    limit: number;
+    offset?: number;
+    cursor?: string;
+    requireTotal?: boolean;
+  }): Promise<SubscriptionPage> {
+    const filters: QueryFilter[] = [
+      ['organizationId', '==', params.organizationId],
+      ['status', '==', 'ACTIVE'],
+      ['currentPeriodStatus', '==', 'PENDING'],
+      ['currentPeriodEndDate', '>=', params.window.start],
+      ['currentPeriodEndDate', '<=', params.window.end],
+    ];
+    if (params.hasDebt !== undefined) {
+      filters.push(['hasDebt', '==', params.hasDebt]);
+    }
+
+    return this.fetchPage(filters, 'currentPeriodEndDate', params);
+  }
+
+  private async fetchPage(
+    filters: QueryFilter[],
+    orderByField: string,
+    params: { limit: number; offset?: number; cursor?: string; requireTotal?: boolean }
+  ): Promise<SubscriptionPage> {
+    const orderByFields = [orderByField];
     let query = this.buildQuery(filters)
       .orderBy(orderByFields[0], 'asc')
       .orderBy(admin.firestore.FieldPath.documentId(), 'asc');
@@ -900,6 +940,13 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
 
     return { items, total, hasMore, nextCursor };
   }
+}
+
+interface SubscriptionPage {
+  items: Subscription[];
+  total?: number;
+  hasMore: boolean;
+  nextCursor?: string;
 }
 
 export class BillingPeriodFirestoreRepository extends FirestoreRepository<BillingPeriod> {

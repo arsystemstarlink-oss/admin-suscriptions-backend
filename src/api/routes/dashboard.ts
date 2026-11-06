@@ -8,6 +8,7 @@ import {
 import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { requireOrganizationId } from '../middleware/tenant';
 import { BillingPeriod, Client, Subscription } from '../../domain/entities';
+import { getExpiringWindow } from '../../domain/business-rules';
 import { getOrganizationStats } from '../../infrastructure/stats-service';
 import { TtlMemoryCache } from '../../infrastructure/memory-cache';
 
@@ -47,11 +48,7 @@ router.get('/summary', async (req: Request, res: Response, next: NextFunction) =
 async function computeAlerts(organizationId: string) {
   const org = orgFilters(organizationId);
   const now = new Date();
-    // Ventana inclusiva [now, now+7d] en UTC día para no excluir vencimientos de hoy
-    // por diferencia horaria entre el servidor y el cálculo del endDate.
-    const startOfTodayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-    const in7Days = new Date(startOfTodayUtc);
-    in7Days.setUTCDate(in7Days.getUTCDate() + 7);
+    const { start: startOfTodayUtc, end: in7Days } = getExpiringWindow(now);
 
     const EXPIRING_LIMIT = 50;
     const OVERDUE_LIMIT = 100;
