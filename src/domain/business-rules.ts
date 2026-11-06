@@ -137,20 +137,29 @@ export function isPeriodPastDue(endDate: Date, referenceDate: Date): boolean {
 }
 
 /**
- * Primer día de corte estrictamente posterior a la fecha de referencia.
- * Se usa para acortar el primer período de una suscripción retroactiva.
+ * Fin del primer período de una suscripción retroactiva: el primer día de corte posterior
+ * a la activación. Como se cobra completo, si duraría menos de MIN_BILLING_CYCLE_DAYS se
+ * une al ciclo siguiente en lugar de cobrar un mes por unos pocos días.
  */
-export function getNextBillingDayAfter(referenceDate: Date, billingDay: number): Date {
-  const year = referenceDate.getUTCFullYear();
-  const month = referenceDate.getUTCMonth();
-  const day = referenceDate.getUTCDate();
+export function getFirstBillingPeriodEnd(activationDate: Date, billingDay: number): Date {
+  const year = activationDate.getUTCFullYear();
+  const month = activationDate.getUTCMonth();
+  const day = activationDate.getUTCDate();
 
-  const sameMonth = Date.UTC(year, month, billingDay);
-  if (sameMonth <= Date.UTC(year, month, day)) {
-    return new Date(Date.UTC(year, month + 1, billingDay));
-  }
+  const firstMonth = Date.UTC(year, month, billingDay) <= Date.UTC(year, month, day) ? month + 1 : month;
+  const end = new Date(Date.UTC(year, firstMonth, billingDay));
+  const durationDays = (end.getTime() - activationDate.getTime()) / MS_PER_DAY;
+  return durationDays < MIN_BILLING_CYCLE_DAYS
+    ? new Date(Date.UTC(year, firstMonth + 1, billingDay))
+    : end;
+}
 
-  return new Date(sameMonth);
+/**
+ * ID determinista de un período: una suscripción no puede tener dos períodos que empiecen
+ * el mismo día, aunque dos procesos intenten crearlos a la vez.
+ */
+export function buildBillingPeriodId(subscriptionId: string, startDate: Date): string {
+  return `period_${subscriptionId}_${startDate.toISOString().slice(0, 10)}`;
 }
 
 /**

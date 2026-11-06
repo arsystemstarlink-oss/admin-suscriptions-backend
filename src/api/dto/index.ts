@@ -73,6 +73,8 @@ export interface RegisterAdvancePaymentDto {
   paymentMethod: string;
   paidAt: string;
   notes?: string;
+  /** Último período que vio el cliente: evita cobrar otro mes si la petición se envió dos veces. */
+  anchorPeriodId?: string;
 }
 
 export interface UpdateBillingPeriodDto {

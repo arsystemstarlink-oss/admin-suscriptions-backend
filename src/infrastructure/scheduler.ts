@@ -19,6 +19,7 @@ import { whatsappService, resolveTwilioCredentials, extractTwilioError } from '.
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
 import { flushStatsRecompute } from './stats-service';
+import { subscriptionTransactions } from './billing-transactions';
 import {
   BusinessError,
   BillingPeriod,
@@ -123,7 +124,10 @@ export async function runDailyJobForOrganization(
   let result: Omit<DailyJobResult, 'skipped'> | undefined;
   let error: string | undefined;
   try {
-    result = await runDailyJobForOrganizationUnlocked(organizationId);
+    const { persistenceError, ...counts } = await runDailyJobForOrganizationUnlocked(organizationId);
+    result = counts;
+    // El log conserva lo que sí quedó guardado, pero la ejecución consta como fallida.
+    if (persistenceError) throw persistenceError;
     return { ...result, skipped: false };
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
@@ -142,6 +146,15 @@ export async function runDailyJobForOrganization(
     });
     await jobLockRepository.release(organizationId, INSTANCE_ID);
   }
+}
+
+interface SubscriptionCycleChange {
+  overduePeriodIds: string[];
+  createdPeriods: BillingPeriod[];
+  subscription?: Subscription;
+  events: DomainEvent[];
+  notifications: PendingNotification[];
+  suspended: boolean;
 }
 
 interface SchedulerLogInput {
@@ -178,7 +191,9 @@ async function recordSchedulerLog(input: SchedulerLogInput): Promise<void> {
   }
 }
 
-async function runDailyJobForOrganizationUnlocked(organizationId: string): Promise<Omit<DailyJobResult, 'skipped'>> {
+async function runDailyJobForOrganizationUnlocked(
+  organizationId: string
+): Promise<Omit<DailyJobResult, 'skipped'> & { persistenceError?: unknown }> {
   const now = new Date();
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
@@ -296,13 +311,17 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   let notificationCount = 0;
   const notificationErrors: NotificationFailure[] = [];
 
-  // Escrituras y lecturas agrupadas: se acumulan durante el procesamiento y se
-  // confirman en pocas operaciones por lote en lugar de una por una.
-  const pendingPeriodUpdates = new Map<string, BillingPeriod>();
-  const pendingPeriodCreates: BillingPeriod[] = [];
-  const pendingSubscriptionUpdates = new Map<string, Subscription>();
-  const pendingEvents: DomainEvent[] = [];
-  const pendingNotifications: PendingNotification[] = [];
+  // Lo que se decide para cada suscripción se confirma de una vez, en su propia transacción.
+  // Contadores y notificaciones solo cuentan si esa transacción se aplicó.
+  const changes = new Map<string, SubscriptionCycleChange>();
+  const changeFor = (subscriptionId: string): SubscriptionCycleChange => {
+    let change = changes.get(subscriptionId);
+    if (!change) {
+      change = { overduePeriodIds: [], createdPeriods: [], events: [], notifications: [], suspended: false };
+      changes.set(subscriptionId, change);
+    }
+    return change;
+  };
 
   const suspendedSubscriptionIds = new Set(
     subscriptions.filter((s) => s.status === 'SUSPENDED').map((s) => s.id)
@@ -353,9 +372,9 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
   for (const period of updatedPeriods) {
     const original = allPeriods.find((p) => p.id === period.id);
     if (original && original.status !== period.status) {
-      pendingPeriodUpdates.set(period.id, period);
-      overdueCount++;
-      pendingEvents.push(
+      const change = changeFor(period.subscriptionId);
+      change.overduePeriodIds.push(period.id);
+      change.events.push(
         buildDomainEvent('billing_period.overdue', organizationId, 'billingPeriod', period.id, {
           subscriptionId: period.subscriptionId,
         })
@@ -392,6 +411,8 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     const currentPeriod = subscriptionPeriods[0];
     if (!currentPeriod) continue;
 
+    const change = changeFor(subscription.id);
+
     const updatedSubscription = businessService.evaluateSubscriptionStatus(
       subscription,
       subscriptionPeriods
@@ -406,20 +427,20 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
       finalSubscription.status !== subscription.status ||
       hasRadarChanged(subscription, finalSubscription)
     ) {
-      pendingSubscriptionUpdates.set(finalSubscription.id, finalSubscription);
+      change.subscription = finalSubscription;
     }
 
     if (finalSubscription.status !== subscription.status && finalSubscription.status === 'SUSPENDED') {
-      suspendedCount++;
+      change.suspended = true;
 
       const client = clients.find((c) => c.id === subscription.clientId);
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
-        pendingNotifications.push(
+        change.notifications.push(
           buildPendingNotification('suspended-notice', client, subscription, currentPeriod, notificationConfig)
         );
       }
 
-      pendingEvents.push(
+      change.events.push(
         buildDomainEvent('subscription.suspended', organizationId, 'subscription', subscription.id, {
           kitNumber: subscription.kitNumber,
         })
@@ -459,8 +480,7 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
                 : chainedPeriod;
 
             const scopedNextPeriod = { ...nextPeriod, organizationId };
-            pendingPeriodCreates.push(scopedNextPeriod);
-            generatedCount++;
+            change.createdPeriods.push(scopedNextPeriod);
             const radarWithNextPeriod = applyRadarToSubscription(finalSubscription, [
               ...subscriptionPeriods,
               scopedNextPeriod,
@@ -468,8 +488,8 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
             if (subscription.totalPeriods !== undefined) {
               radarWithNextPeriod.totalPeriods = subscription.totalPeriods + 1;
             }
-            pendingSubscriptionUpdates.set(radarWithNextPeriod.id, radarWithNextPeriod);
-            pendingEvents.push(
+            change.subscription = radarWithNextPeriod;
+            change.events.push(
               buildDomainEvent('billing_period.generated', organizationId, 'billingPeriod', scopedNextPeriod.id, {
                 subscriptionId: subscription.id,
               })
@@ -487,14 +507,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
           if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
-            pendingNotifications.push(
+            change.notifications.push(
               buildPendingNotification('reminder', client, subscription, currentPeriod, notificationConfig)
             );
           } else if (
             daysUntilDue === 0 &&
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
-            pendingNotifications.push(
+            change.notifications.push(
               buildPendingNotification('suspension-warning', client, subscription, currentPeriod, notificationConfig)
             );
           }
@@ -503,28 +523,48 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     }
   }
 
-  // Un fallo aquí aborta la ejecución: no se avisa a clientes de cambios que no quedaron
-  // guardados y el log registra `error` en lugar de `success`.
-  try {
-    if (pendingPeriodUpdates.size > 0) {
-      await billingPeriodRepository.updateMany([...pendingPeriodUpdates.values()]);
+  const subscriptionsById = new Map(subscriptions.map((subscription) => [subscription.id, subscription]));
+  const pendingNotifications: PendingNotification[] = [];
+  let persistenceError: unknown;
+
+  for (const [subscriptionId, change] of changes) {
+    const hasWrites =
+      change.overduePeriodIds.length > 0 ||
+      change.createdPeriods.length > 0 ||
+      change.subscription !== undefined ||
+      change.events.length > 0;
+
+    if (hasWrites) {
+      try {
+        const seen = subscriptionsById.get(subscriptionId);
+        const outcome = await subscriptionTransactions.applyDailyJobChange({
+          subscriptionId,
+          expected: seen && {
+            status: seen.status,
+            currentPeriodId: seen.currentPeriodId,
+            radarUpdatedAt: seen.radarUpdatedAt,
+          },
+          subscription: change.subscription,
+          overduePeriodIds: change.overduePeriodIds,
+          createdPeriods: change.createdPeriods,
+          events: change.events,
+        });
+        if (outcome === 'stale') {
+          console.log(`[Daily Job] La suscripción ${subscriptionId} cambió durante la ejecución. Se reevaluará en la siguiente.`);
+          continue;
+        }
+      } catch (error) {
+        // Cada suscripción es atómica: un fallo no impide procesar las demás ni deja esta a medias.
+        console.error(`[Daily Job] Error guardando la suscripción ${subscriptionId} (org ${organizationId}):`, error);
+        persistenceError ??= error;
+        continue;
+      }
     }
-    if (pendingPeriodCreates.length > 0) {
-      await billingPeriodRepository.createMany(pendingPeriodCreates);
-    }
-    if (pendingSubscriptionUpdates.size > 0) {
-      await subscriptionRepository.updateMany([...pendingSubscriptionUpdates.values()]);
-    }
-  } catch (error) {
-    console.error(`[Daily Job] Error persistiendo cambios (org ${organizationId}):`, error);
-    throw error;
-  }
-  try {
-    if (pendingEvents.length > 0) {
-      await domainEventRepository.createMany(pendingEvents);
-    }
-  } catch (error) {
-    console.error('[DomainEvent] Error registrando lote de eventos:', error);
+
+    overdueCount += change.overduePeriodIds.length;
+    generatedCount += change.createdPeriods.length;
+    if (change.suspended) suspendedCount++;
+    pendingNotifications.push(...change.notifications);
   }
 
   notificationCount += await deliverPendingNotifications(
@@ -575,7 +615,14 @@ async function runDailyJobForOrganizationUnlocked(organizationId: string): Promi
     `[Daily Job] Completado (org ${organizationId}) - Períodos vencidos: ${overdueCount}, Períodos generados: ${generatedCount}, Suscripciones suspendidas: ${suspendedCount}, Notificaciones enviadas: ${notificationCount}`
   );
 
-  return { overdue: overdueCount, generated: generatedCount, suspended: suspendedCount, notifications: notificationCount, errors: notificationErrors };
+  return {
+    overdue: overdueCount,
+    generated: generatedCount,
+    suspended: suspendedCount,
+    notifications: notificationCount,
+    errors: notificationErrors,
+    persistenceError,
+  };
 }
 
 export async function scheduleOrganization(organizationId: string): Promise<boolean> {

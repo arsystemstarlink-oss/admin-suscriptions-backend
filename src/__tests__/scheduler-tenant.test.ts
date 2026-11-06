@@ -83,6 +83,10 @@ jest.mock('../infrastructure/stats-service', () => ({
   flushStatsRecompute: jest.fn(),
 }));
 
+jest.mock('../infrastructure/billing-transactions', () => ({
+  subscriptionTransactions: { applyDailyJobChange: jest.fn(async () => 'applied') },
+}));
+
 import {
   billingPeriodRepository,
   subscriptionRepository,
@@ -96,6 +100,7 @@ import {
 } from '../infrastructure/repositories';
 import { pushService } from '../infrastructure/push-service';
 import { whatsappService } from '../infrastructure/whatsapp-service';
+import { subscriptionTransactions } from '../infrastructure/billing-transactions';
 
 const mockedBillingPeriods = billingPeriodRepository as jest.Mocked<typeof billingPeriodRepository>;
 const mockedSubscriptions = subscriptionRepository as jest.Mocked<typeof subscriptionRepository>;
@@ -108,6 +113,8 @@ const mockedOrganizations = organizationRepository as jest.Mocked<typeof organiz
 const mockedWhatsApp = whatsappService as jest.Mocked<typeof whatsappService>;
 const mockedWhatsAppMessages = whatsappMessageRepository as jest.Mocked<typeof whatsappMessageRepository>;
 const mockedSchedulerLogs = schedulerLogRepository as jest.Mocked<typeof schedulerLogRepository>;
+const mockedApplyChange = subscriptionTransactions.applyDailyJobChange as jest.Mock;
+const firstChange = () => mockedApplyChange.mock.calls[0][0];
 
 function makePlan(orgId: string, id = `plan_${orgId}`): Plan {
   return {
@@ -230,12 +237,9 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     expect(result.overdue).toBe(1);
     expect(result.generated).toBe(1);
 
-    const updated = mockedBillingPeriods.updateMany.mock.calls[0][0][0];
-    expect(updated.id).toBe(periodA.id);
-    expect(updated.organizationId).toBe('org_A');
-    expect(updated.status).toBe('OVERDUE');
+    expect(firstChange().overduePeriodIds).toEqual([periodA.id]);
 
-    const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+    const created = firstChange().createdPeriods[0];
     expect(created.organizationId).toBe('org_A');
     expect(created.status).toBe('PENDING');
 
@@ -298,7 +302,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       'org_B'
     );
 
-    const orgBCreated = mockedBillingPeriods.createMany.mock.calls[1][0][0];
+    const orgBCreated = mockedApplyChange.mock.calls[1][0].createdPeriods[0];
     expect(orgBCreated.organizationId).toBe('org_B');
   });
 
@@ -322,10 +326,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     await runDailyJobForOrganization('org_A');
 
-    const updates = mockedBillingPeriods.updateMany.mock.calls.flatMap((c) => c[0]);
-    const overdueUpdates = updates.filter((u) => u.status === 'OVERDUE');
-    expect(overdueUpdates).toHaveLength(1);
-    expect(overdueUpdates[0].id).toBe('p1');
+    expect(mockedApplyChange.mock.calls.flatMap((c) => c[0].overduePeriodIds)).toEqual(['p1']);
   });
 
   it('el run manual de una org ejecuta el job aunque su config tenga enabled=false', async () => {
@@ -565,7 +566,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const result = await runDailyJobForOrganization(orgA);
 
     expect(result.generated).toBe(1);
-    const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+    const created = firstChange().createdPeriods[0];
     expect(created.subscriptionId).toBe(subA.id);
     expect(created.status).toBe('PENDING');
   });
@@ -742,7 +743,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       const result = await runDailyJobForOrganization(orgA);
 
       expect(result).toMatchObject({ overdue: 1, generated: 1, notifications: 0 });
-      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      const created = firstChange().createdPeriods[0];
       expect(created.startDate).toEqual(new Date(Date.UTC(2026, 6, 10)));
       expect(created.endDate).toEqual(new Date(Date.UTC(2026, 7, 10)));
     });
@@ -759,11 +760,11 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       const result = await runDailyJobForOrganization(orgA);
 
       expect(result).toMatchObject({ overdue: 0, generated: 1, suspended: 0 });
-      expect(mockedBillingPeriods.updateMany).not.toHaveBeenCalled();
-      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      expect(firstChange().overduePeriodIds).toEqual([]);
+      const created = firstChange().createdPeriods[0];
       expect(created.startDate).toEqual(period.endDate);
       expect(created.endDate).toEqual(new Date(Date.UTC(2026, 7, 10)));
-      expect(mockedSubscriptions.updateMany.mock.calls[0][0][0].currentPeriodId).toBe(created.id);
+      expect(firstChange().subscription.currentPeriodId).toBe(created.id);
     });
 
     it('una suscripción retenida por su período de activación retoma sin acumular deuda atrasada', async () => {
@@ -778,7 +779,7 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       const result = await runDailyJobForOrganization(orgA);
 
       expect(result).toMatchObject({ overdue: 0, generated: 1, suspended: 0 });
-      const created = mockedBillingPeriods.createMany.mock.calls[0][0][0];
+      const created = firstChange().createdPeriods[0];
       expect(created.startDate).toEqual(new Date(Date.UTC(2026, 10, 10)));
       expect(created.endDate).toEqual(new Date(Date.UTC(2026, 11, 10)));
     });
@@ -787,33 +788,72 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
   describe('fallos al persistir', () => {
     const orgA = 'org_A';
 
-    it('registra error, no notifica y propaga el fallo', async () => {
+    const arrangeTwoSubscriptions = () => {
       jest.setSystemTime(new Date(Date.UTC(2026, 6, 11, 4)));
-      const subA = { ...makeSubscription(orgA), currentPeriodId: `period_${orgA}` };
-      const period = {
-        ...makePeriod(orgA, subA.id),
+      const client = (id: string) => ({
+        id,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: `+58412${id.length}000000`,
+        createdAt: new Date(),
+      });
+      const subscriptions = ['sub_1', 'sub_2'].map((id) => ({
+        ...makeSubscription(orgA, id),
+        clientId: `client_${id}`,
+        maxOverduePeriods: 1,
+        billingDay: 10,
+      }));
+      const periods = subscriptions.map((subscription) => ({
+        ...makePeriod(orgA, subscription.id, `period_${subscription.id}`),
         startDate: new Date(Date.UTC(2026, 5, 10)),
         endDate: new Date(Date.UTC(2026, 6, 10)),
-      };
-      mockedOrganizations.getById.mockResolvedValue(makeOrganization(orgA));
-      setPeriods([period]);
-      mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([]);
-      mockedSubscriptions.listByIds.mockResolvedValue([subA]);
-      mockedClients.listByOrganization.mockResolvedValue([]);
+      }));
+      mockedOrganizations.getById.mockResolvedValue({
+        ...makeOrganization(orgA),
+        twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+        whatsappNotifications: {
+          rules: { reminderDaysBefore: [], dueDateWarningEnabled: false, suspensionNoticeEnabled: true },
+          templates: { suspensionNotice: 'HX_suspended' },
+        },
+      });
+      setPeriods(periods);
+      mockedSubscriptions.listByIds.mockResolvedValue(subscriptions);
+      mockedClients.listByOrganization.mockResolvedValue(subscriptions.map((s) => client(s.clientId)));
       mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
-      mockedBillingPeriods.updateMany.mockRejectedValueOnce(new Error('firestore caído'));
+      mockedWhatsApp.sendTemplate.mockResolvedValue('SM_notice');
+    };
+
+    it('una suscripción que falla no frena a las demás, no se notifica y el log queda en error con lo guardado', async () => {
+      arrangeTwoSubscriptions();
+      mockedApplyChange.mockRejectedValueOnce(new Error('firestore caído'));
       const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
 
       await expect(runDailyJobForOrganization(orgA)).rejects.toThrow('firestore caído');
 
-      expect(mockedBillingPeriods.createMany).not.toHaveBeenCalled();
-      expect(mockedSubscriptions.updateMany).not.toHaveBeenCalled();
-      expect(mockedPush.sendBroadcastToOrganization).not.toHaveBeenCalled();
+      expect(mockedApplyChange).toHaveBeenCalledTimes(2);
+      expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledTimes(1);
       expect(mockedSchedulerLogs.create).toHaveBeenCalledWith(
-        expect.objectContaining({ status: 'error', error: 'firestore caído' })
+        expect.objectContaining({
+          status: 'error',
+          error: 'firestore caído',
+          overdue: 1,
+          suspended: 1,
+          notifications: 1,
+        })
       );
       expect(mockedJobLock.release).toHaveBeenCalledWith(orgA, expect.any(String));
       consoleError.mockRestore();
+    });
+
+    it('una suscripción que cambió durante la ejecución no cuenta ni notifica', async () => {
+      arrangeTwoSubscriptions();
+      mockedApplyChange.mockResolvedValueOnce('stale');
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result).toMatchObject({ overdue: 1, suspended: 1, notifications: 1, skipped: false });
+      expect(mockedSchedulerLogs.create).toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }));
     });
   });
 });

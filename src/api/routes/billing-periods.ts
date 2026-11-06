@@ -10,12 +10,10 @@ import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
-import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
-import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { applyPeriodPayment, subscriptionTransactions } from '../../infrastructure/billing-transactions';
+import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { validatePaymentMethod } from '../../domain/payment-methods';
-import { getFirestore } from '../../infrastructure/firebase';
-import { stripUndefined } from '../../infrastructure/serialization';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -272,91 +270,35 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
 
     const paidAt = parseDateOnly(dto.paidAt);
 
-    const updatedPeriod = businessService.applyPaymentToBillingPeriod({
-      billingPeriod: period,
-      paymentMethod: dto.paymentMethod,
-      amount: dto.amount,
-      paidAt,
-      notes: dto.notes,
-    });
-
-    const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
-    let updatedSubscription = subscription;
-    let currentPeriod: BillingPeriod | undefined;
-    let generatedPeriod: BillingPeriod | undefined;
-
-    if (subscription) {
-      const storedPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
-      const allPeriods = storedPeriods.map((p) => (p.id === updatedPeriod.id ? updatedPeriod : p));
-
-      const evaluatedSubscription = businessService.evaluateSubscriptionStatus(
-        subscription,
-        allPeriods
-      );
-
-      let periodsForRadar = allPeriods;
-
-      if (subscription.status === 'SUSPENDED' && evaluatedSubscription.status === 'ACTIVE') {
-        const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
-        if (!plan) {
-          throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+    const payment = await subscriptionTransactions.run(
+      period.subscriptionId,
+      organizationId,
+      async (transaction) => {
+        const currentPeriod = transaction.periods.find((item) => item.id === period.id);
+        if (!currentPeriod) {
+          throw new BusinessError('NOT_FOUND', 'Período no encontrado.');
         }
-
-        generatedPeriod = businessService.generateReactivationPeriod({
-          subscription: evaluatedSubscription,
-          plan,
-          periods: allPeriods,
-          now: new Date(),
+        return applyPeriodPayment(transaction, {
+          period: currentPeriod,
+          paymentMethod: dto.paymentMethod,
+          amount: dto.amount,
+          paidAt,
+          notes: dto.notes,
+          actorUserId: auth.userId,
         });
-        if (generatedPeriod) {
-          currentPeriod = generatedPeriod;
-          periodsForRadar = [...allPeriods, generatedPeriod];
-        }
       }
-
-      updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);
-    }
-
-    // Escritura atómica: periodo pagado + evento + periodo generado (si aplica) + suscripción.
-    const db = getFirestore();
-    const batch = db.batch();
-    batch.set(db.collection('billingPeriods').doc(updatedPeriod.id), stripUndefined(updatedPeriod));
-
-    const eventId = createId();
-    batch.set(
-      db.collection('domainEvents').doc(eventId),
-      stripUndefined({
-        id: eventId,
-        type: 'billing_period.paid',
-        organizationId: period.organizationId,
-        actorUserId: auth.userId,
-        entity: 'billingPeriod',
-        entityId: updatedPeriod.id,
-        payload: { subscriptionId: period.subscriptionId, amount: dto.amount, paymentMethod: dto.paymentMethod },
-        createdAt: new Date(),
-      })
     );
-
-    if (generatedPeriod) {
-      batch.set(db.collection('billingPeriods').doc(generatedPeriod.id), stripUndefined(generatedPeriod));
-    }
-
-    if (updatedSubscription) {
-      batch.set(db.collection('subscriptions').doc(updatedSubscription.id), stripUndefined(updatedSubscription));
-    }
-
-    await batch.commit();
     scheduleStatsRecompute(organizationId);
 
     res.json({
-      billingPeriod: updatedPeriod,
-      currentPeriod,
-      subscription: updatedSubscription
+      billingPeriod: payment.billingPeriod,
+      currentPeriod: payment.currentPeriod,
+      subscription: payment.subscription
         ? {
-            id: updatedSubscription.id,
-            status: updatedSubscription.status,
-            previousStatus: subscription?.status,
-            reactivated: subscription?.status === 'SUSPENDED' && updatedSubscription.status === 'ACTIVE',
+            id: payment.subscription.id,
+            status: payment.subscription.status,
+            previousStatus: payment.previousStatus,
+            reactivated: payment.previousStatus === 'SUSPENDED' && payment.subscription.status === 'ACTIVE',
           }
         : null,
     });

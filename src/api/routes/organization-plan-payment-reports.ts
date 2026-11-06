@@ -361,7 +361,7 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
         reviewedByUserId: auth.userId,
         reviewNotes,
       };
-      await organizationPlanPaymentReportRepository.update(rejected);
+      await organizationPlanPaymentReportRepository.reject(rejected);
       pushService
         .sendBroadcastToOrganization({
           organizationId: report.organizationId,
@@ -446,14 +446,6 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       createdBy: auth.userId,
       createdAt: new Date(),
     };
-    const updatedOrganization = await organizationRepository.registerPlanPayment(
-      payment,
-      report.plan,
-      clientLimit,
-      newPlanExpiresAt,
-      billingDay
-    );
-
     const approved: OrganizationPlanPaymentReport = {
       ...report,
       clientLimit,
@@ -463,7 +455,14 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
       reviewNotes,
       appliedPaymentId: payment.id,
     };
-    await organizationPlanPaymentReportRepository.update(approved);
+    const updatedOrganization = await organizationRepository.registerPlanPayment(
+      payment,
+      report.plan,
+      clientLimit,
+      newPlanExpiresAt,
+      billingDay,
+      { expected: organization, approvedReport: approved }
+    );
 
     pushService
       .sendBroadcastToOrganization({

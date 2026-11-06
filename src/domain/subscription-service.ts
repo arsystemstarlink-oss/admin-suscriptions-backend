@@ -8,10 +8,11 @@ import {
 } from './entities';
 import {
   areSameDay,
+  buildBillingPeriodId,
   buildPeriodLabel,
   createId,
   getBillingPeriodRange,
-  getNextBillingDayAfter,
+  getFirstBillingPeriodEnd,
   getNextBillingPeriodEnd,
   isDateAfter,
   isPeriodPastDue,
@@ -112,7 +113,7 @@ export class SubscriptionBusinessService {
       const { startDate, endDate, periodLabel } = getBillingPeriodRange(registrationDate, billingDay);
 
       const firstBillingPeriod: BillingPeriod = {
-        id: createId(),
+        id: buildBillingPeriodId(subscription.id, startDate),
         organizationId,
         subscriptionId: subscription.id,
         clientId,
@@ -210,11 +211,11 @@ export class SubscriptionBusinessService {
 
     while (candidates.length < 120) {
       const periodEnd = candidates.length === 0
-        ? getNextBillingDayAfter(periodStart, billingDay)
+        ? getFirstBillingPeriodEnd(periodStart, billingDay)
         : getNextBillingPeriodEnd(periodStart, billingDay);
 
       candidates.push({
-        id: createId(),
+        id: buildBillingPeriodId(subscriptionId, periodStart),
         organizationId,
         subscriptionId,
         periodLabel: buildPeriodLabel(periodStart, periodEnd),
@@ -373,7 +374,7 @@ export class SubscriptionBusinessService {
     const nextEndDate = getNextBillingPeriodEnd(nextStartDate, subscription.billingDay);
 
     return {
-      id: createId(),
+      id: buildBillingPeriodId(subscription.id, nextStartDate),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
       clientId: subscription.clientId,
@@ -418,7 +419,7 @@ export class SubscriptionBusinessService {
     const now = new Date();
 
     return {
-      id: createId(),
+      id: buildBillingPeriodId(subscription.id, nextStartDate),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
       clientId: subscription.clientId,
@@ -449,7 +450,7 @@ export class SubscriptionBusinessService {
     const { startDate, endDate, periodLabel } = getBillingPeriodRange(now, subscription.billingDay);
 
     return {
-      id: createId(),
+      id: buildBillingPeriodId(subscription.id, startDate),
       organizationId: subscription.organizationId,
       subscriptionId: subscription.id,
       clientId: subscription.clientId,

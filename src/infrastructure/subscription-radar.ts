@@ -64,6 +64,42 @@ export function applyRadarToSubscription(
   return { ...subscription, ...buildSubscriptionRadarFields(periods) };
 }
 
+/** Solo los campos del radar, para actualizarlos sin reescribir el resto del documento. */
+export function pickRadarFields(subscription: Subscription): Partial<Subscription> {
+  const {
+    radarRank,
+    pendingPeriods,
+    overduePeriods,
+    overdueAmount,
+    hasDebt,
+    nearestPendingDate,
+    closestOverdueDate,
+    currentPeriodId,
+    currentPeriodStatus,
+    currentPeriodStartDate,
+    currentPeriodEndDate,
+    currentPeriodAmount,
+    totalPeriods,
+    radarUpdatedAt,
+  } = subscription;
+  return {
+    radarRank,
+    pendingPeriods,
+    overduePeriods,
+    overdueAmount,
+    hasDebt,
+    nearestPendingDate,
+    closestOverdueDate,
+    currentPeriodId,
+    currentPeriodStatus,
+    currentPeriodStartDate,
+    currentPeriodEndDate,
+    currentPeriodAmount,
+    totalPeriods,
+    radarUpdatedAt,
+  };
+}
+
 function toTime(value?: Date | null): number | null {
   if (!value) return null;
   const time = new Date(value).getTime();

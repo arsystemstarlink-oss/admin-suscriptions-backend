@@ -59,6 +59,21 @@ function deserializeOrganization(id: string, data: FirebaseFirestore.DocumentDat
   } as Organization;
 }
 
+function assertPlanUnchanged(current: Organization, expected: Organization): void {
+  if (
+    current.plan !== expected.plan ||
+    current.clientLimit !== expected.clientLimit ||
+    current.planStatus !== expected.planStatus ||
+    current.trialEndsAt?.getTime() !== expected.trialEndsAt?.getTime() ||
+    current.planExpiresAt?.getTime() !== expected.planExpiresAt?.getTime()
+  ) {
+    throw new BusinessError(
+      'PLAN_CONCURRENT_UPDATE',
+      'El plan cambió mientras se guardaban los datos. Recarga la organización e inténtalo de nuevo.'
+    );
+  }
+}
+
 const TWILIO_PHONE_CLAIMS_COLLECTION = 'twilioPhoneNumbers';
 
 function twilioPhoneClaimRef(db: FirebaseFirestore.Firestore, phoneNumber: string) {
@@ -199,18 +214,8 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         current.twilio?.phoneNumber,
         organization.twilio?.phoneNumber,
       );
-      if (
-        expected &&
-        (current.plan !== expected.plan ||
-          current.clientLimit !== expected.clientLimit ||
-          current.planStatus !== expected.planStatus ||
-          current.trialEndsAt?.getTime() !== expected.trialEndsAt?.getTime() ||
-          current.planExpiresAt?.getTime() !== expected.planExpiresAt?.getTime())
-      ) {
-        throw new BusinessError(
-          'PLAN_CONCURRENT_UPDATE',
-          'El plan cambió mientras se guardaban los datos. Recarga la organización e inténtalo de nuevo.'
-        );
+      if (expected) {
+        assertPlanUnchanged(current, expected);
       }
       if (
         current.clientCount !== undefined &&
@@ -349,15 +354,25 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     });
   }
 
+  /**
+   * `expected` es la organización con la que se calculó el vencimiento: si cambió, se rechaza
+   * en lugar de aplicar un cálculo desactualizado. `approvedReport` se guarda en la misma
+   * transacción y solo si sigue pendiente, para que un reporte no se aplique dos veces.
+   */
   async registerPlanPayment(
     payment: OrganizationPlanPayment,
     plan: BusinessPlanKey,
     clientLimit: number,
     planExpiresAt: Date,
     billingDay: number,
+    options: { expected: Organization; approvedReport?: OrganizationPlanPaymentReport },
   ): Promise<Organization> {
     const organizationRef = this.db.collection(this.collectionName).doc(payment.organizationId);
     const paymentRef = this.db.collection('organizationPlanPayments').doc(payment.id);
+    const { expected, approvedReport } = options;
+    const reportRef = approvedReport
+      ? this.db.collection('organizationPlanPaymentReports').doc(approvedReport.id)
+      : undefined;
 
     return this.db.runTransaction(async (transaction) => {
       const organizationSnapshot = await transaction.get(organizationRef);
@@ -365,10 +380,21 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
       if (!organizationSnapshot.exists) {
         throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
       }
+      if (reportRef) {
+        const reportSnapshot = await transaction.get(reportRef);
+        recordDocReads();
+        if (reportSnapshot.data()?.status !== 'PENDING') {
+          throw new BusinessError(
+            'PLAN_PAYMENT_REPORT_ALREADY_REVIEWED',
+            'Este reporte ya fue revisado.'
+          );
+        }
+      }
       const organization = deserializeOrganization(
         organizationSnapshot.id,
         organizationSnapshot.data()!
       );
+      assertPlanUnchanged(organization, expected);
       if (planExpiresAt.getTime() <= Date.now()) {
         throw new BusinessError(
           'INVALID_PLAN_DATE',
@@ -395,6 +421,10 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
       recordWrite(2);
       transaction.create(paymentRef, this.serialize(payment));
       transaction.update(organizationRef, this.serialize(updated));
+      if (reportRef && approvedReport) {
+        recordWrite();
+        transaction.set(reportRef, this.serialize(approvedReport));
+      }
       return updated;
     });
   }
@@ -1619,6 +1649,23 @@ export class PaymentReportFirestoreRepository extends FirestoreRepository<Paymen
 export class OrganizationPlanPaymentReportFirestoreRepository extends FirestoreRepository<OrganizationPlanPaymentReport> {
   constructor() {
     super('organizationPlanPaymentReports');
+  }
+
+  /** Rechaza el reporte solo si sigue pendiente. */
+  async reject(rejected: OrganizationPlanPaymentReport): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(rejected.id);
+    await this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (snapshot.data()?.status !== 'PENDING') {
+        throw new BusinessError(
+          'PLAN_PAYMENT_REPORT_ALREADY_REVIEWED',
+          'Este reporte ya fue revisado.'
+        );
+      }
+      recordWrite();
+      transaction.set(docRef, this.serialize(rejected));
+    });
   }
 
   async findPendingByOrganization(organizationId: string): Promise<OrganizationPlanPaymentReport | undefined> {

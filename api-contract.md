@@ -755,8 +755,9 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 **POST /subscriptions/:id/pay-advance** (solo suscripcion ACTIVE y al día)
 ```typescript
 // Request (amount lo fija el backend = plan.price vigente)
-{ paymentMethod: PaymentMethod; paidAt: string; notes?: string }
+{ paymentMethod: PaymentMethod; paidAt: string; notes?: string; anchorPeriodId?: string }
 // paidAt formato YYYY-MM-DD
+// anchorPeriodId: último período que vio el cliente. Si ya cambió → 409 PERIOD_ALREADY_EXISTS, para que un doble envío no cobre dos meses
 // Response 200
 {
   billingPeriod: BillingPeriod; // ciclo futuro generado ya en PAID (start = fin del ancla, +1 mes)
@@ -1379,6 +1380,7 @@ POST /subscriptions
 { clientId, planId, kitNumber, billingDay: 6, maxOverduePeriods: 2, activationDate: "2026-01-05" }
 ```
 - Genera periodos desde activationDate hasta hoy
+- El primer periodo termina en el siguiente dia de corte; si duraria menos de 28 dias se une al ciclo siguiente, porque se cobra completo
 - El primer mes de activacion siempre nace `PENDING` (el cliente pago para activar, aunque el pago no este registrado aun)
 - Periodos siguientes pasados → `OVERDUE`, periodo actual → `PENDING` (maximo `maxOverduePeriods` vencidos)
 - Si overdueCount >= maxOverduePeriods → suscripcion `SUSPENDED` y NO se genera el periodo actual (los meses durante la suspension no generan deuda)

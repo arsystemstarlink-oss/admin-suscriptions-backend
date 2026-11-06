@@ -4,12 +4,12 @@ import {
   clientRepository,
   planRepository,
   billingPeriodRepository,
-  domainEventRepository,
 } from '../../infrastructure/repositories';
 import { CreateSubscriptionDto, RegisterAdvancePaymentDto, UpdateSubscriptionDto } from '../dto';
 import { BillingPeriod, BusinessError, Subscription } from '../../domain/entities';
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
+import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
 import { parseDateOnly, isValidDateString, createId, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
 import { validatePaymentMethod } from '../../domain/payment-methods';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId, assertResourceInScope } from '../middleware/tenant';
@@ -368,134 +368,119 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     const dto: UpdateSubscriptionDto = req.body;
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
-    const existing = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
 
-    if (!existing) {
-      throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
-    }
-
-    const allPeriods = await billingPeriodRepository.listBySubscriptionId(
-      existing.id,
-      organizationId
-    );
-    const openPeriods = allPeriods.filter(
-      (period) => period.status === 'PENDING' || period.status === 'OVERDUE'
-    );
-
-    let updated = { ...existing };
-
-    if (dto.planId && dto.planId !== existing.planId) {
-      if (openPeriods.length > 0) {
-        throw new BusinessError(
-          'SUBSCRIPTION_HAS_OPEN_PERIODS',
-          'No se puede cambiar el plan mientras existan períodos pendientes o vencidos.'
-        );
+    const saved = await subscriptionTransactions.run(req.params.id, organizationId, async (transaction) => {
+      const existing = transaction.subscription;
+      if (!existing) {
+        throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
       }
-      const newPlan = await planRepository.getByIdScoped(dto.planId, isSuperAdmin(auth) ? organizationId : auth.organizationId ?? undefined);
-      if (!newPlan) {
-        throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
-      }
-      assertResourceInScope(newPlan.organizationId, auth, organizationId);
-      updated = businessService.changeSubscriptionPlan(updated, newPlan);
-    }
 
-    if (dto.kitNumber !== undefined) {
-      updated = { ...updated, kitNumber: dto.kitNumber.toUpperCase() };
-    }
-
-    if (dto.accountNumber !== undefined) {
-      updated = { ...updated, accountNumber: dto.accountNumber };
-    }
-
-    if (dto.billingDay !== undefined) {
-      if (!isValidBillingDay(dto.billingDay)) {
-        throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 28.');
-      }
-      if (dto.billingDay !== existing.billingDay && openPeriods.length > 0) {
-        throw new BusinessError(
-          'SUBSCRIPTION_HAS_OPEN_PERIODS',
-          'No se puede cambiar el día de corte mientras existan períodos pendientes o vencidos.'
-        );
-      }
-      updated = { ...updated, billingDay: dto.billingDay };
-    }
-
-    if (dto.maxOverduePeriods !== undefined) {
-      if (!isValidMaxOverduePeriods(dto.maxOverduePeriods)) {
-        throw new BusinessError(
-          'INVALID_MAX_OVERDUE_PERIODS',
-          'El máximo de períodos vencidos debe ser un entero entre 1 y 3.'
-        );
-      }
-      updated = { ...updated, maxOverduePeriods: dto.maxOverduePeriods };
-    }
-
-    if (dto.status !== undefined) {
-      updated = { ...updated, status: dto.status };
-      // Solo la transición fija el origen: reenviar el mismo estado no cambia una suspensión por deuda.
-      if (existing.status === 'ACTIVE' && dto.status === 'SUSPENDED') {
-        updated.suspensionSource = 'MANUAL';
-      } else if (existing.status === 'SUSPENDED' && dto.status === 'ACTIVE') {
-        updated.suspensionSource = undefined;
-      }
-    }
-
-    const overdueCount = allPeriods.filter((period) => period.status === 'OVERDUE').length;
-    if (existing.status !== 'ACTIVE' && updated.status === 'ACTIVE' && overdueCount >= updated.maxOverduePeriods) {
-      throw new BusinessError(
-        'SUBSCRIPTION_HAS_OVERDUE_PERIODS',
-        'La suscripción tiene períodos vencidos suficientes para permanecer suspendida.'
+      const allPeriods = transaction.periods;
+      const openPeriods = allPeriods.filter(
+        (period) => period.status === 'PENDING' || period.status === 'OVERDUE'
       );
-    }
 
-    businessService.validateSubscription(updated);
+      let updated: Subscription = { ...existing };
 
-    // Igual que al reactivar por pago: se retoma desde el ciclo de hoy, de modo que los
-    // meses que pasó suspendida no generen deuda.
-    let reactivationPeriod: BillingPeriod | undefined;
-    if (existing.status === 'SUSPENDED' && updated.status === 'ACTIVE') {
-      const plan = await planRepository.getByIdScoped(updated.planId, organizationId);
-      if (!plan) {
-        throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+      if (dto.planId && dto.planId !== existing.planId) {
+        if (openPeriods.length > 0) {
+          throw new BusinessError(
+            'SUBSCRIPTION_HAS_OPEN_PERIODS',
+            'No se puede cambiar el plan mientras existan períodos pendientes o vencidos.'
+          );
+        }
+        const newPlan = await transaction.getPlan(dto.planId);
+        if (!newPlan) {
+          throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+        }
+        updated = businessService.changeSubscriptionPlan(updated, newPlan);
       }
-      reactivationPeriod = businessService.generateReactivationPeriod({
-        subscription: updated,
-        plan,
-        periods: allPeriods,
-        now: new Date(),
-      });
-    }
 
-    const periodsForRadar = reactivationPeriod ? [...allPeriods, reactivationPeriod] : allPeriods;
-    if (periodsForRadar.length > 0) {
-      updated = applyRadarToSubscription(updated, periodsForRadar);
-    }
+      if (dto.kitNumber !== undefined) {
+        updated = { ...updated, kitNumber: dto.kitNumber.toUpperCase() };
+      }
 
-    if (reactivationPeriod) {
-      const db = getFirestore();
-      const batch = db.batch();
-      batch.set(db.collection('billingPeriods').doc(reactivationPeriod.id), stripUndefined(reactivationPeriod));
-      batch.set(db.collection('subscriptions').doc(updated.id), stripUndefined(updated));
-      await batch.commit();
-    } else {
-      await subscriptionRepository.update(updated);
-    }
+      if (dto.accountNumber !== undefined) {
+        updated = { ...updated, accountNumber: dto.accountNumber };
+      }
 
-    try {
+      if (dto.billingDay !== undefined) {
+        if (!isValidBillingDay(dto.billingDay)) {
+          throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 28.');
+        }
+        if (dto.billingDay !== existing.billingDay && openPeriods.length > 0) {
+          throw new BusinessError(
+            'SUBSCRIPTION_HAS_OPEN_PERIODS',
+            'No se puede cambiar el día de corte mientras existan períodos pendientes o vencidos.'
+          );
+        }
+        updated = { ...updated, billingDay: dto.billingDay };
+      }
+
+      if (dto.maxOverduePeriods !== undefined) {
+        if (!isValidMaxOverduePeriods(dto.maxOverduePeriods)) {
+          throw new BusinessError(
+            'INVALID_MAX_OVERDUE_PERIODS',
+            'El máximo de períodos vencidos debe ser un entero entre 1 y 3.'
+          );
+        }
+        updated = { ...updated, maxOverduePeriods: dto.maxOverduePeriods };
+      }
+
+      if (dto.status !== undefined) {
+        updated = { ...updated, status: dto.status };
+        // Solo la transición fija el origen: reenviar el mismo estado no cambia una suspensión por deuda.
+        if (existing.status === 'ACTIVE' && dto.status === 'SUSPENDED') {
+          updated.suspensionSource = 'MANUAL';
+        } else if (existing.status === 'SUSPENDED' && dto.status === 'ACTIVE') {
+          updated.suspensionSource = undefined;
+        }
+      }
+
+      const overdueCount = allPeriods.filter((period) => period.status === 'OVERDUE').length;
+      if (existing.status !== 'ACTIVE' && updated.status === 'ACTIVE' && overdueCount >= updated.maxOverduePeriods) {
+        throw new BusinessError(
+          'SUBSCRIPTION_HAS_OVERDUE_PERIODS',
+          'La suscripción tiene períodos vencidos suficientes para permanecer suspendida.'
+        );
+      }
+
+      businessService.validateSubscription(updated);
+
+      // Igual que al reactivar por pago: se retoma desde el ciclo de hoy, de modo que los
+      // meses que pasó suspendida no generen deuda.
+      let reactivationPeriod: BillingPeriod | undefined;
+      if (existing.status === 'SUSPENDED' && updated.status === 'ACTIVE') {
+        const plan = await transaction.getPlan(updated.planId);
+        if (!plan) {
+          throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+        }
+        reactivationPeriod = businessService.generateReactivationPeriod({
+          subscription: updated,
+          plan,
+          periods: allPeriods,
+          now: new Date(),
+        });
+      }
+
+      const periodsForRadar = reactivationPeriod ? [...allPeriods, reactivationPeriod] : allPeriods;
+      if (periodsForRadar.length > 0) {
+        updated = applyRadarToSubscription(updated, periodsForRadar);
+      }
+
+      transaction.set('subscriptions', updated);
       if (reactivationPeriod) {
-        await domainEventRepository.create({
-          id: createId(),
+        transaction.set('billingPeriods', reactivationPeriod);
+        transaction.addEvent({
           type: 'billing_period.generated',
           organizationId,
           actorUserId: auth.userId,
           entity: 'billingPeriod',
           entityId: reactivationPeriod.id,
           payload: { subscriptionId: updated.id, reactivation: true },
-          createdAt: new Date(),
         });
       }
-      await domainEventRepository.create({
-        id: createId(),
+      transaction.addEvent({
         type: 'subscription.updated',
         organizationId,
         actorUserId: auth.userId,
@@ -507,14 +492,12 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
           maxOverduePeriods: updated.maxOverduePeriods,
           status: updated.status,
         },
-        createdAt: new Date(),
       });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando subscription.updated:', eventError);
-    }
+      return updated;
+    });
 
     scheduleStatsRecompute(organizationId);
-    res.json(updated);
+    res.json(saved);
   } catch (err) {
     next(err);
   }
@@ -542,15 +525,6 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
     const dto: RegisterAdvancePaymentDto = req.body;
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
-    const subscription = await subscriptionRepository.getByIdScoped(req.params.id, organizationId);
-
-    if (!subscription) {
-      throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
-    }
-
-    if (subscription.status !== 'ACTIVE') {
-      throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede pagar por adelantado una suscripción suspendida. Cobre los períodos vencidos primero.');
-    }
 
     if (!dto.paymentMethod || !dto.paidAt) {
       throw new BusinessError('INVALID_DATA', 'Método de pago y fecha son obligatorios.');
@@ -564,82 +538,84 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
 
     const paidAt = parseDateOnly(dto.paidAt);
 
-    const allPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
+    const result = await subscriptionTransactions.run(req.params.id, organizationId, async (transaction) => {
+      const { subscription, periods: allPeriods } = transaction;
 
-    const unpaidCount = allPeriods.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE').length;
-    if (unpaidCount > 0) {
-      throw new BusinessError('HAS_UNPAID_PERIODS', 'La suscripción tiene períodos pendientes o vencidos. Cóbrelos primero antes de pagar por adelantado.');
-    }
+      if (!subscription) {
+        throw new BusinessError('NOT_FOUND', 'Suscripción no encontrada.');
+      }
 
-    if (allPeriods.length === 0) {
-      throw new BusinessError('NO_PERIODS', 'La suscripción no tiene períodos registrados.');
-    }
+      if (subscription.status !== 'ACTIVE') {
+        throw new BusinessError('SUBSCRIPTION_SUSPENDED', 'No se puede pagar por adelantado una suscripción suspendida. Cobre los períodos vencidos primero.');
+      }
 
-    const anchor = [...allPeriods].sort((a, b) => b.endDate.getTime() - a.endDate.getTime())[0];
+      const unpaidCount = allPeriods.filter((p) => p.status === 'PENDING' || p.status === 'OVERDUE').length;
+      if (unpaidCount > 0) {
+        throw new BusinessError('HAS_UNPAID_PERIODS', 'La suscripción tiene períodos pendientes o vencidos. Cóbrelos primero antes de pagar por adelantado.');
+      }
 
-    if (anchor.status !== 'PAID') {
-      throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede pagar por adelantado cuando el último período está pagado.');
-    }
+      if (allPeriods.length === 0) {
+        throw new BusinessError('NO_PERIODS', 'La suscripción no tiene períodos registrados.');
+      }
 
-    const alreadyExists = allPeriods.some((p) => p.startDate.getTime() === anchor.endDate.getTime());
-    if (alreadyExists) {
-      throw new BusinessError('PERIOD_ALREADY_EXISTS', 'El siguiente ciclo ya existe. Recargue los períodos.');
-    }
+      const anchor = [...allPeriods].sort((a, b) => b.endDate.getTime() - a.endDate.getTime())[0];
 
-    const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
-    if (!plan) {
-      throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
-    }
-    if (!plan.active) {
-      throw new BusinessError('PLAN_INACTIVE', 'El plan debe estar activo.');
-    }
+      if (anchor.status !== 'PAID') {
+        throw new BusinessError('INVALID_PERIOD_STATE', 'Solo se puede pagar por adelantado cuando el último período está pagado.');
+      }
 
-    const advancePeriod = businessService.createAdvanceBillingPeriod({
-      anchorPeriod: anchor,
-      subscription,
-      plan,
-      paymentMethod: dto.paymentMethod,
-      paidAt,
-      notes: dto.notes,
-    });
+      const alreadyExists = allPeriods.some((p) => p.startDate.getTime() === anchor.endDate.getTime());
+      const anchorMoved = dto.anchorPeriodId !== undefined && dto.anchorPeriodId !== anchor.id;
+      if (alreadyExists || anchorMoved) {
+        throw new BusinessError('PERIOD_ALREADY_EXISTS', 'El siguiente ciclo ya existe. Recargue los períodos.');
+      }
 
-    await billingPeriodRepository.create(advancePeriod);
+      const plan = await transaction.getPlan(subscription.planId);
+      if (!plan) {
+        throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+      }
+      if (!plan.active) {
+        throw new BusinessError('PLAN_INACTIVE', 'El plan debe estar activo.');
+      }
 
-    try {
-      await domainEventRepository.create({
-        id: createId(),
+      const advancePeriod = businessService.createAdvanceBillingPeriod({
+        anchorPeriod: anchor,
+        subscription,
+        plan,
+        paymentMethod: dto.paymentMethod,
+        paidAt,
+        notes: dto.notes,
+      });
+      const updatedSubscription = applyRadarToSubscription(subscription, [...allPeriods, advancePeriod]);
+
+      transaction.set('billingPeriods', advancePeriod);
+      transaction.set('subscriptions', updatedSubscription);
+      transaction.addEvent({
         type: 'billing_period.generated',
-        organizationId: advancePeriod.organizationId,
+        organizationId,
         actorUserId: auth.userId,
         entity: 'billingPeriod',
         entityId: advancePeriod.id,
         payload: { subscriptionId: subscription.id, advance: true, anchorPeriodId: anchor.id },
-        createdAt: new Date(),
       });
-      await domainEventRepository.create({
-        id: createId(),
+      transaction.addEvent({
         type: 'billing_period.paid',
-        organizationId: advancePeriod.organizationId,
+        organizationId,
         actorUserId: auth.userId,
         entity: 'billingPeriod',
         entityId: advancePeriod.id,
         payload: { subscriptionId: subscription.id, amount: advancePeriod.amount, paymentMethod: dto.paymentMethod, advance: true },
-        createdAt: new Date(),
       });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando pay-advance:', eventError);
-    }
-
-    const updatedSubscription = applyRadarToSubscription(subscription, [...allPeriods, advancePeriod]);
-    await subscriptionRepository.update(updatedSubscription);
+      return { advancePeriod, updatedSubscription, previousStatus: subscription.status };
+    });
     scheduleStatsRecompute(organizationId);
 
     res.json({
-      billingPeriod: advancePeriod,
+      billingPeriod: result.advancePeriod,
       subscription: {
-        id: updatedSubscription.id,
-        status: updatedSubscription.status,
-        previousStatus: subscription.status,
+        id: result.updatedSubscription.id,
+        status: result.updatedSubscription.status,
+        previousStatus: result.previousStatus,
         reactivated: false,
       },
     });

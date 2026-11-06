@@ -3,7 +3,7 @@ import type { Query } from 'firebase-admin/firestore';
 import { initializeFirebase, getFirestore } from '../src/infrastructure/firebase';
 import { addOrganizationBillingMonths } from '../src/domain/business-plan';
 import {
-  getNextBillingDayAfter,
+  getFirstBillingPeriodEnd,
   getNextBillingPeriodEnd,
 } from '../src/domain/business-rules';
 import { normalizePhoneToE164, normalizeVenezuelanPhoneDigits } from '../src/domain/phone';
@@ -113,7 +113,7 @@ async function auditSubscriptions(organizationId?: string): Promise<void> {
 
     const expected: Array<{ start: Date; end: Date }> = [];
     let expectedStart = new Date(activationDate);
-    let expectedEnd = getNextBillingDayAfter(expectedStart, billingDay);
+    let expectedEnd = getFirstBillingPeriodEnd(expectedStart, billingDay);
     expected.push({ start: expectedStart, end: expectedEnd });
     for (let index = 0; index < 120; index++) {
       expectedStart = expectedEnd;
@@ -150,7 +150,7 @@ async function auditSubscriptions(organizationId?: string): Promise<void> {
     const firstPeriod = periods[0];
     const firstPeriodMismatch =
       firstPeriod.startDate!.getTime() !== activationDate.getTime() ||
-      firstPeriod.endDate!.getTime() !== getNextBillingDayAfter(activationDate, billingDay).getTime();
+      firstPeriod.endDate!.getTime() !== getFirstBillingPeriodEnd(activationDate, billingDay).getTime();
 
     if (gapOrOverlap.length || misalignedPaid.length || firstPeriodMismatch) {
       issues.push({

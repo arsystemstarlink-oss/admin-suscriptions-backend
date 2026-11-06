@@ -338,6 +338,18 @@ Período:
 5 Julio
 -
 5 Agosto
+Primer período de una suscripción retroactiva
+
+Va de la activación al siguiente día de corte. Si duraría menos de 28 días se une al ciclo siguiente, porque se cobra completo.
+
+Ejemplo:
+
+Activación 4 Julio, corte 5:
+
+4 Julio
+-
+5 Agosto
+
 Cambio de fecha de corte
 
 Rige desde el ciclo siguiente, sin prorrateo. El ciclo de transición va del fin del actual al nuevo día de corte, se cobra completo y dura al menos 28 días.
@@ -615,7 +627,11 @@ Daily Job
 
 El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infrastructure/scheduler.ts`) se lista cada organización activa y se registra un `cron.schedule` **individual** con la expresión `cronSchedule` propia de cada org (`schedulerConfig/{orgId}`) y el timezone de `SCHEDULER_TIMEZONE`. Cada tick ejecuta `runDailyJobForOrganization(orgId)` de forma aislada, escaneando solo los datos de esa org y enviando notificaciones (WhatsApp/Push) dentro de la org. Se respeta el `enabled` de cada org: si una org está desactivada (`enabled=false`) o su expresión cron es inválida, no se programa cron para ella. Los cambios en `PUT /scheduler/config` reprograman el cron de la org en caliente (sin reiniciar). El run manual (`POST /scheduler/run`) ejecuta por org sin importar `enabled`. La configuración del scheduler **siempre es por organización**: no existe una configuración global y `POST /scheduler/run` requiere indicar la org destino (`?organizationId=org_X`), devolviendo `TENANT_REQUIRED` si falta.
 
-Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`. Si falla el guardado de períodos o suscripciones, la ejecución se aborta antes de notificar y queda con `status: error` y contadores en cero, aunque una parte de los cambios ya se haya escrito.
+Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`. Cada suscripción se guarda en su propia transacción (períodos, radar y eventos juntos). Si una falla, no se notifica por ella, el job sigue con las demás y la ejecución queda con `status: error` y los contadores de lo que sí se guardó. Si una suscripción cambió mientras el job corría (un pago, una edición), se omite sin escribir nada y se reevalúa en la siguiente ejecución.
+
+Consistencia de escrituras
+
+Los pagos de períodos, la revisión de reportes, los pagos adelantados y la edición de suscripciones se ejecutan en una transacción que relee la suscripción y todos sus períodos (`src/infrastructure/billing-transactions.ts`). Dos operaciones simultáneas no pueden validar contra el mismo estado. El ID de un período se deriva de su suscripción y fecha de inicio, de modo que una suscripción no puede tener dos períodos que empiecen el mismo día. Un pago de plan y la aprobación de su reporte se guardan juntos, y se rechazan con `PLAN_CONCURRENT_UPDATE` si el plan cambió desde que se calculó el vencimiento.
 
 Migración
 
@@ -623,4 +639,4 @@ npm run migrate:tenant crea organizations/org_default, asigna organizationId a t
 
 ## Estado de implementación
 
-El backend incluye operaciones CRUD para las entidades principales, automatización de períodos y pagos, autenticación y aislamiento multi-tenant. Las pruebas automatizadas se ejecutan con `npm test`; el contrato de endpoints está en `api-contract.md`, las instrucciones de despliegue en `deployment.md`, y las integraciones de WhatsApp y los requisitos de notificaciones push tienen guías propias.
+El backend incluye operaciones CRUD para las entidades principales, automatización de períodos y pagos, autenticación y aislamiento multi-tenant. Las pruebas automatizadas se ejecutan con `npm test`; `npm run test:emulator` ejecuta las de concurrencia contra el emulador de Firestore (requiere Java 21 y `firebase-tools`, y usa un proyecto `demo-` que no accede a datos reales; el emulador no exige índices compuestos); el contrato de endpoints está en `api-contract.md`, las instrucciones de despliegue en `deployment.md`, y las integraciones de WhatsApp y los requisitos de notificaciones push tienen guías propias.

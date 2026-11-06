@@ -2,25 +2,38 @@ import { Router, Request, Response, NextFunction } from 'express';
 import {
   billingPeriodRepository,
   subscriptionRepository,
-  planRepository,
   clientRepository,
   paymentReportRepository,
 } from '../../infrastructure/repositories';
-import { BusinessError } from '../../domain/entities';
-import { SubscriptionBusinessService } from '../../domain/subscription-service';
-import { applyRadarToSubscription } from '../../infrastructure/subscription-radar';
-import { parseDateOnly, isValidDateString, createId } from '../../domain/business-rules';
+import { BusinessError, PaymentReport } from '../../domain/entities';
+import {
+  applyPeriodPayment,
+  subscriptionTransactions,
+  SubscriptionTransaction,
+} from '../../infrastructure/billing-transactions';
+import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
-import { getFirestore } from '../../infrastructure/firebase';
-import { stripUndefined } from '../../infrastructure/serialization';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { ReviewPaymentReportDto } from '../dto';
 
 const router = Router();
-const businessService = new SubscriptionBusinessService();
+
+/** Dentro de la transacción: dos revisiones simultáneas no pueden aplicar el mismo reporte. */
+async function assertReportStillPending(
+  transaction: SubscriptionTransaction,
+  reportId: string
+): Promise<void> {
+  const current = await transaction.getDocument<PaymentReport>('paymentReports', reportId);
+  if (!current) {
+    throw new BusinessError('PAYMENT_REPORT_NOT_FOUND', 'Reporte no encontrado.');
+  }
+  if (current.status !== 'PENDING') {
+    throw new BusinessError('PAYMENT_REPORT_ALREADY_REVIEWED', 'Este reporte ya fue revisado.');
+  }
+}
 
 async function enrichReports(reports: any[], organizationId: string | undefined): Promise<any[]> {
   if (reports.length === 0) return [];
@@ -146,47 +159,35 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
       if (!reviewNotes) {
         throw new BusinessError('INVALID_DATA', 'El motivo del rechazo es obligatorio.');
       }
-      const rejected = {
-        ...report,
-        status: 'REJECTED' as const,
-        reviewedAt: new Date(),
-        reviewedByUserId: auth.userId,
-        reviewNotes,
-      };
-
-      const db = getFirestore();
-      const batch = db.batch();
-      batch.set(db.collection('paymentReports').doc(rejected.id), stripUndefined(rejected));
-
-      const rejectedEventId = createId();
-      batch.set(
-        db.collection('domainEvents').doc(rejectedEventId),
-        stripUndefined({
-          id: rejectedEventId,
-          type: 'payment_report.rejected',
-          organizationId: report.organizationId,
-          actorUserId: auth.userId,
-          entity: 'paymentReport',
-          entityId: report.id,
-          payload: { billingPeriodId: report.billingPeriodId, reason: reviewNotes },
-          createdAt: new Date(),
-        })
+      const rejected = await subscriptionTransactions.run(
+        report.subscriptionId,
+        organizationId,
+        async (transaction) => {
+          await assertReportStillPending(transaction, report.id);
+          const reviewed: PaymentReport = {
+            ...report,
+            status: 'REJECTED',
+            reviewedAt: new Date(),
+            reviewedByUserId: auth.userId,
+            reviewNotes,
+          };
+          transaction.set('paymentReports', reviewed);
+          transaction.addEvent({
+            type: 'payment_report.rejected',
+            organizationId,
+            actorUserId: auth.userId,
+            entity: 'paymentReport',
+            entityId: report.id,
+            payload: { billingPeriodId: report.billingPeriodId, reason: reviewNotes },
+          });
+          return reviewed;
+        }
       );
-
-      await batch.commit();
       scheduleStatsRecompute(organizationId);
       invalidateBadges(organizationId);
 
       const [enriched] = await enrichReports([rejected], organizationId);
       return res.json({ report: enriched });
-    }
-
-    const period = await billingPeriodRepository.getByIdScoped(report.billingPeriodId, organizationId);
-    if (!period) {
-      throw new BusinessError('PAYMENT_REPORT_INVALID_STATE', 'El período asociado ya no existe.');
-    }
-    if (period.status === 'PAID') {
-      throw new BusinessError('PERIOD_ALREADY_PAID', 'El período ya se encuentra pagado.');
     }
 
     validateReportPaymentMethod(report.paymentMethod);
@@ -198,110 +199,59 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
     }
     const paidAt = parseDateOnly(paidAtIso);
 
-    const updatedPeriod = businessService.applyPaymentToBillingPeriod({
-      billingPeriod: period,
-      paymentMethod: report.paymentMethod,
-      amount: period.amount,
-      paidAt,
-      notes: report.notes,
-    });
-
-    const subscription = await subscriptionRepository.getByIdScoped(period.subscriptionId, organizationId);
-    let updatedSubscription = subscription;
-    let currentPeriod;
-    let generatedPeriod;
-    if (subscription) {
-      const storedPeriods = await billingPeriodRepository.listBySubscriptionId(subscription.id, organizationId);
-      const allPeriods = storedPeriods.map((p) => (p.id === updatedPeriod.id ? updatedPeriod : p));
-      const evaluatedSubscription = businessService.evaluateSubscriptionStatus(subscription, allPeriods);
-      let periodsForRadar = allPeriods;
-      if (subscription.status === 'SUSPENDED' && evaluatedSubscription.status === 'ACTIVE') {
-        const plan = await planRepository.getByIdScoped(subscription.planId, organizationId);
-        if (!plan) {
-          throw new BusinessError('PLAN_NOT_FOUND', 'Plan no encontrado.');
+    const { approved, payment } = await subscriptionTransactions.run(
+      report.subscriptionId,
+      organizationId,
+      async (transaction) => {
+        await assertReportStillPending(transaction, report.id);
+        const period = transaction.periods.find((item) => item.id === report.billingPeriodId);
+        if (!period) {
+          throw new BusinessError('PAYMENT_REPORT_INVALID_STATE', 'El período asociado ya no existe.');
         }
-        generatedPeriod = businessService.generateReactivationPeriod({
-          subscription: evaluatedSubscription,
-          plan,
-          periods: allPeriods,
-          now: new Date(),
+
+        const appliedPayment = await applyPeriodPayment(transaction, {
+          period,
+          paymentMethod: report.paymentMethod,
+          amount: period.amount,
+          paidAt,
+          notes: report.notes,
+          actorUserId: auth.userId,
+          eventPayload: { viaReport: report.id },
         });
-        if (generatedPeriod) {
-          currentPeriod = generatedPeriod;
-          periodsForRadar = [...allPeriods, generatedPeriod];
-        }
+
+        const reviewed: PaymentReport = {
+          ...report,
+          status: 'APPROVED',
+          reviewedAt: new Date(),
+          reviewedByUserId: auth.userId,
+          reviewNotes,
+        };
+        transaction.set('paymentReports', reviewed);
+        transaction.addEvent({
+          type: 'payment_report.approved',
+          organizationId,
+          actorUserId: auth.userId,
+          entity: 'paymentReport',
+          entityId: report.id,
+          payload: { billingPeriodId: report.billingPeriodId, amount: report.amount },
+        });
+        return { approved: reviewed, payment: appliedPayment };
       }
-      updatedSubscription = applyRadarToSubscription(evaluatedSubscription, periodsForRadar);
-    }
-
-    const approved = {
-      ...report,
-      status: 'APPROVED' as const,
-      reviewedAt: new Date(),
-      reviewedByUserId: auth.userId,
-      reviewNotes,
-    };
-
-    const db = getFirestore();
-    const batch = db.batch();
-    batch.set(db.collection('paymentReports').doc(approved.id), stripUndefined(approved));
-    batch.set(
-      db.collection('billingPeriods').doc(updatedPeriod.id),
-      stripUndefined(updatedPeriod),
     );
-
-    const paidEventId = createId();
-    batch.set(
-      db.collection('domainEvents').doc(paidEventId),
-      stripUndefined({
-        id: paidEventId,
-        type: 'billing_period.paid',
-        organizationId: period.organizationId,
-        actorUserId: auth.userId,
-        entity: 'billingPeriod',
-        entityId: updatedPeriod.id,
-        payload: { subscriptionId: period.subscriptionId, amount: period.amount, paymentMethod: report.paymentMethod, viaReport: report.id },
-        createdAt: new Date(),
-      })
-    );
-
-    const approvedEventId = createId();
-    batch.set(
-      db.collection('domainEvents').doc(approvedEventId),
-      stripUndefined({
-        id: approvedEventId,
-        type: 'payment_report.approved',
-        organizationId: report.organizationId,
-        actorUserId: auth.userId,
-        entity: 'paymentReport',
-        entityId: report.id,
-        payload: { billingPeriodId: report.billingPeriodId, amount: report.amount },
-        createdAt: new Date(),
-      })
-    );
-
-    if (generatedPeriod) {
-      batch.set(db.collection('billingPeriods').doc(generatedPeriod.id), stripUndefined(generatedPeriod));
-    }
-    if (updatedSubscription) {
-      batch.set(db.collection('subscriptions').doc(updatedSubscription.id), stripUndefined(updatedSubscription));
-    }
-
-    await batch.commit();
     scheduleStatsRecompute(organizationId);
     invalidateBadges(organizationId);
 
     const [enriched] = await enrichReports([approved], organizationId);
     res.json({
       report: enriched,
-      billingPeriod: updatedPeriod,
-      currentPeriod,
-      subscription: updatedSubscription
+      billingPeriod: payment.billingPeriod,
+      currentPeriod: payment.currentPeriod,
+      subscription: payment.subscription
         ? {
-            id: updatedSubscription.id,
-            status: updatedSubscription.status,
-            previousStatus: subscription?.status,
-            reactivated: subscription?.status === 'SUSPENDED' && updatedSubscription.status === 'ACTIVE',
+            id: payment.subscription.id,
+            status: payment.subscription.status,
+            previousStatus: payment.previousStatus,
+            reactivated: payment.previousStatus === 'SUSPENDED' && payment.subscription.status === 'ACTIVE',
           }
         : null,
     });

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "test:watch": "jest --watch",
+    "test:emulator": "firebase emulators:exec --only firestore --project demo-admin-suscriptions \"jest --config jest.emulator.config.js --runInBand\"",
     "create-admin": "ts-node scripts/create-admin.ts",
     "migrate:tenant": "ts-node scripts/migrate-tenant.ts",
     "migrate:organization-client-count": "ts-node scripts/migrate-organization-client-count.ts",

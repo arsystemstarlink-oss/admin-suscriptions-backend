@@ -827,6 +827,7 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
       clientLimit,
       newPlanExpiresAt,
       billingDay,
+      { expected: current },
     );
 
     res.status(201).json({ payment, organization: toOrganizationDto(organization) });
