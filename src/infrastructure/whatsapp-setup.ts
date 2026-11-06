@@ -6,6 +6,16 @@ import {
   OrganizationWhatsAppTemplateRequest,
   WhatsAppTemplateRequestStatus,
 } from '../domain/entities';
+import {
+  buildTemplateSamples,
+  buildTemplateVariables,
+  describeTemplateVariable,
+  isWhatsAppTemplateKey,
+  WHATSAPP_TEMPLATE_CATALOG,
+  WHATSAPP_TEMPLATE_KEYS,
+  WhatsAppTemplateContext,
+  WhatsAppTemplateVariable,
+} from '../domain/whatsapp-templates';
 import { organizationRepository, schedulerLogRepository, whatsappMessageRepository } from './repositories';
 import { isFirestoreIndexError } from './firestore-error';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
@@ -16,52 +26,6 @@ import {
   TwilioCredentials,
   whatsappService,
 } from './whatsapp-service';
-
-interface TemplateVariable {
-  description: string;
-  sample: string;
-}
-
-interface TemplateDefinition {
-  label: string;
-  templateName: string;
-  defaultBody: string;
-  /** Posicionales: el índice + 1 es el número de la variable en la plantilla. */
-  variables: TemplateVariable[];
-}
-
-const CLIENT_NAME: TemplateVariable = { description: 'nombre del cliente', sample: 'María Pérez' };
-const SERVICE_CODE: TemplateVariable = { description: 'código del servicio', sample: 'KIT28J720NS8' };
-const DUE_DATE: TemplateVariable = { description: 'fecha de vencimiento', sample: '2026-12-15' };
-
-/** Debe coincidir con las variables que envía `buildNotificationVariables` en el scheduler. */
-export const WHATSAPP_TEMPLATE_CATALOG: Record<OrganizationWhatsAppTemplateKey, TemplateDefinition> = {
-  reminder: {
-    label: 'Recordatorio de pago',
-    templateName: 'payment_reminder',
-    defaultBody:
-      'Hola {{1}}, te recordamos que tu pago vence el {{2}}. Si ya lo realizaste, puedes ignorar este mensaje.',
-    variables: [CLIENT_NAME, DUE_DATE],
-  },
-  dueDateWarning: {
-    label: 'Aviso de vencimiento',
-    templateName: 'due_date_warning',
-    defaultBody:
-      'Hola {{1}}, el servicio {{2}} tiene un período vencido desde el {{3}}. Por favor, comunícate con nosotros para regularizar el pago.',
-    variables: [CLIENT_NAME, SERVICE_CODE, DUE_DATE],
-  },
-  suspensionNotice: {
-    label: 'Aviso de suspensión',
-    templateName: 'suspension_notice',
-    defaultBody:
-      'Hola {{1}}, el servicio {{2}} fue suspendido por falta de pago. Comunícate con nosotros para reactivarlo.',
-    variables: [CLIENT_NAME, SERVICE_CODE],
-  },
-};
-
-export const WHATSAPP_TEMPLATE_KEYS = Object.keys(
-  WHATSAPP_TEMPLATE_CATALOG
-) as OrganizationWhatsAppTemplateKey[];
 
 const MAX_TEMPLATE_BODY_LENGTH = 1024;
 const TWILIO_AUTH_ERROR_CODE = 20003;
@@ -100,10 +64,6 @@ function requireCredentials(organization: Organization): TwilioCredentials {
   return credentials;
 }
 
-export function isWhatsAppTemplateKey(value: unknown): value is OrganizationWhatsAppTemplateKey {
-  return typeof value === 'string' && WHATSAPP_TEMPLATE_KEYS.includes(value as OrganizationWhatsAppTemplateKey);
-}
-
 export function validateTemplateBody(key: OrganizationWhatsAppTemplateKey, rawBody: unknown): string {
   const definition = WHATSAPP_TEMPLATE_CATALOG[key];
   const fail = (message: string): BusinessError => new BusinessError('INVALID_WHATSAPP_TEMPLATE', message);
@@ -131,12 +91,6 @@ export function validateTemplateBody(key: OrganizationWhatsAppTemplateKey, rawBo
     throw fail('El texto no puede empezar ni terminar con una variable.');
   }
   return body;
-}
-
-function templateSamples(key: OrganizationWhatsAppTemplateKey): Record<string, string> {
-  return Object.fromEntries(
-    WHATSAPP_TEMPLATE_CATALOG[key].variables.map((variable, index) => [String(index + 1), variable.sample])
-  );
 }
 
 /** Cada envío necesita un nombre nuevo: WhatsApp no permite reutilizar el de otra plantilla. */
@@ -176,7 +130,7 @@ export async function submitTemplateForApproval(
       friendlyName: name,
       language: 'es',
       body,
-      samples: templateSamples(key),
+      samples: buildTemplateSamples(key),
     });
   } catch (error) {
     rethrowAsCredentialsError(error);
@@ -207,6 +161,42 @@ export async function submitTemplateForApproval(
       templateRequests: { ...currentConfig.templateRequests, [key]: request },
     };
   });
+}
+
+export interface SubmitMissingTemplatesResult {
+  organization: Organization;
+  submitted: OrganizationWhatsAppTemplateKey[];
+  failed: { key: OrganizationWhatsAppTemplateKey; label: string; message: string }[];
+}
+
+/**
+ * Solicita con el texto sugerido las plantillas que nunca se pidieron. Las rechazadas se dejan
+ * fuera porque repetir el mismo texto volvería a fallar.
+ */
+export async function submitMissingTemplates(organization: Organization): Promise<SubmitMissingTemplatesResult> {
+  const config = resolveWhatsAppNotificationConfig(organization);
+  const result: SubmitMissingTemplatesResult = { organization, submitted: [], failed: [] };
+
+  for (const key of WHATSAPP_TEMPLATE_KEYS) {
+    if (config.templates[key] || config.templateRequests?.[key]) continue;
+    try {
+      result.organization = await submitTemplateForApproval(result.organization, key, undefined);
+      result.submitted.push(key);
+    } catch (error) {
+      // Con credenciales rechazadas fallarían todas: se informa una sola vez.
+      if (error instanceof BusinessError && error.code === 'INVALID_TWILIO_CREDENTIALS') throw error;
+      const twilioError = extractTwilioError(error);
+      if (!twilioError && !(error instanceof BusinessError)) throw error;
+      result.failed.push({
+        key,
+        label: WHATSAPP_TEMPLATE_CATALOG[key].label,
+        message: twilioError
+          ? describeWhatsAppError(twilioError.code, twilioError.message)
+          : (error as BusinessError).message,
+      });
+    }
+  }
+  return result;
 }
 
 function toRequestStatus(twilioStatus: string): WhatsAppTemplateRequestStatus {
@@ -283,7 +273,7 @@ export function toTemplatesResponse(organization: Organization) {
         defaultBody: definition.defaultBody,
         variables: definition.variables.map((variable, index) => ({
           placeholder: `{{${index + 1}}}`,
-          description: variable.description,
+          description: describeTemplateVariable(variable),
         })),
         activeContentSid: config.templates[key] ?? null,
         request: config.templateRequests?.[key] ?? null,
@@ -388,7 +378,38 @@ export function pickTestTemplate(
       'Necesitas al menos una plantilla aprobada para enviar una prueba.'
     );
   }
-  return { key, contentSid: config.templates[key]!, variables: templateSamples(key) };
+  return { key, contentSid: config.templates[key]!, variables: buildTemplateSamples(key) };
+}
+
+/** Lo necesario para enviar una plantilla por su clave, sin conocer su SID ni sus posiciones. */
+export function resolveTemplateForSend(
+  organization: Organization,
+  key: unknown,
+  context: unknown
+): { contentSid: string; variables: Record<string, string> } {
+  if (!isWhatsAppTemplateKey(key)) {
+    throw new BusinessError('INVALID_DATA', 'La plantilla indicada no existe.');
+  }
+  const definition = WHATSAPP_TEMPLATE_CATALOG[key];
+  const contentSid = resolveWhatsAppNotificationConfig(organization).templates[key];
+  if (!contentSid) {
+    throw new BusinessError(
+      'WHATSAPP_TEMPLATE_REQUIRED',
+      `La plantilla "${definition.label}" todavía no está activa. Actívala en Configuración › WhatsApp.`
+    );
+  }
+  const provided = (context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>;
+  const missing = definition.variables.filter((variable) => {
+    const value = provided[variable];
+    return typeof value !== 'string' || !value.trim();
+  });
+  if (missing.length > 0) {
+    throw new BusinessError(
+      'INVALID_DATA',
+      `Faltan datos para la plantilla "${definition.label}": ${missing.map(describeTemplateVariable).join(', ')}.`
+    );
+  }
+  return { contentSid, variables: buildTemplateVariables(key, provided as WhatsAppTemplateContext) };
 }
 
 export interface WhatsAppFailureGroup {

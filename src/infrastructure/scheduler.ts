@@ -33,6 +33,7 @@ import {
 } from '../domain/entities';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
 import { syncPendingTemplateRequests } from './whatsapp-setup';
+import { buildTemplateVariables, WhatsAppTemplateKey } from '../domain/whatsapp-templates';
 import { canOrganizationWrite, resolveEffectiveClientLimit, validatePlanConfiguration } from '../domain/business-plan';
 
 const businessService = new SubscriptionBusinessService();
@@ -61,7 +62,7 @@ async function throttleByAccount(accountSid: string): Promise<void> {
 }
 
 export interface NotificationFailure {
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  type: NotificationType;
   clientName: string;
   phone: string;
   errorCode?: number;
@@ -447,7 +448,7 @@ async function runDailyJobForOrganizationUnlocked(
       const client = clients.find((c) => c.id === subscription.clientId);
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
         change.notifications.push(
-          buildPendingNotification('suspended-notice', client, subscription, currentPeriod, notificationConfig)
+          buildPendingNotification('suspensionNotice', client, subscription, currentPeriod, notificationConfig)
         );
       }
 
@@ -526,7 +527,7 @@ async function runDailyJobForOrganizationUnlocked(
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
             change.notifications.push(
-              buildPendingNotification('suspension-warning', client, subscription, currentPeriod, notificationConfig)
+              buildPendingNotification('dueDateWarning', client, subscription, currentPeriod, notificationConfig)
             );
           }
         }
@@ -727,16 +728,7 @@ export function stopScheduler(): void {
   scheduledTasks.clear();
 }
 
-type NotificationType = 'reminder' | 'suspension-warning' | 'suspended-notice';
-
-function resolveNotificationTemplateName(
-  type: NotificationType,
-  config?: OrganizationWhatsAppConfig
-): string | undefined {
-  if (type === 'reminder') return config?.templates.reminder;
-  if (type === 'suspension-warning') return config?.templates.dueDateWarning;
-  return config?.templates.suspensionNotice;
-}
+type NotificationType = WhatsAppTemplateKey;
 
 function buildNotificationVariables(
   type: NotificationType,
@@ -744,25 +736,11 @@ function buildNotificationVariables(
   subscription: { kitNumber: string },
   period: { endDate: Date }
 ): Record<string, string> {
-  const clientFullName = `${client.firstName} ${client.lastName}`;
-  const endDateStr = period.endDate.toISOString().split('T')[0];
-  if (type === 'suspended-notice') {
-    return {
-      '1': clientFullName,
-      '2': subscription.kitNumber,
-    };
-  }
-  if (type === 'suspension-warning') {
-    return {
-      '1': clientFullName,
-      '2': subscription.kitNumber,
-      '3': endDateStr,
-    };
-  }
-  return {
-    '1': clientFullName,
-    '2': endDateStr,
-  };
+  return buildTemplateVariables(type, {
+    clientName: `${client.firstName} ${client.lastName}`,
+    serviceCode: subscription.kitNumber,
+    dueDate: period.endDate.toISOString().split('T')[0],
+  });
 }
 
 function buildNotificationMessageBody(
@@ -796,7 +774,7 @@ async function sendWhatsAppNotification(
   const notificationConfig = organization
     ? resolveWhatsAppNotificationConfig(organization)
     : undefined;
-  const templateName = resolveNotificationTemplateName(type, notificationConfig);
+  const templateName = notificationConfig?.templates[type];
 
   if (!templateName) {
     return failure(`Plantilla no configurada para la notificación ${type} en la configuración de WhatsApp de la organización.`);
@@ -866,7 +844,7 @@ function buildPendingNotification(
   period: BillingPeriod,
   notificationConfig?: OrganizationWhatsAppConfig
 ): PendingNotification {
-  const templateName = resolveNotificationTemplateName(type, notificationConfig);
+  const templateName = notificationConfig?.templates[type];
   const dedupBody = templateName
     ? buildNotificationMessageBody(
         templateName,

@@ -14,8 +14,13 @@ import {
   submitTemplateForApproval,
   syncPendingTemplateRequests,
   validateTemplateBody,
-  WHATSAPP_TEMPLATE_CATALOG,
 } from '../infrastructure/whatsapp-setup';
+import {
+  buildTemplateSamples,
+  buildTemplateVariables,
+  WHATSAPP_TEMPLATE_CATALOG,
+  WHATSAPP_TEMPLATE_KEYS,
+} from '../domain/whatsapp-templates';
 
 jest.mock('../infrastructure/repositories', () => ({
   organizationRepository: { mutateWhatsAppNotifications: jest.fn() },
@@ -64,6 +69,25 @@ function given(overrides: Partial<Organization> = {}): Organization {
   lastOrganization = makeOrganization(overrides);
   return lastOrganization;
 }
+
+describe('catálogo de plantillas', () => {
+  it.each(WHATSAPP_TEMPLATE_KEYS)('%s es una definición válida', (key) => {
+    const definition = WHATSAPP_TEMPLATE_CATALOG[key];
+
+    expect(definition.templateName).toMatch(/^[a-z0-9_]+$/);
+    expect(new Set(definition.variables).size).toBe(definition.variables.length);
+    expect(() => validateTemplateBody(key, definition.defaultBody)).not.toThrow();
+    expect(Object.keys(buildTemplateSamples(key))).toHaveLength(definition.variables.length);
+  });
+
+  it('convierte los datos con nombre al orden de cada plantilla', () => {
+    const context = { clientName: 'Ana', serviceCode: 'KIT1', dueDate: '2026-12-01' };
+
+    expect(buildTemplateVariables('reminder', context)).toEqual({ '1': 'Ana', '2': '2026-12-01' });
+    expect(buildTemplateVariables('dueDateWarning', context)).toEqual({ '1': 'Ana', '2': 'KIT1', '3': '2026-12-01' });
+    expect(buildTemplateVariables('suspensionNotice', context)).toEqual({ '1': 'Ana', '2': 'KIT1' });
+  });
+});
 
 describe('validateTemplateBody', () => {
   it('acepta los textos predeterminados de todas las plantillas', () => {

@@ -1,3 +1,5 @@
+import type { WhatsAppTemplateKey } from './whatsapp-templates';
+
 export interface Identifiable {
   id: string;
 }
@@ -23,13 +25,9 @@ export interface OrganizationWhatsAppRules {
   suspensionNoticeEnabled: boolean;
 }
 
-export interface OrganizationWhatsAppTemplates {
-  reminder?: string;
-  dueDateWarning?: string;
-  suspensionNotice?: string;
-}
+export type OrganizationWhatsAppTemplates = Partial<Record<WhatsAppTemplateKey, string>>;
 
-export type OrganizationWhatsAppTemplateKey = keyof OrganizationWhatsAppTemplates;
+export type OrganizationWhatsAppTemplateKey = WhatsAppTemplateKey;
 
 export type WhatsAppTemplateRequestStatus = 'pending' | 'approved' | 'rejected' | 'blocked';
 
@@ -307,7 +305,7 @@ export interface SchedulerLog {
 }
 
 export interface SchedulerNotificationFailure {
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  type: WhatsAppTemplateKey;
   clientName: string;
   phone: string;
   errorCode?: number;

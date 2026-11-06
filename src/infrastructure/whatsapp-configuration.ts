@@ -3,6 +3,7 @@ import {
   OrganizationWhatsAppConfig,
   OrganizationWhatsAppTemplates,
 } from '../domain/entities';
+import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS } from '../domain/whatsapp-templates';
 
 export const DEFAULT_WHATSAPP_RULES: OrganizationWhatsAppConfig['rules'] = {
   reminderDaysBefore: [3],
@@ -18,7 +19,7 @@ export function createInitialWhatsAppNotifications(): OrganizationWhatsAppConfig
   return { rules: { ...DEFAULT_WHATSAPP_RULES }, templates: {} };
 }
 
-const LEGACY_TEMPLATE_ENV: Record<keyof OrganizationWhatsAppTemplates, string> = {
+const LEGACY_TEMPLATE_ENV: OrganizationWhatsAppTemplates = {
   reminder: 'TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V',
   dueDateWarning: 'TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V',
   suspensionNotice: 'TWILIO_TEMPLATE_SUBSCRIPTION_SUSPENDED_NOTICE_2V',
@@ -53,14 +54,11 @@ export function getWhatsAppConfigurationReadiness(
   if (!twilio?.accountSid) missing.push('Account SID de Twilio');
   if (!twilio?.authToken) missing.push('Auth Token de Twilio');
   if (!twilio?.phoneNumber) missing.push('Número de WhatsApp de Twilio');
-  if (config.rules.reminderDaysBefore.length > 0 && !config.templates.reminder) {
-    missing.push('Plantilla de recordatorio');
-  }
-  if (config.rules.dueDateWarningEnabled && !config.templates.dueDateWarning) {
-    missing.push('Plantilla de aviso de vencimiento');
-  }
-  if (config.rules.suspensionNoticeEnabled && !config.templates.suspensionNotice) {
-    missing.push('Plantilla de aviso de suspensión');
+  for (const key of WHATSAPP_TEMPLATE_KEYS) {
+    const { label, requiredWhen } = WHATSAPP_TEMPLATE_CATALOG[key];
+    if (requiredWhen?.(config.rules) && !config.templates[key]) {
+      missing.push(`Plantilla de ${label.toLowerCase()}`);
+    }
   }
 
   return {

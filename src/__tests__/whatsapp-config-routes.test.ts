@@ -3,6 +3,7 @@ import { Server } from 'http';
 import { AddressInfo } from 'net';
 import { createFakeFirestore } from './support/fake-firestore';
 import whatsappConfigRouter from '../api/routes/whatsapp-config';
+import whatsappRouter from '../api/routes/whatsapp';
 import { errorHandler } from '../api/middleware/error-handler';
 import { whatsappService } from '../infrastructure/whatsapp-service';
 import { createInitialWhatsAppNotifications, getWhatsAppConfigurationReadiness } from '../infrastructure/whatsapp-configuration';
@@ -69,6 +70,7 @@ describe('rutas de configuración de WhatsApp', () => {
     const app = express();
     app.use(express.json());
     app.use('/api/whatsapp', whatsappConfigRouter);
+    app.use('/api/whatsapp', whatsappRouter);
     app.use(errorHandler);
     server = app.listen(0, () => {
       baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -234,6 +236,146 @@ describe('rutas de configuración de WhatsApp', () => {
     });
   });
 
+  describe('POST /config/templates/submit-missing', () => {
+    it('solicita solo las que nunca se pidieron', async () => {
+      fake.clear();
+      seedOrganization({
+        whatsappNotifications: {
+          rules,
+          templates: { reminder: 'HX_active' },
+          templateRequests: { suspensionNotice: { ...pendingRequest, status: 'rejected' } },
+        },
+      });
+      const create = jest.spyOn(whatsappService, 'createTextTemplate').mockResolvedValue('HX_new');
+      jest.spyOn(whatsappService, 'submitTemplateForApproval').mockResolvedValue();
+
+      const response = await send('POST', '/config/templates/submit-missing');
+
+      expect(response.status).toBe(201);
+      const body = await response.json();
+      expect(body.submitted).toEqual(['dueDateWarning']);
+      expect(body.failed).toEqual([]);
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(body.templates.find((t: { key: string }) => t.key === 'suspensionNotice').request.status).toBe('rejected');
+    });
+
+    it('sigue con las demás si una falla y conserva las que sí salieron', async () => {
+      jest
+        .spyOn(whatsappService, 'createTextTemplate')
+        .mockResolvedValueOnce('HX_1')
+        .mockRejectedValueOnce(twilioError(63018))
+        .mockResolvedValueOnce('HX_3');
+      jest.spyOn(whatsappService, 'submitTemplateForApproval').mockResolvedValue();
+
+      const body = await (await send('POST', '/config/templates/submit-missing')).json();
+
+      expect(body.submitted).toEqual(['reminder', 'suspensionNotice']);
+      expect(body.failed).toEqual([
+        expect.objectContaining({ key: 'dueDateWarning', message: expect.stringContaining('límite de envíos') }),
+      ]);
+      const stored = fake.read('organizations', 'org_1') as unknown as Organization;
+      expect(Object.keys(stored.whatsappNotifications?.templateRequests ?? {}).sort()).toEqual([
+        'reminder',
+        'suspensionNotice',
+      ]);
+    });
+
+    it('con credenciales rechazadas informa una sola vez', async () => {
+      const create = jest.spyOn(whatsappService, 'createTextTemplate').mockRejectedValue(twilioError(20003));
+
+      const response = await send('POST', '/config/templates/submit-missing');
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe('INVALID_TWILIO_CREDENTIALS');
+      expect(create).toHaveBeenCalledTimes(1);
+    });
+
+    it('no hace nada si no falta ninguna', async () => {
+      fake.clear();
+      seedOrganization({
+        whatsappNotifications: {
+          rules,
+          templates: { reminder: 'HX_a', dueDateWarning: 'HX_b', suspensionNotice: 'HX_c' },
+        },
+      });
+      const create = jest.spyOn(whatsappService, 'createTextTemplate');
+
+      const response = await send('POST', '/config/templates/submit-missing');
+
+      expect(response.status).toBe(200);
+      expect((await response.json()).submitted).toEqual([]);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /send con templateKey', () => {
+    const context = { clientName: 'Ana López', serviceCode: 'KIT1', dueDate: '2026-12-01' };
+    const withTemplate = () => {
+      fake.clear();
+      seedOrganization({ whatsappNotifications: { rules, templates: { dueDateWarning: 'HX_due' } } });
+    };
+
+    it('resuelve el SID y el orden de las variables en el servidor', async () => {
+      withTemplate();
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_key');
+
+      const response = await send('POST', '/send', { to: '+584120000000', templateKey: 'dueDateWarning', context });
+
+      expect(response.status).toBe(201);
+      expect(sendTemplate).toHaveBeenCalledWith(
+        {
+          to: '+584120000000',
+          templateName: 'HX_due',
+          variables: { '1': 'Ana López', '2': 'KIT1', '3': '2026-12-01' },
+        },
+        expect.objectContaining({ id: 'org_1' })
+      );
+      expect(fake.all('whatsappMessages')).toEqual([expect.objectContaining({ templateName: 'HX_due' })]);
+    });
+
+    it('no envía si faltan datos que la plantilla necesita', async () => {
+      withTemplate();
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate');
+
+      const response = await send('POST', '/send', {
+        to: '+584120000000',
+        templateKey: 'dueDateWarning',
+        context: { clientName: 'Ana López' },
+      });
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.message).toContain('código del servicio, fecha de vencimiento');
+      expect(sendTemplate).not.toHaveBeenCalled();
+    });
+
+    it('avisa si la plantilla aún no está activa', async () => {
+      const response = await send('POST', '/send', { to: '+584120000000', templateKey: 'reminder', context });
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe('WHATSAPP_TEMPLATE_REQUIRED');
+    });
+
+    it.each(['otra', '__proto__', 'constructor', 7])('rechaza la clave %s', async (templateKey) => {
+      const response = await send('POST', '/send', { to: '+584120000000', templateKey, context });
+
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe('INVALID_DATA');
+    });
+
+    it('sigue aceptando templateName y variables directos', async () => {
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_raw');
+
+      const response = await send('POST', '/send', {
+        to: '+584120000000',
+        templateName: 'HX_raw',
+        variables: { '1': 'x' },
+      });
+
+      expect(response.status).toBe(201);
+      expect(sendTemplate.mock.calls[0][0]).toMatchObject({ templateName: 'HX_raw', variables: { '1': 'x' } });
+    });
+  });
+
   describe('POST /config/test-message', () => {
     const withTemplate = () => {
       fake.clear();
@@ -304,7 +446,7 @@ describe('organizaciones nuevas', () => {
 
       expect(getWhatsAppConfigurationReadiness(organization)).toMatchObject({
         ready: false,
-        missing: expect.arrayContaining(['Plantilla de recordatorio']),
+        missing: expect.arrayContaining(['Plantilla de recordatorio de pago']),
         usingLegacyTemplates: false,
       });
     } finally {

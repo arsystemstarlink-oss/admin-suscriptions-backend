@@ -29,14 +29,14 @@ import {
   assertTwilioCredentialsAccepted,
   checkWhatsAppConnection,
   describeWhatsAppError,
-  isWhatsAppTemplateKey,
   listRecentWhatsAppFailures,
   pickTestTemplate,
+  submitMissingTemplates,
   submitTemplateForApproval,
   syncPendingTemplateRequests,
   toTemplatesResponse,
-  WHATSAPP_TEMPLATE_KEYS,
 } from '../../infrastructure/whatsapp-setup';
+import { isWhatsAppTemplateKey, WHATSAPP_TEMPLATE_KEYS } from '../../domain/whatsapp-templates';
 import { authenticateAdmin } from '../middleware/auth';
 import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { requireOrganizationId } from '../middleware/tenant';
@@ -125,7 +125,7 @@ function validateTemplatesPatch(
   }
 
   const updated = { ...existing };
-  for (const key of ['reminder', 'dueDateWarning', 'suspensionNotice'] as const) {
+  for (const key of WHATSAPP_TEMPLATE_KEYS) {
     if (!(key in input)) continue;
     const raw = input[key];
     if (raw !== null && typeof raw !== 'string') {
@@ -319,6 +319,19 @@ router.get('/config/templates', async (req: Request, res: Response, next: NextFu
   try {
     const organization = await syncPendingTemplateRequests(await requireOrganization(req));
     res.json(toTemplatesResponse(organization));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/config/templates/submit-missing', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const result = await submitMissingTemplates(await requireOrganization(req));
+    res.status(result.submitted.length > 0 ? 201 : 200).json({
+      ...toTemplatesResponse(result.organization),
+      submitted: result.submitted,
+      failed: result.failed,
+    });
   } catch (error) {
     next(error);
   }

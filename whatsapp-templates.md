@@ -23,6 +23,28 @@ Configuración inicial del comportamiento:
 Estas reglas se pueden cambiar por organización. `reminderDaysBefore` acepta una
 lista de días entre 1 y 30; una lista vacía desactiva los recordatorios previos.
 
+### Añadir una plantilla nueva
+
+1. Añade una entrada en `TEMPLATES` (`src/domain/whatsapp-templates.ts`) con su texto y sus
+   variables. Con eso ya aparece en Configuración › WhatsApp, se puede solicitar y se activa al
+   aprobarse. En el frontend, añade la clave a `WhatsAppTemplateKey` si la usarás desde el código.
+2. Si una regla automática la necesita para enviar, define `requiredWhen`; aparecerá en los
+   requisitos pendientes de `readiness`.
+3. Para usarla, envíala por su clave. El servidor resuelve el SID activo de la organización y el
+   orden de las variables:
+
+```json
+POST /api/whatsapp/send
+{
+  "to": "+584123456789",
+  "templateKey": "dueDateWarning",
+  "context": { "clientName": "Ana López", "serviceCode": "KIT1", "dueDate": "2026-12-01" }
+}
+```
+
+Si necesita un dato nuevo, añádelo a `TEMPLATE_VARIABLES` en el mismo archivo. Los envíos
+automáticos del job diario siguen necesitando una regla en `scheduler.ts`, que decide cuándo enviar.
+
 ### Solicitud de plantillas desde la app
 
 `POST /api/whatsapp/config/templates/:key/submit` crea la plantilla en la cuenta Twilio de la
@@ -34,7 +56,7 @@ El estado se consulta al abrir la configuración y al inicio del job diario de l
 
 Los Content SID de las plantillas se configuran por organización; deben corresponder
 a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización. El catálogo
-(`src/infrastructure/whatsapp-setup.ts`) debe coincidir con las variables que envía el scheduler.
+(`src/domain/whatsapp-templates.ts`) también define las variables que envía el scheduler.
 
 #### Recordatorio de pago
 

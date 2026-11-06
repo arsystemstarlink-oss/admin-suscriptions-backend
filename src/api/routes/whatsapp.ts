@@ -13,6 +13,7 @@ import {
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
 import { pushService } from '../../infrastructure/push-service';
+import { resolveTemplateForSend } from '../../infrastructure/whatsapp-setup';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { authenticateAdmin } from '../middleware/auth';
@@ -43,7 +44,8 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
   try {
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
-    const { to: rawTo, body, templateName, variables } = req.body;
+    const { to: rawTo, body, templateKey, context } = req.body;
+    let { templateName, variables } = req.body;
 
     if (!rawTo || typeof rawTo !== 'string') {
       throw new BusinessError('INVALID_DATA', 'Número de teléfono es obligatorio.');
@@ -53,7 +55,7 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
     const normalizedTo = normalizePhoneNumber(rawTo);
     const to = normalizedTo.startsWith('+') ? normalizedTo : `+${normalizedTo}`;
 
-    if (!body && !templateName) {
+    if (!body && !templateName && !templateKey) {
       throw new BusinessError('INVALID_DATA', 'Mensaje o template son obligatorios.');
     }
 
@@ -77,6 +79,10 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
         'WHATSAPP_NOT_CONFIGURED',
         'WhatsApp (Twilio) no está configurado para esta organización.'
       );
+    }
+
+    if (templateKey !== undefined) {
+      ({ contentSid: templateName, variables } = resolveTemplateForSend(organization, templateKey, context));
     }
 
     let messageSid: string;
