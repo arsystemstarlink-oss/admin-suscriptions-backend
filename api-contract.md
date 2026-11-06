@@ -7,7 +7,7 @@ Base URL: http://localhost:3000/api
 Auth: Authorization: Bearer {accessToken}
 ```
 
-**Tokens:** accessToken (15 min) | refreshToken (7 dias)
+**Tokens:** accessToken (15 min) | refreshToken (30 dias con "Recordarme" o 7 sin él; el plazo se reinicia en cada renovación)
 
 **Multi-tenant (regla central):**
 - Cada usuario `admin` pertenece a una organización (`organizationId`). El backend **ignora** cualquier `organizationId` enviado por el frontend para un `admin` y usa el de su contexto autenticado (JWT + verificación en Firestore).
@@ -19,7 +19,7 @@ Auth: Authorization: Bearer {accessToken}
 - Todas las rutas bajo `/api/*` (excepto `/api/auth/login`, `/api/auth/refresh`, `/api/auth/logout`, `/api/auth/invite/*`, `/api/public/*` y webhooks Twilio) requieren JWT de admin/super-admin.
 - Access y refresh tokens incluyen claims `type` (`access` | `refresh`), `sub` (userId), `role` y `organizationId`; no son intercambiables.
 - El refresh token es de un solo uso: cada `POST /auth/refresh` rota a un token nuevo y revoca el anterior (sesión persistida en `refreshTokenSessions`).
-- Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`).
+- Si se reutiliza un refresh token ya rotado/revocado, se revocan todas las sesiones del usuario (`REFRESH_TOKEN_REVOKED`). Excepción: durante los 60 s posteriores a la rotación, y mientras el sucesor siga vigente, se tolera como reintento (la respuesta pudo perderse) y se entregan tokens nuevos.
 - `POST /auth/logout` revoca el refresh token presentado (logout por sesión).
 - Rate limits: `POST /api/auth/login` (20 intentos / 15 min por IP), `POST /api/auth/refresh` (60 / 15 min por IP) e invitaciones `/api/auth/invite/*` (30 / 15 min por IP). Portal publico `/api/public/*` (60 / 15 min por IP).
 - Alta conjunta de organización y administrador: `POST /api/organizations/onboard` (10 intentos / 15 min por IP). El alta crea una invitación de un solo uso (7 días) en vez de exigir contraseña; también acepta `password` por compatibilidad.

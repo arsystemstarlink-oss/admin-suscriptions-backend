@@ -6,7 +6,7 @@ import {
   organizationRepository,
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
-import { BusinessError, AdminInvite, User, UserRole } from '../../domain/entities';
+import { BusinessError, AdminInvite, RefreshTokenSession, User, UserRole } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { validateOrganizationAdminCount } from '../../domain/business-plan';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
@@ -22,6 +22,22 @@ import { toAuthenticatedUserDto, toUserDto } from '../dto/user';
 export { EMAIL_REGEX, validatePasswordStrength, toUserDto, toAuthenticatedUserDto };
 
 const router = Router();
+
+const REFRESH_ROTATION_GRACE_MS = 60_000;
+
+/**
+ * Distingue un reintento legítimo (la respuesta de la rotación nunca llegó al
+ * cliente) de la reutilización de un token robado. Exige que el sucesor siga
+ * vigente porque revokeAllForUser renueva revokedAt en todas las sesiones: sin
+ * esta comprobación, un token ya rotado revivía tras un cambio de contraseña.
+ */
+async function isRetryOfRecentRotation(session: RefreshTokenSession): Promise<boolean> {
+  if (!session.revokedAt || !session.replacedBy) return false;
+  if (Date.now() - session.revokedAt.getTime() > REFRESH_ROTATION_GRACE_MS) return false;
+
+  const successor = await refreshTokenSessionRepository.getById(session.replacedBy);
+  return !!successor && !successor.revokedAt;
+}
 
 async function validateAndCreateUser(input: {
   name?: string;
@@ -299,7 +315,9 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
       ? await refreshTokenSessionRepository.getById(payload.jti)
       : undefined;
 
-    if (!session || session.revokedAt) {
+    const isRotationRetry = session ? await isRetryOfRecentRotation(session) : false;
+
+    if (!session || (session.revokedAt && !isRotationRetry)) {
       await refreshTokenSessionRepository.revokeAllForUser(payload.userId);
       throw new BusinessError('REFRESH_TOKEN_REVOKED', 'Sesión revocada. Inicia sesión nuevamente.');
     }
@@ -318,20 +336,19 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
     const { token: newRefreshToken, jti: newJti, expiresAt: newExpiresAt } =
       authService.generateRefreshToken(user, { rememberMe });
 
-    await refreshTokenSessionRepository.update({
-      ...session,
-      revokedAt: new Date(),
-      replacedBy: newJti,
-      lastUsedAt: new Date(),
-    });
+    // En un reintento no se toca la sesión anterior: su revokedAt marca el inicio
+    // de la gracia y moverlo permitiría extenderla reintentando indefinidamente.
+    // El sucesor tampoco se revoca: otra pestaña podría estar usándolo.
+    if (!isRotationRetry) {
+      await refreshTokenSessionRepository.update({
+        ...session,
+        revokedAt: new Date(),
+        replacedBy: newJti,
+        lastUsedAt: new Date(),
+      });
+    }
 
     await createRefreshSession(user, newRefreshToken, newJti, newExpiresAt, rememberMe);
-
-    await syncUserCustomClaims({
-      uid: user.id,
-      role: user.role,
-      organizationId: user.organizationId,
-    });
 
     res.json({
       accessToken: authService.generateAccessToken(user),

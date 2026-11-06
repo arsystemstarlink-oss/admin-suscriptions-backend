@@ -428,10 +428,8 @@ router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: 
     });
 
     const accessToken = authService.generateAccessToken(user);
-    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(user, {
-      rememberMe: false,
-    });
-    await createRefreshSession(user, refreshToken, jti, expiresAt, false);
+    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(user);
+    await createRefreshSession(user, refreshToken, jti, expiresAt);
 
     res.status(201).json({
       accessToken,

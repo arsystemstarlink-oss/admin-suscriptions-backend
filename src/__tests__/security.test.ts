@@ -190,6 +190,88 @@ describe('seguridad', () => {
     });
   });
 
+  describe('POST /auth/refresh: reintento tras una rotación', () => {
+    const SECONDS = 1000;
+
+    /** Token "viejo" ya rotado hace `rotatedAgoMs`, con su sesión sucesora. */
+    const seedRotatedToken = (rotatedAgoMs: number, overrides: { replacedBy?: string | null; successorRevoked?: boolean } = {}) => {
+      const issued = authService.generateRefreshToken(baseUser('user_a', 'a@example.com', passwordHash));
+      const replacedBy = overrides.replacedBy === null ? undefined : overrides.replacedBy ?? 'session_successor';
+      fake.seed('refreshTokenSessions', {
+        id: issued.jti,
+        userId: 'user_a',
+        expiresAt: issued.expiresAt,
+        revokedAt: new Date(Date.now() - rotatedAgoMs),
+        ...(replacedBy ? { replacedBy } : {}),
+      });
+      fake.seed('refreshTokenSessions', {
+        id: 'session_successor',
+        userId: 'user_a',
+        expiresAt: issued.expiresAt,
+        ...(overrides.successorRevoked ? { revokedAt: new Date() } : {}),
+      });
+      return issued;
+    };
+
+    it('entrega tokens nuevos sin revocar el sucesor si la rotación es reciente', async () => {
+      const { token } = seedRotatedToken(5 * SECONDS);
+
+      const response = await send('POST', '/auth/refresh', { refreshToken: token });
+
+      expect(response.status).toBe(200);
+      expect(response.body.refreshToken).toEqual(expect.any(String));
+      expect(fake.read('refreshTokenSessions', 'session_successor')?.revokedAt).toBeUndefined();
+    });
+
+    it('un reintento no extiende el periodo de gracia', async () => {
+      const { token, jti } = seedRotatedToken(5 * SECONDS);
+      const before = (fake.read('refreshTokenSessions', jti)?.revokedAt as Date).getTime();
+
+      await send('POST', '/auth/refresh', { refreshToken: token });
+
+      const after = (fake.read('refreshTokenSessions', jti)?.revokedAt as Date).getTime();
+      expect(after).toBe(before);
+    });
+
+    it.each([
+      ['pasó el periodo de gracia', 61 * SECONDS, {}],
+      ['el sucesor fue revocado (p. ej. cambio de contraseña)', 5 * SECONDS, { successorRevoked: true }],
+      ['la sesión se cerró con logout (sin sucesor)', 5 * SECONDS, { replacedBy: null }],
+      ['el sucesor ya no existe', 5 * SECONDS, { replacedBy: 'session_borrada' }],
+    ])('trata como reutilización y revoca todo si %s', async (_name, rotatedAgoMs, overrides) => {
+      const { token } = seedRotatedToken(rotatedAgoMs, overrides);
+      fake.seed('refreshTokenSessions', { id: 'session_other', userId: 'user_a' });
+
+      const response = await send('POST', '/auth/refresh', { refreshToken: token });
+
+      expect(response.status).toBe(401);
+      expect(response.body.error.code).toBe('REFRESH_TOKEN_REVOKED');
+      expect(fake.read('refreshTokenSessions', 'session_other')?.revokedAt).toBeDefined();
+    });
+
+    it('una rotación normal sigue revocando el token usado y creando un sucesor', async () => {
+      const issued = authService.generateRefreshToken(baseUser('user_a', 'a@example.com', passwordHash));
+      fake.seed('refreshTokenSessions', { id: issued.jti, userId: 'user_a', expiresAt: issued.expiresAt });
+
+      const response = await send('POST', '/auth/refresh', { refreshToken: issued.token });
+
+      expect(response.status).toBe(200);
+      const used = fake.read('refreshTokenSessions', issued.jti);
+      expect(used?.revokedAt).toBeDefined();
+      expect(used?.replacedBy).toEqual(expect.any(String));
+    });
+
+    it('renovar no sincroniza los custom claims de Firebase', async () => {
+      const issued = authService.generateRefreshToken(baseUser('user_a', 'a@example.com', passwordHash));
+      fake.seed('refreshTokenSessions', { id: issued.jti, userId: 'user_a', expiresAt: issued.expiresAt });
+
+      const response = await send('POST', '/auth/refresh', { refreshToken: issued.token });
+
+      expect(response.status).toBe(200);
+      expect(jest.requireMock('../infrastructure/firebase').syncUserCustomClaims).not.toHaveBeenCalled();
+    });
+  });
+
   describe('contraseñas en Firebase Auth', () => {
     const asUserA = () => {
       const token = authService.generateAccessToken(baseUser('user_a', 'a@example.com', passwordHash));
