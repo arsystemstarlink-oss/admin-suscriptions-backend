@@ -832,6 +832,23 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       expect(task.stop).toHaveBeenCalledTimes(1);
     });
 
+    it('una expresión inválida guardada conserva el cron vigente', async () => {
+      await syncOrganizationSchedule({ id: 'org_A', active: true });
+      mockedSchedulerConfig.getConfig.mockResolvedValueOnce({
+        id: 'org_A',
+        enabled: true,
+        cronSchedule: '0 0 59 59 *',
+        updatedAt: new Date(),
+      });
+      const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      await syncOrganizationSchedule({ id: 'org_A', active: true });
+
+      expect(task.stop).not.toHaveBeenCalled();
+      expect(schedule).toHaveBeenCalledTimes(1);
+      consoleError.mockRestore();
+    });
+
     it('detener una organización sin cron no falla', () => {
       expect(() => unscheduleOrganization('org_sin_cron')).not.toThrow();
     });

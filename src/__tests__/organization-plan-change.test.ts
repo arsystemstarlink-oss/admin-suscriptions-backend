@@ -241,6 +241,38 @@ describe('organization plan change routes', () => {
       return organizations.registerPlanPayment.mock.calls[0];
     };
 
+    it('does not expose the Twilio auth token when approving a payment', async () => {
+      organizations.registerPlanPayment.mockImplementation(async (payment) => ({
+        ...proOrganization,
+        id: payment.organizationId,
+        twilio: { accountSid: 'AC1', authToken: 'secreto-de-twilio', phoneNumber: '+584120000000' },
+      }));
+      reports.getById.mockResolvedValue({
+        id: 'report_1',
+        organizationId: 'org_1',
+        plan: 'pro',
+        amount: 25,
+        method: 'usdt',
+        paidAt: today,
+        months: 1,
+        clientLimit: 75,
+        status: 'PENDING',
+        createdAt: today,
+        createdByUserId: 'user_1',
+      });
+
+      const response = await fetch(`${baseUrl}/report_1/review`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'approve' }),
+      });
+
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).not.toContain('secreto-de-twilio');
+      expect(JSON.parse(text).organization.twilio.authTokenSet).toBe(true);
+    });
+
     it('quotes twelve months from the end of the trial without exceeding the limit', async () => {
       const result = await quote('basico');
 

@@ -272,7 +272,7 @@ El sistema usa Firebase Firestore para persistencia de datos. Los datos se manti
 - `domainEvents` - Auditoría de eventos de dominio (scoped por `organizationId`)
 
 ### Reglas de Firestore
-El backend usa Firebase Admin SDK (bypass de reglas). Además, para protección de clientes directos se incluyen `firestore.rules` y `firestore.indexes.json` en el repo.
+El backend usa Firebase Admin SDK (bypass de reglas) y el frontend solo habla con la API, por lo que `firestore.rules` niega todo acceso directo. Si algún cliente necesitara leer Firestore, habría que abrir esa colección de forma explícita y acotada. `firestore.indexes.json` define los índices compuestos.
 
 Despliegue (requiere Firebase CLI):
 ```

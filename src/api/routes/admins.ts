@@ -20,6 +20,16 @@ import {
 
 const router = Router();
 
+/** Las credenciales propias se cambian confirmando la contraseña actual, en /auth/me y /auth/change-password. */
+function assertNotOwnCredentials(targetId: string, actorId: string): void {
+  if (targetId === actorId) {
+    throw new BusinessError(
+      'FORBIDDEN',
+      'Cambia tu email o contraseña desde tu perfil, confirmando la contraseña actual.'
+    );
+  }
+}
+
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const search = req.query.search as string;
@@ -146,6 +156,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       }
 
       if (normalizedEmail !== user.email) {
+        assertNotOwnCredentials(targetId, actorId);
         const existing = await userRepository.findByEmail(normalizedEmail);
         if (existing && existing.id !== user.id) {
           throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
@@ -160,6 +171,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     if (newPassword !== undefined) {
+      assertNotOwnCredentials(targetId, actorId);
       const password = typeof newPassword === 'string' ? newPassword : '';
       validatePasswordStrength(password);
       updates.password = await authService.hashPassword(password);

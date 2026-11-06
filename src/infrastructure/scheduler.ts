@@ -630,23 +630,21 @@ async function runDailyJobForOrganizationUnlocked(
 }
 
 export async function scheduleOrganization(organizationId: string): Promise<boolean> {
-  const existing = scheduledTasks.get(organizationId);
-  if (existing) {
-    existing.stop();
-    scheduledTasks.delete(organizationId);
-  }
-
   const config = await schedulerConfigRepository.getConfig(organizationId);
 
   if (!config.enabled) {
+    unscheduleOrganization(organizationId);
     console.log(`[Scheduler] Organización ${organizationId} con enabled=false. No se programa cron.`);
     return false;
   }
 
+  // Con una expresión inválida se conserva el cron vigente: la organización no se queda sin job.
   if (!cron.validate(config.cronSchedule)) {
     console.error(`[Scheduler] Expresión cron inválida para org ${organizationId} ("${config.cronSchedule}"). No se programa.`);
     return false;
   }
+
+  unscheduleOrganization(organizationId);
 
   const task = cron.schedule(
     config.cronSchedule,

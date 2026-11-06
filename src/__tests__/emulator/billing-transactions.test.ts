@@ -433,6 +433,51 @@ describe('transacciones contra el emulador de Firestore', () => {
     });
   });
 
+  describe('reglas de seguridad', () => {
+    const documentsUrl = () =>
+      `http://${process.env.FIRESTORE_EMULATOR_HOST}/v1/projects/${PROJECT_ID}/databases/(default)/documents`;
+    // El emulador acepta tokens sin firmar: simula a un usuario real de Firebase Auth.
+    const tokenFor = (claims: Record<string, unknown>) => {
+      const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const payload = {
+        sub: 'user_1',
+        user_id: 'user_1',
+        aud: PROJECT_ID,
+        iss: `https://securetoken.google.com/${PROJECT_ID}`,
+        iat: Math.floor(Date.now() / 1000),
+        exp: Math.floor(Date.now() / 1000) + 3600,
+        ...claims,
+      };
+      return `${encode({ alg: 'none', type: 'JWT' })}.${encode(payload)}.`;
+    };
+
+    it.each([
+      ['sin autenticar', undefined],
+      ['admin de la organización', { role: 'admin', organizationId: ORG }],
+      ['super-admin', { role: 'super-admin', organizationId: null }],
+    ])('%s no puede leer ni escribir directamente', async (_name, claims) => {
+      await seed('users', { id: 'user_1', role: 'admin', organizationId: ORG, password: 'hash' } as { id: string });
+      await seed('subscriptions', subscription);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (claims) headers.Authorization = `Bearer ${tokenFor(claims)}`;
+
+      const reads = await Promise.all(
+        ['users/user_1', `subscriptions/${subscription.id}`].map((path) =>
+          fetch(`${documentsUrl()}/${path}`, { headers })
+        )
+      );
+      const write = await fetch(`${documentsUrl()}/users/user_1?updateMask.fieldPaths=role`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ fields: { role: { stringValue: 'super-admin' } } }),
+      });
+
+      expect(reads.map((response) => response.status)).toEqual([403, 403]);
+      expect(write.status).toBe(403);
+      expect((await read('users', 'user_1'))?.role).toBe('admin');
+    });
+  });
+
   describe('campos eliminados', () => {
     it('update elimina del documento un campo en undefined', async () => {
       const client = {

@@ -6,6 +6,7 @@ import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 
 const router = Router();
+const DAILY_CRON_REGEX = /^([0-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) \* \* \*$/;
 
 router.get('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -27,8 +28,12 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     }
 
     if (cronSchedule !== undefined) {
-      if (typeof cronSchedule !== 'string' || !/^(\*|([0-9]|([1-5][0-9]))|\*\/[0-9]+)( (\*|([0-9]|([1-5][0-9]))|\*\/[0-9]+)){4}$/.test(cronSchedule)) {
-        throw new BusinessError('INVALID_CRON', 'El campo "cronSchedule" debe ser una expresión cron válida.');
+      // El Daily Job corre una vez al día: minuto y hora fijos.
+      if (typeof cronSchedule !== 'string' || !DAILY_CRON_REGEX.test(cronSchedule)) {
+        throw new BusinessError(
+          'INVALID_CRON',
+          'El campo "cronSchedule" debe indicar una hora diaria, por ejemplo "30 2 * * *".'
+        );
       }
     }
 

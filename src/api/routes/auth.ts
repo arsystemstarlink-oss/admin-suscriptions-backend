@@ -526,7 +526,28 @@ router.put('/me', authenticateAdmin, async (req: Request, res: Response, next: N
     const updatedUser: User = { ...user, ...updates };
     await userRepository.update(updatedUser);
 
-    res.json({ user: await toAuthenticatedUserDto(updatedUser) });
+    if (!emailChanged) {
+      res.json({ user: await toAuthenticatedUserDto(updatedUser) });
+      return;
+    }
+
+    try {
+      await admin.auth().updateUser(user.id, { email: updatedUser.email });
+    } catch (firebaseError: any) {
+      console.warn('[Auth] No se pudo actualizar el email en Firebase Auth:', firebaseError.message);
+    }
+
+    await refreshTokenSessionRepository.revokeAllForUser(user.id);
+
+    const accessToken = authService.generateAccessToken(updatedUser);
+    const { token: refreshToken, jti, expiresAt } = authService.generateRefreshToken(updatedUser);
+    await createRefreshSession(updatedUser, refreshToken, jti, expiresAt);
+
+    res.json({
+      user: await toAuthenticatedUserDto(updatedUser),
+      accessToken,
+      refreshToken,
+    });
   } catch (err) {
     next(err);
   }

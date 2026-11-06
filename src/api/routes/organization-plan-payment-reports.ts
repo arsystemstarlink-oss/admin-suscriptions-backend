@@ -36,6 +36,7 @@ import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { requireSuperAdmin } from '../middleware/auth';
 import { parseBusinessPaymentDate } from '../../domain/payment-date';
 import { pushService } from '../../infrastructure/push-service';
+import { toOrganizationDto } from '../dto/organization';
 
 const router = Router();
 
@@ -477,7 +478,7 @@ router.post('/:id/review', requireSuperAdmin, async (req: Request, res: Response
 
     res.json({
       report: serializeReport(approved, organization.name),
-      organization: updatedOrganization,
+      organization: toOrganizationDto(updatedOrganization),
       payment,
     });
   } catch (err) {

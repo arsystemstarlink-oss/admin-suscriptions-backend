@@ -731,39 +731,27 @@ router.post('/:id/plan-payments', async (req: Request, res: Response, next: Next
 
     const { paidAt, amount, method, plan, months } = req.body ?? {};
     const parsedPaidAt = parseBusinessPaymentDate(paidAt);
-    // El vencimiento manual heredado (sin months) conserva el corte de la organización.
-    const billingDay =
-      months !== undefined
-        ? resolvePlanPaymentBillingDay({
-            paidAt: parsedPaidAt,
-            organization: current,
-            targetPlan: plan as BusinessPlanKey,
-          })
-        : getOrganizationBillingDay(current);
+    if (months === undefined || months === null) {
+      throw new BusinessError('INVALID_PLAN_MONTHS', 'Indica los meses a renovar.');
+    }
+    const renewalMonths = resolveOrganizationPlanMonths(months);
+    const billingDay = resolvePlanPaymentBillingDay({
+      paidAt: parsedPaidAt,
+      organization: current,
+      targetPlan: plan as BusinessPlanKey,
+    });
     // El tope vigente se deriva del plan para comparar bajadas contra el espacio real.
     const currentCapacity = resolveEffectiveClientLimit(current.plan, current.clientLimit);
-    let newPlanExpiresAt: Date;
-    let renewalMonths = 1;
-    if (months !== undefined) {
-      const parsedMonths = resolveOrganizationPlanMonths(months);
-      renewalMonths = parsedMonths;
-      newPlanExpiresAt = resolveOrganizationPlanExpiration({
-        paidAt: parsedPaidAt,
-        months: parsedMonths,
-        billingDay,
-        planStatus: current.planStatus,
-        trialEndsAt: current.trialEndsAt,
-        planExpiresAt: current.planExpiresAt,
-        currentPlan: current.plan,
-        targetPlan: plan as BusinessPlanKey,
-      });
-    } else {
-      const parsedExpiry = parsePlanDate(req.body?.newPlanExpiresAt, 'newPlanExpiresAt');
-      if (!parsedExpiry) {
-        throw new BusinessError('INVALID_PLAN_DATE', 'Indica los meses a renovar.');
-      }
-      newPlanExpiresAt = parsedExpiry;
-    }
+    const newPlanExpiresAt = resolveOrganizationPlanExpiration({
+      paidAt: parsedPaidAt,
+      months: renewalMonths,
+      billingDay,
+      planStatus: current.planStatus,
+      trialEndsAt: current.trialEndsAt,
+      planExpiresAt: current.planExpiresAt,
+      currentPlan: current.plan,
+      targetPlan: plan as BusinessPlanKey,
+    });
     if (!['transferencia', 'usdt', 'efectivo'].includes(method)) {
       throw new BusinessError('INVALID_PAYMENT_METHOD', 'El método de pago no es válido.');
     }

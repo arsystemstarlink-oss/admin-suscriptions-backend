@@ -310,8 +310,9 @@ interface DebtorItem {
 { name?: string; email?: string; phone?: string; currentPassword?: string }
 // currentPassword es obligatorio SOLO si email cambia
 // phone se normaliza a E.164 (+58...)
+// Si email cambia, se revocan todas las sesiones y la respuesta incluye accessToken/refreshToken nuevos
 // Response 200
-{ user: User }
+{ user: User; accessToken?: string; refreshToken?: string }
 // Para admin, incluye la organización y sus datos de plan actualizados; organizationId no es editable.
 // Errors: 400 INVALID_EMAIL | 400 INVALID_PASSWORD | 400 INVALID_PHONE | 409 EMAIL_TAKEN
 ```
@@ -391,6 +392,7 @@ interface DebtorItem {
 // Request (parcial, al menos un campo)
 { name?: string; email?: string; phone?: string; newPassword?: string }
 // No requiere currentPassword del admin editado (lo hace otro admin)
+// El propio admin no puede cambiar aquí su email ni su contraseña → 403 FORBIDDEN; se hace con PUT /auth/me y POST /auth/change-password
 // newPassword: mínimo 8 caracteres, letras y números
 // phone se normaliza a E.164 (+58...)
 // Si email o newPassword cambian, se revocan todas las sesiones del admin editado
@@ -546,14 +548,12 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
   method: 'transferencia' | 'usdt' | 'efectivo';
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit?: number; // requerido para A medida (>= 151); ignorado en planes fijos
-  months?: number; // 1-12; el servidor calcula newPlanExpiresAt con el día de corte
-  newPlanExpiresAt?: string; // legado; solo si no se envía months
+  months: number; // obligatorio, 1-12; el servidor calcula newPlanExpiresAt con el día de corte
   notes?: string;
 }
 // Response 201 → { payment: OrganizationPlanPayment; organization: Organization }
 // Guarda el pago externo y activa/renueva el plan en una transacción. No procesa cobros.
 // Monto: en planes fijos es priceUsdMonthly × months (total); en A medida es el amount enviado.
-// Si se envía newPlanExpiresAt sin months, el monto fijo equivale a 1 mes.
 // Meses: mismo plan → se suman al vencimiento actual.
 // Cambio entre planes fijos con tiempo vigente → el saldo se convierte en días del plan nuevo:
 // días restantes × precio actual ÷ precio nuevo, hacia arriba. Los meses se suman al terminar esos
@@ -1138,7 +1138,7 @@ El scheduler es siempre por organización: no existe una configuración global n
 // Query: ?organizationId=org_X (obligatorio para super-admin)
 // Request (partial)
 { enabled?: boolean; cronSchedule?: string }
-// cronSchedule debe ser una expresión cron válida (ej: "0 0 * * *" para medianoche diario)
+// cronSchedule indica una hora diaria: minuto y hora fijos (ej: "30 2 * * *"). Otro formato → 400 INVALID_CRON
 // Response 200 → SchedulerConfig
 // Reprograma el cron de la organización indicada automáticamente (en caliente)
 ```
