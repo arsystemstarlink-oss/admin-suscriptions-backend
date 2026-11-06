@@ -100,6 +100,14 @@
       "collectionGroup": "whatsappMessages",
       "fields": [
         { "fieldPath": "organizationId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "whatsappMessages",
+      "fields": [
+        { "fieldPath": "organizationId", "order": "ASCENDING" },
         { "fieldPath": "phone", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]

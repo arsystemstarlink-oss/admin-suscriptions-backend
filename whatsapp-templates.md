@@ -2,6 +2,9 @@
 
 ## Configuración por organización
 
+El administrador lo configura en **Configuración › WhatsApp** (`/config/whatsapp`): conecta su
+cuenta, solicita las plantillas, copia la URL de mensajes entrantes y envía una prueba.
+
 Cada organización configura sus credenciales, Content SID y reglas desde
 `GET/PUT /api/whatsapp/config`. La configuración queda guardada en su documento de organización;
 el Auth Token nunca se devuelve en la respuesta (solo `authTokenConfigured`). El
@@ -20,10 +23,18 @@ Configuración inicial del comportamiento:
 Estas reglas se pueden cambiar por organización. `reminderDaysBefore` acepta una
 lista de días entre 1 y 30; una lista vacía desactiva los recordatorios previos.
 
+### Solicitud de plantillas desde la app
+
+`POST /api/whatsapp/config/templates/:key/submit` crea la plantilla en la cuenta Twilio de la
+organización y la envía a aprobación como `UTILITY`. El SID solo pasa a `templates` cuando se
+aprueba, así que una plantilla activa sigue en uso durante la revisión y si la nueva se rechaza.
+El estado se consulta al abrir la configuración y al inicio del job diario de la organización.
+
 ### Plantillas disponibles
 
 Los Content SID de las plantillas se configuran por organización; deben corresponder
-a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización.
+a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización. El catálogo
+(`src/infrastructure/whatsapp-setup.ts`) debe coincidir con las variables que envía el scheduler.
 
 #### Recordatorio de pago
 
@@ -149,7 +160,7 @@ POST /communications/status
 ```
 - Publico (sin JWT admin); envia `MessageStatus` y `MessageSid` en el body
 - Actualiza el estado del mensaje (`SENT`, `DELIVERED`, `READ`, `FAILED`) y guarda `errorMessage`. Un estado atrasado no pisa uno mas avanzado
-- Configurar en Twilio Console: StatusCallback URL = `{BASE_URL}/communications/status` (metodo POST)
+- Se pide en cada mensaje cuando `BASE_URL` es https; no hace falta configurarlo en Twilio Console
 - Valida firma con el `authToken` de la organizacion a la que pertenece el mensaje
 
 ---

@@ -32,11 +32,13 @@ import {
   Subscription,
 } from '../domain/entities';
 import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import { syncPendingTemplateRequests } from './whatsapp-setup';
 import { canOrganizationWrite, resolveEffectiveClientLimit, validatePlanConfiguration } from '../domain/business-plan';
 
 const businessService = new SubscriptionBusinessService();
 const JOB_LOCK_TTL_MS = 15 * 60 * 1000;
 const INSTANCE_ID = randomUUID();
+const MAX_LOGGED_NOTIFICATION_FAILURES = 20;
 const NOTIFICATION_INTERVAL_MS = Number(process.env.TWILIO_NOTIFICATIONS_INTERVAL_MS || 1500);
 
 const SCHEDULER_TIMEZONE = process.env.SCHEDULER_TIMEZONE || 'America/Caracas';
@@ -182,6 +184,9 @@ async function recordSchedulerLog(input: SchedulerLogInput): Promise<void> {
     suspended: input.result?.suspended ?? 0,
     notifications: input.result?.notifications ?? 0,
     notificationErrors: input.result?.errors?.length ?? 0,
+    ...(input.result?.errors?.length
+      ? { notificationFailures: input.result.errors.slice(0, MAX_LOGGED_NOTIFICATION_FAILURES) }
+      : {}),
     error: input.error,
   };
   try {
@@ -197,10 +202,12 @@ async function runDailyJobForOrganizationUnlocked(
   const now = new Date();
   console.log(`[Daily Job] Ejecutando revisión automática - org ${organizationId} - ${now.toISOString()}`);
 
-  const organization = await organizationRepository.getById(organizationId);
-  if (!organization) {
+  const storedOrganization = await organizationRepository.getById(organizationId);
+  if (!storedOrganization) {
     throw new Error(`Organización ${organizationId} no encontrada para el Daily Job.`);
   }
+  // Activa las plantillas aprobadas aunque nadie haya vuelto a abrir la configuración.
+  const organization = await syncPendingTemplateRequests(storedOrganization);
   if (organization.active === false) {
     console.info(`[Daily Job] Se omite la organización ${organizationId}: está desactivada.`);
     return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
@@ -935,9 +942,9 @@ async function deliverPendingNotifications(
         sentBodies.add(notification.dedupBody);
       }
       sentMessages.push(result.message);
-      if (sentMessages.length >= 10) {
-        await flushSent();
-      }
+      // Se guarda de inmediato: Twilio puede avisar un fallo segundos después del envío
+      // y el callback de estado necesita encontrar el mensaje.
+      await flushSent();
     } else {
       notificationErrors.push(result.error);
     }

@@ -1574,6 +1574,12 @@ Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `
 ## WhatsApp por Organización (Twilio multi-tenant)
 
 - `GET/PUT /api/whatsapp/config` permite al administrador administrar las credenciales, Content SID de plantillas y reglas de recordatorio/vencimiento/suspensión de su propia organización. La respuesta nunca incluye `authToken`.
+- `GET /api/whatsapp/config` incluye `webhooks: { inbound, status } | null` (`null` si `BASE_URL` no es https). `PUT` rechaza con `400 INVALID_TWILIO_CREDENTIALS` las credenciales nuevas que Twilio niegue; si Twilio no responde, guarda igualmente.
+- `GET /api/whatsapp/config/connection` comprueba con Twilio la cuenta y el número: `{ status: 'not_configured' | 'invalid_credentials' | 'sender_not_found' | 'sender_offline' | 'unverified' | 'ok', message, inboundWebhookConnected: boolean | null }`.
+- `GET /api/whatsapp/config/templates` devuelve cada plantilla con `{ key, label, defaultBody, variables, activeContentSid, request }` tras consultar las que están en revisión. `POST /api/whatsapp/config/templates/:key/submit` con `{ body? }` la crea y la envía a aprobación (`201`, misma respuesta). Errores: `400 INVALID_WHATSAPP_TEMPLATE`, `409 WHATSAPP_TEMPLATE_PENDING`.
+- `POST /api/whatsapp/config/test-message` con `{ to }` envía una plantilla activa con datos de ejemplo (`201 { messageSid, templateKey }`). Error: `409 WHATSAPP_TEMPLATE_REQUIRED`.
+- `GET /api/whatsapp/config/failures` devuelve `{ failures: [{ message, errorCode?, count, lastAt, recipients }] }`: envíos fallidos de los últimos 7 días agrupados por causa.
+- Las organizaciones creadas guardan su configuración de notificaciones desde el inicio y no usan los Content SID de entorno.
 - Defaults: recordatorio a 3 días, aviso de vencimiento habilitado y aviso de suspensión habilitado. Los Content SID de entorno antiguos se usan solo como fallback hasta que la organización guarde su configuración.
 - `readiness.ready` y `readiness.missing` describen los requisitos activos pendientes. La falta de configuración WhatsApp no detiene el cron ni el ciclo de negocio.
 - Cada organización debe tener sus propias credenciales Twilio en `organizations/{id}.twilio`: `accountSid`, `authToken`, `phoneNumber` (número de WhatsApp Business, E.164), `enabled`. No existe configuración Twilio global de servidor.

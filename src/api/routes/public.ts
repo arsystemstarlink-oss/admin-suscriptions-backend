@@ -59,6 +59,7 @@ import {
   createDniRateLimiter,
   createPublicDniLimiterFromEnv,
 } from '../middleware/public-protection';
+import { createInitialWhatsAppNotifications } from '../../infrastructure/whatsapp-configuration';
 
 const router = Router();
 
@@ -337,6 +338,7 @@ router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: 
       active: true,
       ...defaultOrganizationPlan(now),
       twilio: { enabled: false },
+      whatsappNotifications: createInitialWhatsAppNotifications(),
       createdAt: now,
     };
     const user: User = {

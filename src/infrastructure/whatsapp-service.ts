@@ -49,6 +49,29 @@ export function resolveTwilioCredentials(
   return null;
 }
 
+/**
+ * URLs públicas que Twilio debe llamar. Sin BASE_URL https (por ejemplo en local)
+ * no hay una URL que Twilio pueda alcanzar ni contra la que validar la firma.
+ */
+export function getWhatsAppWebhookUrls(): { inbound: string; status: string } | null {
+  const baseUrl = process.env.BASE_URL?.trim().replace(/\/+$/, '');
+  if (!baseUrl?.startsWith('https://')) return null;
+  return {
+    inbound: `${baseUrl}/communications/webhook`,
+    status: `${baseUrl}/communications/status`,
+  };
+}
+
+export interface WhatsAppSenderInfo {
+  status: string;
+  callbackUrl?: string;
+}
+
+export interface TemplateApprovalInfo {
+  status: string;
+  rejectionReason?: string;
+}
+
 export interface TwilioErrorInfo {
   code: number;
   message: string;
@@ -123,7 +146,11 @@ export class WhatsAppService {
     let lastError: unknown;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        const sentMessage = await this.getClient(credentials).messages.create(params);
+        const statusCallback = getWhatsAppWebhookUrls()?.status;
+        const sentMessage = await this.getClient(credentials).messages.create({
+          ...params,
+          ...(statusCallback ? { statusCallback } : {}),
+        });
         return sentMessage.sid;
       } catch (err) {
         lastError = err;
@@ -179,6 +206,70 @@ export class WhatsAppService {
     };
 
     return this.createMessageWithRetry(payload, credentials);
+  }
+
+  async verifyAccount(credentials: TwilioCredentials): Promise<void> {
+    await this.getClient(credentials).api.v2010.accounts(credentials.accountSid).fetch();
+  }
+
+  async findSender(credentials: TwilioCredentials): Promise<WhatsAppSenderInfo | undefined> {
+    const senders = await this.getClient(credentials).messaging.v2.channelsSenders.list({
+      channel: 'whatsapp',
+      limit: 200,
+    });
+    const sender = senders.find(
+      (candidate) => normalizePhoneNumber(candidate.senderId) === credentials.phoneNumber
+    );
+    if (!sender) return undefined;
+    return { status: sender.status, callbackUrl: sender.webhook?.callbackUrl ?? undefined };
+  }
+
+  async createTextTemplate(
+    credentials: TwilioCredentials,
+    template: { friendlyName: string; language: string; body: string; samples: Record<string, string> }
+  ): Promise<string> {
+    // El SDK envía este objeto tal cual como JSON, así que usa los nombres de la API
+    // de Twilio aunque sus tipos declaren camelCase (`friendlyName`, `twilioText`).
+    const payload = {
+      friendly_name: template.friendlyName,
+      language: template.language,
+      variables: template.samples,
+      types: { 'twilio/text': { body: template.body } },
+    };
+    const content = await this.getClient(credentials).content.v1.contents.create(payload as never);
+    return content.sid;
+  }
+
+  async submitTemplateForApproval(
+    credentials: TwilioCredentials,
+    contentSid: string,
+    name: string
+  ): Promise<void> {
+    await this.getClient(credentials)
+      .content.v1.contents(contentSid)
+      .approvalCreate.create({ name, category: 'UTILITY' });
+  }
+
+  async fetchTemplateApproval(
+    credentials: TwilioCredentials,
+    contentSid: string
+  ): Promise<TemplateApprovalInfo> {
+    const approval = await this.getClient(credentials)
+      .content.v1.contents(contentSid)
+      .approvalFetch()
+      .fetch();
+    const whatsapp = (approval.whatsapp ?? {}) as unknown as {
+      status?: string;
+      rejection_reason?: string;
+    };
+    return {
+      status: String(whatsapp.status ?? '').toLowerCase(),
+      rejectionReason: whatsapp.rejection_reason || undefined,
+    };
+  }
+
+  async deleteTemplate(credentials: TwilioCredentials, contentSid: string): Promise<void> {
+    await this.getClient(credentials).content.v1.contents(contentSid).remove();
   }
 
   parseIncomingMessage(body: any): WhatsAppReceivedMessage {

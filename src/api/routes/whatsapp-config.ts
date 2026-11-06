@@ -3,15 +3,40 @@ import {
   BusinessError,
   Organization,
   OrganizationTwilioConfig,
+  OrganizationWhatsAppConfig,
   OrganizationWhatsAppRules,
   OrganizationWhatsAppTemplates,
+  WhatsAppMessage,
 } from '../../domain/entities';
-import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
-import { organizationRepository } from '../../infrastructure/repositories';
+import { createId } from '../../domain/business-rules';
+import {
+  extractTwilioError,
+  getWhatsAppWebhookUrls,
+  normalizePhoneNumber,
+  resolveTwilioCredentials,
+  whatsappService,
+} from '../../infrastructure/whatsapp-service';
+import {
+  organizationRepository,
+  whatsappConversationRepository,
+  whatsappMessageRepository,
+} from '../../infrastructure/repositories';
 import {
   getWhatsAppConfigurationReadiness,
   resolveWhatsAppNotificationConfig,
 } from '../../infrastructure/whatsapp-configuration';
+import {
+  assertTwilioCredentialsAccepted,
+  checkWhatsAppConnection,
+  describeWhatsAppError,
+  isWhatsAppTemplateKey,
+  listRecentWhatsAppFailures,
+  pickTestTemplate,
+  submitTemplateForApproval,
+  syncPendingTemplateRequests,
+  toTemplatesResponse,
+  WHATSAPP_TEMPLATE_KEYS,
+} from '../../infrastructure/whatsapp-setup';
 import { authenticateAdmin } from '../middleware/auth';
 import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { requireOrganizationId } from '../middleware/tenant';
@@ -173,7 +198,41 @@ function toConfigResponse(organization: Organization) {
     rules: config.rules,
     templates: config.templates,
     readiness,
+    webhooks: getWhatsAppWebhookUrls(),
   };
+}
+
+async function requireOrganization(req: Request): Promise<Organization> {
+  const organization = await organizationRepository.getById(requireOrganizationId(req));
+  if (!organization) {
+    throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
+  }
+  return organization;
+}
+
+function credentialsChanged(
+  previous: OrganizationTwilioConfig | undefined,
+  next: OrganizationTwilioConfig
+): boolean {
+  return (
+    previous?.accountSid !== next.accountSid ||
+    previous?.authToken !== next.authToken ||
+    previous?.enabled !== next.enabled
+  );
+}
+
+/** Una plantilla cambiada a mano deja sin efecto su solicitud: al aprobarse la pisaría. */
+function dropReplacedRequests(
+  requests: OrganizationWhatsAppConfig['templateRequests'],
+  previous: OrganizationWhatsAppTemplates,
+  next: OrganizationWhatsAppTemplates
+): OrganizationWhatsAppConfig['templateRequests'] {
+  if (!requests) return undefined;
+  const kept = { ...requests };
+  for (const key of WHATSAPP_TEMPLATE_KEYS) {
+    if (previous[key] !== next[key]) delete kept[key];
+  }
+  return kept;
 }
 
 router.get('/config', async (req: Request, res: Response, next: NextFunction) => {
@@ -208,6 +267,10 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     if ('twilio' in req.body) {
       twilio = validateTwilioPatch(req.body.twilio, organization.twilio);
       hasChanges = true;
+      const credentials = resolveTwilioCredentials({ ...organization, twilio });
+      if (credentials && credentialsChanged(organization.twilio, twilio)) {
+        await assertTwilioCredentialsAccepted(credentials);
+      }
     }
 
     if ('templates' in req.body || 'rules' in req.body) {
@@ -217,7 +280,15 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
       const rules = 'rules' in req.body
         ? validateRulesPatch(req.body.rules, currentConfig.rules)
         : currentConfig.rules;
-      whatsappNotifications = { templates, rules };
+      whatsappNotifications = {
+        templates,
+        rules,
+        templateRequests: dropReplacedRequests(
+          currentConfig.templateRequests,
+          currentConfig.templates,
+          templates
+        ),
+      };
       hasChanges = true;
     }
 
@@ -231,6 +302,100 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
       whatsappNotifications,
     );
     res.json(toConfigResponse(updated));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/config/connection', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await checkWhatsAppConnection(await requireOrganization(req)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/config/templates', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const organization = await syncPendingTemplateRequests(await requireOrganization(req));
+    res.json(toTemplatesResponse(organization));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/config/templates/:key/submit', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { key } = req.params;
+    if (!isWhatsAppTemplateKey(key)) {
+      throw new BusinessError('INVALID_DATA', 'La plantilla indicada no existe.');
+    }
+    const organization = await submitTemplateForApproval(
+      await requireOrganization(req),
+      key,
+      req.body?.body
+    );
+    res.status(201).json(toTemplatesResponse(organization));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/config/test-message', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rawTo = typeof req.body?.to === 'string' ? normalizePhoneNumber(req.body.to) : '';
+    const to = rawTo.startsWith('+') ? rawTo : `+${rawTo}`;
+    if (!/^\+[1-9]\d{7,14}$/.test(to)) {
+      throw new BusinessError('INVALID_PHONE', 'Escribe el número con código de país, por ejemplo +584123456789.');
+    }
+
+    const organization = await requireOrganization(req);
+    if (!resolveTwilioCredentials(organization)) {
+      throw new BusinessError('WHATSAPP_NOT_CONFIGURED', 'Conecta primero la cuenta de Twilio de esta organización.');
+    }
+    const template = pickTestTemplate(resolveWhatsAppNotificationConfig(organization));
+
+    let messageSid: string;
+    try {
+      messageSid = await whatsappService.sendTemplate(
+        { to, templateName: template.contentSid, variables: template.variables },
+        organization
+      );
+    } catch (error) {
+      const twilioError = extractTwilioError(error);
+      if (!twilioError) throw error;
+      throw new BusinessError(
+        'TWILIO_ERROR',
+        describeWhatsAppError(twilioError.code, twilioError.message),
+        { twilioCode: twilioError.code, moreInfo: twilioError.moreInfo }
+      );
+    }
+
+    const message: WhatsAppMessage = {
+      id: createId(),
+      organizationId: organization.id,
+      phone: to,
+      direction: 'OUTBOUND',
+      messageSid,
+      body: `[Prueba] [Template: ${template.contentSid}] Variables: ${JSON.stringify(template.variables)}`,
+      templateName: template.contentSid,
+      status: 'SENT',
+      createdAt: new Date(),
+    };
+    await whatsappMessageRepository.create(message);
+    await whatsappConversationRepository.upsertFromMessage(message, organization.id).catch((error) => {
+      console.error('[WhatsApp] Error actualizando conversación de prueba:', error);
+    });
+
+    res.status(201).json({ messageSid, templateKey: template.key });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/config/failures', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json({ failures: await listRecentWhatsAppFailures(requireOrganizationId(req)) });
   } catch (error) {
     next(error);
   }

@@ -285,6 +285,26 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     });
   }
 
+  /** Cambia solo las notificaciones dentro de una transacción, sin pisar otra escritura. */
+  async mutateWhatsAppNotifications(
+    organizationId: string,
+    mutate: (current: Organization) => NonNullable<Organization['whatsappNotifications']>,
+  ): Promise<Organization> {
+    const docRef = this.db.collection(this.collectionName).doc(organizationId);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'Organización no encontrada.');
+      }
+      const current = deserializeOrganization(snapshot.id, snapshot.data()!);
+      const whatsappNotifications = mutate(current);
+      transaction.update(docRef, { whatsappNotifications: this.serialize(whatsappNotifications) });
+      recordWrite();
+      return { ...current, whatsappNotifications };
+    });
+  }
+
   async refreshExpiredStatus(organization: Organization, now = new Date()): Promise<Organization> {
     if (!isPlanExpired(organization, now)) {
       return organization;
@@ -1339,6 +1359,17 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
       results.push(...messages.filter((message) => message.direction === 'OUTBOUND'));
     }
     return results;
+  }
+
+  async listFailedSince(organizationId: string, since: Date, limit = 50): Promise<WhatsAppMessage[]> {
+    return this.listWhere(
+      [
+        ['organizationId', '==', organizationId],
+        ['status', '==', 'FAILED'],
+        ['createdAt', '>=', since],
+      ],
+      { orderBy: 'createdAt', direction: 'desc', limit }
+    );
   }
 
   async updateStatusByMessageSid(

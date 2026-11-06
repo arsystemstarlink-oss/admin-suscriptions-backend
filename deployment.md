@@ -261,7 +261,7 @@ El sistema usa Firebase Firestore para persistencia de datos. Los datos se manti
 - `billingPeriods` - Períodos de facturación (scoped por `organizationId`)
 - `users` - Usuarios administradores (`role: 'super-admin' | 'admin'`, `organizationId` null solo para super-admin)
 - `refreshTokenSessions` - Sesiones de refresh token (rotación/revocación)
-- `whatsappMessages` - Historial de mensajes WhatsApp (scoped por `organizationId`)
+- `whatsappMessages` - Historial de mensajes WhatsApp (scoped por `organizationId`). La lista de fallos usa el índice compuesto (`organizationId`, `status`, `createdAt`); hasta desplegarlo solo muestra los fallos del job diario.
 - `pushSubscriptions` - Suscripciones web push (scoped por `organizationId`)
 - `schedulerConfig` - Configuración del cron POR ORGANIZACIÓN (`schedulerConfig/{orgId}`). El schedule automático se programa individualmente por org con su propio `cronSchedule` y `enabled`.
 - `schedulerLogs` - Histórico de ejecuciones del scheduler (por org): timing, status, detalle del resultado. `GET /scheduler/logs`.

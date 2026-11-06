@@ -29,9 +29,24 @@ export interface OrganizationWhatsAppTemplates {
   suspensionNotice?: string;
 }
 
+export type OrganizationWhatsAppTemplateKey = keyof OrganizationWhatsAppTemplates;
+
+export type WhatsAppTemplateRequestStatus = 'pending' | 'approved' | 'rejected' | 'blocked';
+
+/** Solicitud de aprobación hecha desde la app. El SID solo pasa a `templates` al aprobarse. */
+export interface OrganizationWhatsAppTemplateRequest {
+  contentSid: string;
+  name: string;
+  body: string;
+  status: WhatsAppTemplateRequestStatus;
+  rejectionReason?: string;
+  submittedAt: string;
+}
+
 export interface OrganizationWhatsAppConfig {
   rules: OrganizationWhatsAppRules;
   templates: OrganizationWhatsAppTemplates;
+  templateRequests?: Partial<Record<OrganizationWhatsAppTemplateKey, OrganizationWhatsAppTemplateRequest>>;
 }
 
 export interface Organization {
@@ -287,7 +302,16 @@ export interface SchedulerLog {
   suspended: number;
   notifications: number;
   notificationErrors: number;
+  notificationFailures?: SchedulerNotificationFailure[];
   error?: string;
+}
+
+export interface SchedulerNotificationFailure {
+  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  clientName: string;
+  phone: string;
+  errorCode?: number;
+  errorMessage: string;
 }
 
 export type MessageDirection = 'INBOUND' | 'OUTBOUND';

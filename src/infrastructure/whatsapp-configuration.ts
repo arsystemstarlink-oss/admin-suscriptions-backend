@@ -10,6 +10,14 @@ export const DEFAULT_WHATSAPP_RULES: OrganizationWhatsAppConfig['rules'] = {
   suspensionNoticeEnabled: true,
 };
 
+/**
+ * Configuración de una organización nueva. Guardarla explícita evita que herede las
+ * plantillas antiguas del servidor, cuyos SID pertenecen a otra cuenta de Twilio.
+ */
+export function createInitialWhatsAppNotifications(): OrganizationWhatsAppConfig {
+  return { rules: { ...DEFAULT_WHATSAPP_RULES }, templates: {} };
+}
+
 const LEGACY_TEMPLATE_ENV: Record<keyof OrganizationWhatsAppTemplates, string> = {
   reminder: 'TWILIO_TEMPLATE_SUBSCRIPTION_REMINDER_3DAYS_2V',
   dueDateWarning: 'TWILIO_TEMPLATE_SUBSCRIPTION_CUTOFF_DAY_2V',
@@ -30,6 +38,7 @@ export function resolveWhatsAppNotificationConfig(
   return {
     rules: saved?.rules ?? DEFAULT_WHATSAPP_RULES,
     templates: saved?.templates ?? legacyTemplates,
+    ...(saved?.templateRequests ? { templateRequests: saved.templateRequests } : {}),
   };
 }
 

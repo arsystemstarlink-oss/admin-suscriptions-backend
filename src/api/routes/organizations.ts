@@ -53,6 +53,7 @@ import { deleteOrganizationStats } from '../../infrastructure/stats-service';
 import { requireSuperAdmin } from '../middleware/auth';
 import { getAuth } from '../middleware/tenant';
 import { normalizePhoneNumber } from '../../infrastructure/whatsapp-service';
+import { createInitialWhatsAppNotifications } from '../../infrastructure/whatsapp-configuration';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { authService } from '../../domain/auth-service';
 import { toOrganizationDto } from '../dto/organization';
@@ -259,6 +260,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       planUpdatedAt: new Date(),
       planUpdatedBy: actor.userId,
       twilio: parseTwilioInput(twilio) ?? { enabled: false },
+      whatsappNotifications: createInitialWhatsAppNotifications(),
       createdAt: new Date(),
       createdBy: actor.userId,
     };
@@ -312,6 +314,7 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
       active: true,
       ...defaultOrganizationPlan(now),
       twilio: parseTwilioInput(organizationInput.twilio) ?? { enabled: false },
+      whatsappNotifications: createInitialWhatsAppNotifications(),
       createdAt: now,
       createdBy: actor.userId,
       planUpdatedAt: now,
