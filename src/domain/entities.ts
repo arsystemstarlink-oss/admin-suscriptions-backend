@@ -223,6 +223,8 @@ export interface BillingPeriod {
   paidAt?: Date;
   paymentMethod?: string;
   notes?: string;
+  /** Referencia que dio el cliente al reportar el pago. A diferencia de `notes`, es pública. */
+  paymentReference?: string;
   createdAt: Date;
 }
 

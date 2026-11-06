@@ -629,6 +629,10 @@ El cron **no es global**: al iniciar el servidor (`startScheduler` en `src/infra
 
 Histórico de ejecuciones: cada ejecución (programada o manual) se registra en la colección Firestore `schedulerLogs` con `startedAt`, `finishedAt`, `durationMs`, `status` (success/error/skipped), `triggeredBy`, y el detalle del resultado (overdue, generated, suspended, notifications, notificationErrors, error). Se consulta con `GET /scheduler/logs`. Cada suscripción se guarda en su propia transacción (períodos, radar y eventos juntos). Si una falla, no se notifica por ella, el job sigue con las demás y la ejecución queda con `status: error` y los contadores de lo que sí se guardó. Si una suscripción cambió mientras el job corría (un pago, una edición), se omite sin escribir nada y se reevalúa en la siguiente ejecución.
 
+Firebase Auth
+
+El login valida contra el hash de Firestore. Firebase Auth solo conserva la identidad y los custom claims: el backend no le envía contraseñas. Las guardadas anteriormente se reemplazan con `npm run rotate:firebase-passwords`.
+
 Ciclo de vida del cron
 
 Crear o activar una organización programa su cron; desactivarla o eliminarla lo detiene, sin reiniciar el servidor. Esto afecta a la instancia que atiende la petición: con varias instancias, las demás lo aplican al reiniciarse, aunque el job de una organización desactivada no procesa nada en ninguna.

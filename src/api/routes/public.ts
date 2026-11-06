@@ -113,10 +113,11 @@ function toPublicPeriodDto(period: BillingPeriod, pendingPeriodIds: Set<string>)
     amount: period.amount,
     status: period.status,
     hasPendingReport: pendingPeriodIds.has(period.id),
-    // Detalle de pago (solo presente en periodos PAID): sin datos internos ni createdBy*
+    // Detalle de pago (solo presente en periodos PAID): sin datos internos ni createdBy*.
+    // Las notas del período son internas; solo se muestra la referencia que dio el propio cliente.
     paymentMethod: period.paymentMethod,
     paidAt: period.paidAt,
-    reference: period.notes,
+    reference: period.paymentReference,
   };
 }
 
@@ -409,7 +410,6 @@ router.post('/signup', signupCaptcha, async (req: Request, res: Response, next: 
       await admin.auth().createUser({
         uid: user.id,
         email: user.email,
-        password: input.password,
         displayName: user.name,
       });
       firebaseUserCreated = true;

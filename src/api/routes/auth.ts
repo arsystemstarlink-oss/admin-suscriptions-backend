@@ -93,7 +93,6 @@ async function validateAndCreateUser(input: {
     await admin.auth().createUser({
       uid: user.id,
       email: user.email,
-      password,
       displayName: user.name,
     });
   } catch (firebaseError: any) {
@@ -196,16 +195,15 @@ router.post('/invite/accept', async (req: Request, res: Response, next: NextFunc
       };
       await userRepository.update(updatedUser);
 
-      try {
-        await admin.auth().updateUser(user.id, {
-          password,
-          ...(trimmedName ? { displayName: trimmedName } : {}),
-        });
-      } catch (firebaseError: any) {
-        console.warn(
-          '[Auth] No se pudo actualizar el usuario de Firebase al aceptar la invitación:',
-          firebaseError.message
-        );
+      if (trimmedName) {
+        try {
+          await admin.auth().updateUser(user.id, { displayName: trimmedName });
+        } catch (firebaseError: any) {
+          console.warn(
+            '[Auth] No se pudo actualizar el usuario de Firebase al aceptar la invitación:',
+            firebaseError.message
+          );
+        }
       }
 
       await refreshTokenSessionRepository.revokeAllForUser(user.id);
@@ -589,12 +587,6 @@ router.post('/change-password', authenticateAdmin, async (req: Request, res: Res
       mustChangePassword: false,
     };
     await userRepository.update(updatedUser);
-
-    try {
-      await admin.auth().updateUser(user.id, { password: newPassword });
-    } catch (firebaseError: any) {
-      console.warn('[Auth] No se pudo actualizar la contraseña en Firebase Auth:', firebaseError.message);
-    }
 
     await refreshTokenSessionRepository.revokeAllForUser(user.id);
 

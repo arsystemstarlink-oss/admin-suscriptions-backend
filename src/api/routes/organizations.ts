@@ -344,7 +344,6 @@ router.post('/onboard', async (req: Request, res: Response, next: NextFunction) 
       await admin.auth().createUser({
         uid: user.id,
         email: user.email,
-        password: temporaryPassword,
         displayName: user.name,
       });
       firebaseUserCreated = true;
@@ -559,15 +558,6 @@ router.post('/:id/invitations', async (req: Request, res: Response, next: NextFu
     await userRepository.update(updatedUser);
     await refreshTokenSessionRepository.revokeAllForUser(updatedUser.id);
     await adminInviteRepository.deleteByField('userId', updatedUser.id);
-
-    try {
-      await admin.auth().updateUser(updatedUser.id, { password: temporaryPassword });
-    } catch (firebaseError: any) {
-      console.warn(
-        '[Organizations] No se pudo actualizar la contraseña temporal en Firebase Auth:',
-        firebaseError.message
-      );
-    }
 
     const actor = getAuth(req);
     const { invite, token } = createInvite({

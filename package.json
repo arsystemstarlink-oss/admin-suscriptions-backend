@@ -23,6 +23,8 @@
     "migrate:business-rules": "ts-node scripts/migrate-business-rules.ts",
     "rebuild:stats": "ts-node scripts/rebuild-stats.ts",
     "audit:billing": "ts-node scripts/audit-billing-consistency.ts",
+    "backfill:payment-reference": "ts-node scripts/backfill-payment-reference.ts",
+    "rotate:firebase-passwords": "ts-node scripts/rotate-firebase-passwords.ts",
     "mark:manual-suspension": "ts-node scripts/mark-manual-suspension.ts",
     "verify:backfills": "ts-node scripts/verify-backfills.ts",
     "measure:endpoints": "ts-node scripts/measure-endpoints.ts",

@@ -229,11 +229,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     await userRepository.update(updatedUser);
 
     try {
-      const firebaseUpdates: { email?: string; password?: string } = {};
-      if (emailChanged) firebaseUpdates.email = updatedUser.email;
-      if (passwordChanged) firebaseUpdates.password = newPassword;
-      if (Object.keys(firebaseUpdates).length > 0) {
-        await admin.auth().updateUser(targetId, firebaseUpdates);
+      if (emailChanged) {
+        await admin.auth().updateUser(targetId, { email: updatedUser.email });
       }
     } catch (firebaseError: any) {
       console.warn('[Admins] No se pudo actualizar en Firebase Auth:', firebaseError.message);

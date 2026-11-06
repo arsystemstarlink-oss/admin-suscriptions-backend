@@ -207,6 +207,29 @@ describe('transacciones de facturación', () => {
       expect(fake.commits).toBe(1);
     });
 
+    it('aprobar guarda la referencia del cliente; un cobro directo no crea ninguna', async () => {
+      fake.seed('paymentReports', { ...report, notes: 'Banco 123' });
+
+      await review({ action: 'approve' });
+
+      expect(fake.read('billingPeriods', openPeriod.id)).toMatchObject({
+        notes: 'Banco 123',
+        paymentReference: 'Banco 123',
+      });
+
+      fake.seed('billingPeriods', { ...openPeriod, status: 'PENDING', notes: undefined, paymentReference: undefined });
+      await send('POST', `/billing-periods/${openPeriod.id}/pay`, {
+        paymentMethod: 'CASH',
+        amount: 50,
+        paidAt: paidAtText,
+        notes: 'Nota interna',
+      });
+
+      const directPayment = fake.read('billingPeriods', openPeriod.id);
+      expect(directPayment?.notes).toBe('Nota interna');
+      expect(directPayment?.paymentReference).toBeUndefined();
+    });
+
     it('aprobar y rechazar a la vez deja un único resultado coherente', async () => {
       fake.overlapNextTransactions(2);
       const responses = await Promise.all([

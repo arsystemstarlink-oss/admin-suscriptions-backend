@@ -243,18 +243,22 @@ export async function applyPeriodPayment(
     amount: number;
     paidAt: Date;
     notes?: string;
+    paymentReference?: string;
     actorUserId: string;
     eventPayload?: Record<string, unknown>;
   }
 ): Promise<AppliedPeriodPayment> {
-  const { period, paymentMethod, amount, paidAt, notes, actorUserId, eventPayload } = params;
-  const billingPeriod = businessService.applyPaymentToBillingPeriod({
-    billingPeriod: period,
-    paymentMethod,
-    amount,
-    paidAt,
-    notes,
-  });
+  const { period, paymentMethod, amount, paidAt, notes, paymentReference, actorUserId, eventPayload } = params;
+  const billingPeriod: BillingPeriod = {
+    ...businessService.applyPaymentToBillingPeriod({
+      billingPeriod: period,
+      paymentMethod,
+      amount,
+      paidAt,
+      notes,
+    }),
+    paymentReference,
+  };
   context.set('billingPeriods', billingPeriod);
   context.addEvent({
     type: 'billing_period.paid',

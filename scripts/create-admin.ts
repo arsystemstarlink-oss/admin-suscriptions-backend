@@ -65,7 +65,6 @@ async function createAdmin() {
       await admin.auth().createUser({
         uid: userId,
         email,
-        password,
         displayName: name,
       });
       console.log('✅ Usuario creado en Firebase Auth (respaldo de seguridad)\n');

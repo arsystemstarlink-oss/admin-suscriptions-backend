@@ -8,6 +8,7 @@ import subscriptionsRouter from '../api/routes/subscriptions';
 import billingPeriodsRouter from '../api/routes/billing-periods';
 import organizationsRouter from '../api/routes/organizations';
 import authRouter from '../api/routes/auth';
+import publicRouter from '../api/routes/public';
 import { requireWritablePlan } from '../api/middleware/organization-plan-access';
 import { errorHandler } from '../api/middleware/error-handler';
 import { authService } from '../domain/auth-service';
@@ -96,6 +97,7 @@ describe('validación de entrada y ciclo de vida', () => {
     const app = express();
     app.use(express.json());
     app.use('/auth', authRouter);
+    app.use('/public', publicRouter);
     app.use((req, _res, next) => {
       const role = req.headers['x-role'] === 'super-admin' ? 'super-admin' : 'admin';
       (req as Request & { auth: unknown }).auth = {
@@ -336,6 +338,39 @@ describe('validación de entrada y ciclo de vida', () => {
         expect([name, fake.all(name)]).toEqual([name, []]);
       });
       expect(unscheduleOrganization).toHaveBeenCalledWith(ORG);
+    });
+  });
+
+  describe('portal público', () => {
+    it('muestra la referencia del cliente y no las notas internas', async () => {
+      fake.seed('clients', { ...client, dni: 'V-12345678' });
+      fake.seed('subscriptions', subscription);
+      fake.seed('billingPeriods', {
+        ...period,
+        status: 'PAID',
+        notes: 'Nota interna: cliente moroso',
+        paymentReference: 'Banco 123',
+      });
+      fake.seed('billingPeriods', {
+        ...period,
+        id: 'period_admin',
+        startDate: period.endDate,
+        endDate: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 2, 1)),
+        status: 'PAID',
+        notes: 'Otra nota interna',
+      });
+
+      const response = await send('POST', `/public/org/${organization.slug}/lookup`, {
+        dni: 'V-12345678',
+        phone: client.phone,
+      });
+      const text = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(text).not.toContain('interna');
+      const periods = JSON.parse(text).periods;
+      expect(periods.find((item: { id: string }) => item.id === period.id).reference).toBe('Banco 123');
+      expect(periods.find((item: { id: string }) => item.id === 'period_admin').reference).toBeUndefined();
     });
   });
 

@@ -11,6 +11,7 @@ import { authService } from '../domain/auth-service';
 import { User } from '../domain/entities';
 
 const updateFirebaseUser = jest.fn(async () => undefined);
+const createFirebaseUser = jest.fn(async () => undefined);
 
 jest.mock('../infrastructure/firebase', () => {
   const { createFakeFirestore: create } = jest.requireActual('./support/fake-firestore');
@@ -18,7 +19,13 @@ jest.mock('../infrastructure/firebase', () => {
   return {
     __fake: fake,
     getFirestore: () => fake.db,
-    admin: { ...fake.admin, auth: () => ({ updateUser: (...args: unknown[]) => updateFirebaseUser(...(args as [])) }) },
+    admin: {
+      ...fake.admin,
+      auth: () => ({
+        updateUser: (...args: unknown[]) => updateFirebaseUser(...(args as [])),
+        createUser: (...args: unknown[]) => createFirebaseUser(...(args as [])),
+      }),
+    },
     syncUserCustomClaims: jest.fn(async () => undefined),
   };
 });
@@ -180,6 +187,52 @@ describe('seguridad', () => {
       expect(response.status).toBe(200);
       expect(response.body.accessToken).toBeUndefined();
       expect(fake.read('refreshTokenSessions', 'session_old')?.revokedAt).toBeUndefined();
+    });
+  });
+
+  describe('contraseñas en Firebase Auth', () => {
+    const asUserA = () => {
+      const token = authService.generateAccessToken(baseUser('user_a', 'a@example.com', passwordHash));
+      return { Authorization: `Bearer ${token}` };
+    };
+
+    it('crear un administrador no envía la contraseña a Firebase', async () => {
+      const response = await send(
+        'POST',
+        '/organizations/onboard',
+        {
+          organization: { name: 'Nueva' },
+          admin: { name: 'Ana', email: 'ana@example.com', password: 'Clave12345' },
+        },
+        { 'x-role': 'super-admin' }
+      );
+
+      expect(response.status).toBe(201);
+      expect(createFirebaseUser).toHaveBeenCalledTimes(1);
+      expect(createFirebaseUser.mock.calls[0]).toEqual([
+        expect.not.objectContaining({ password: expect.anything() }),
+      ]);
+    });
+
+    it('cambiar la contraseña propia no la envía a Firebase y sigue funcionando el login', async () => {
+      const response = await send(
+        'POST',
+        '/auth/change-password',
+        { currentPassword: PASSWORD, newPassword: 'NuevaClave1' },
+        asUserA()
+      );
+
+      expect(response.status).toBe(200);
+      expect(updateFirebaseUser).not.toHaveBeenCalled();
+      const login = await send('POST', '/auth/login', { email: 'a@example.com', password: 'NuevaClave1' });
+      expect(login.status).toBe(200);
+    });
+
+    it('cambiar la contraseña de otro admin no la envía a Firebase', async () => {
+      const response = await send('PUT', '/admins/user_b', { newPassword: 'NuevaClave1' });
+
+      expect(response.status).toBe(200);
+      expect(updateFirebaseUser).not.toHaveBeenCalled();
     });
   });
 

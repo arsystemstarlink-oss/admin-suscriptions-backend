@@ -215,6 +215,7 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
           amount: period.amount,
           paidAt,
           notes: report.notes,
+          paymentReference: report.notes,
           actorUserId: auth.userId,
           eventPayload: { viaReport: report.id },
         });
