@@ -6,6 +6,7 @@ import {
 } from '../../infrastructure/repositories';
 import {
   BusinessError,
+  Organization,
   OrganizationPlanPayment,
   OrganizationPlanPaymentReport,
 } from '../../domain/entities';
@@ -38,12 +39,23 @@ import { parseBusinessPaymentDate } from '../../domain/payment-date';
 import { pushService } from '../../infrastructure/push-service';
 import { toOrganizationDto } from '../dto/organization';
 
+import { parsePagination } from '../validation';
+
 const router = Router();
 
 function optionalText(value: unknown, maxLength: number): string | undefined {
   if (value === undefined || value === null) return undefined;
   const text = String(value).trim();
   return text ? text.slice(0, maxLength) : undefined;
+}
+
+/** Tope de A medida cuando no se indica: el mínimo del plan o lo que la organización ya usa. */
+function defaultCustomClientLimit(organization: Organization): number {
+  return Math.max(
+    CUSTOM_PLAN_MIN_CLIENTS,
+    resolveEffectiveClientLimit(organization.plan, organization.clientLimit) ?? 0,
+    organization.clientCount ?? 0
+  );
 }
 
 function serializeReport(report: OrganizationPlanPaymentReport, organizationName?: string) {
@@ -90,11 +102,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     );
     const clientLimit =
       plan === 'a-medida' && req.body?.clientLimit === undefined
-        ? Math.max(
-            CUSTOM_PLAN_MIN_CLIENTS,
-            currentCapacity ?? 0,
-            organization.clientCount ?? 0
-          )
+        ? defaultCustomClientLimit(organization)
         : resolveClientLimitForPlan(plan, req.body?.clientLimit, organization.clientLimit);
     if (clientLimit < (organization.clientCount ?? 0)) {
       throw new BusinessError(
@@ -232,7 +240,10 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
       organization.planStatus === 'prueba'
         ? organization.trialEndsAt
         : organization.planExpiresAt;
-    const effectiveClientLimit = resolveEffectiveClientLimit(plan, organization.clientLimit);
+    const effectiveClientLimit =
+      plan === 'a-medida'
+        ? defaultCustomClientLimit(organization)
+        : resolveEffectiveClientLimit(plan, organization.clientLimit);
     const planChangeCreditDays = resolvePlanChangeCreditDays({
       targetPlan: plan,
       paidAt,
@@ -288,8 +299,7 @@ router.get('/quote', async (req: Request, res: Response, next: NextFunction) => 
 router.get('/', requireSuperAdmin, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = (req.query.status as string) || 'PENDING';
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 50, 200);
-    const offset = parseInt(req.query.offset as string, 10) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
 
     let items: OrganizationPlanPaymentReport[];
     let total: number;

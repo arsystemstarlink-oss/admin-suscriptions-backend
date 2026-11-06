@@ -10,13 +10,14 @@ import { BillingPeriod, BusinessError, Subscription } from '../../domain/entitie
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
-import { parseDateOnly, isValidDateString, createId, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
+import { parseDateOnly, isValidDateString, createId, buildPeriodLabel, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
 import { validatePaymentMethod } from '../../domain/payment-methods';
 import { assertPaidAtNotFuture } from '../../domain/payment-date';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
 import {
   createSubscriptionSchema,
   parseBody,
+  parsePagination,
   registerAdvancePaymentSchema,
   updateSubscriptionSchema,
 } from '../validation';
@@ -84,7 +85,7 @@ async function enrichRadarSubscriptions(
             id: sub.currentPeriodId,
             organizationId: sub.organizationId,
             subscriptionId: sub.id,
-            periodLabel: '',
+            periodLabel: buildPeriodLabel(sub.currentPeriodStartDate, sub.currentPeriodEndDate),
             startDate: sub.currentPeriodStartDate,
             endDate: sub.currentPeriodEndDate,
             amount: sub.currentPeriodAmount ?? 0,
@@ -245,8 +246,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const status = requestedStatus && requestedStatus !== 'ALL' ? requestedStatus : undefined;
     const search = req.query.search as string | undefined;
     const hasOverduePeriods = req.query.hasOverduePeriods as string | undefined;
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
 
     const parsedStatus = status === 'ACTIVE' || status === 'SUSPENDED' ? status : undefined;

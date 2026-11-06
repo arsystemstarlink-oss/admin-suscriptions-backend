@@ -6,7 +6,6 @@ import {
   billingPeriodRepository,
   planRepository,
   paymentReportRepository,
-  domainEventRepository,
   planQuoteRequestRepository,
 } from '../../infrastructure/repositories';
 import {
@@ -45,6 +44,7 @@ import { createRefreshSession } from '../../domain/auth-session';
 import { admin, syncUserCustomClaims } from '../../infrastructure/firebase';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { syncOrganizationSchedule } from '../../infrastructure/scheduler';
+import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
 import { pushService } from '../../infrastructure/push-service';
 import { PublicLookupDto, CreatePaymentReportDto } from '../dto';
 import { toOrganizationDto } from '../dto/organization';
@@ -237,18 +237,6 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
       throw notFoundGeneric();
     }
 
-    if (period.status === 'PAID') {
-      throw new BusinessError('PERIOD_ALREADY_PAID', 'Este período ya fue pagado.');
-    }
-
-    const existingPending = await paymentReportRepository.findPendingByPeriod(period.id, org.id);
-    if (existingPending) {
-      throw new BusinessError(
-        'PAYMENT_REPORT_ALREADY_EXISTS',
-        'Este período ya tiene un reporte en verificación.'
-      );
-    }
-
     const paidAt = validateReportPaidAt(String(dto.paidAt || ''), period.startDate);
 
     const notes =
@@ -256,21 +244,44 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
         ? String(dto.notes).trim().slice(0, 500)
         : undefined;
 
-    const report = {
-      id: createId(),
-      organizationId: org.id,
-      clientId: client.id,
-      subscriptionId: period.subscriptionId,
-      billingPeriodId: period.id,
-      amount: period.amount,
-      paymentMethod: String(dto.paymentMethod),
-      paidAt,
-      notes,
-      status: 'PENDING' as const,
-      createdAt: new Date(),
-    };
+    const report = await subscriptionTransactions.run(period.subscriptionId, org.id, async (transaction) => {
+      const current = transaction.periods.find((item) => item.id === period.id);
+      if (!current) {
+        throw notFoundGeneric();
+      }
+      if (current.status === 'PAID') {
+        throw new BusinessError('PERIOD_ALREADY_PAID', 'Este período ya fue pagado.');
+      }
+      if ((await transaction.findPendingReports(current.id)).length > 0) {
+        throw new BusinessError(
+          'PAYMENT_REPORT_ALREADY_EXISTS',
+          'Este período ya tiene un reporte en verificación.'
+        );
+      }
 
-    await paymentReportRepository.create(report);
+      const created = {
+        id: createId(),
+        organizationId: org.id,
+        clientId: client.id,
+        subscriptionId: current.subscriptionId,
+        billingPeriodId: current.id,
+        amount: current.amount,
+        paymentMethod: String(dto.paymentMethod),
+        paidAt,
+        notes,
+        status: 'PENDING' as const,
+        createdAt: new Date(),
+      };
+      transaction.set('paymentReports', created);
+      transaction.addEvent({
+        type: 'payment_report.created',
+        organizationId: org.id,
+        entity: 'paymentReport',
+        entityId: created.id,
+        payload: { subscriptionId: current.subscriptionId, billingPeriodId: current.id, amount: current.amount },
+      });
+      return created;
+    });
     invalidateBadges(org.id);
 
     pushService
@@ -283,20 +294,6 @@ router.post('/org/:slug/reports', dniRateLimit, verifyCaptcha, async (req: Reque
       .catch((error) => {
         console.error('[Push] Error notificando reporte de pago:', error);
       });
-
-    try {
-      await domainEventRepository.create({
-        id: createId(),
-        type: 'payment_report.created',
-        organizationId: org.id,
-        entity: 'paymentReport',
-        entityId: report.id,
-        payload: { subscriptionId: period.subscriptionId, billingPeriodId: period.id, amount: period.amount },
-        createdAt: new Date(),
-      });
-    } catch (eventError) {
-      console.error('[DomainEvent] Error registrando payment_report.created:', eventError);
-    }
 
     res.status(201).json({
       report: {

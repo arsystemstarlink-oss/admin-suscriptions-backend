@@ -16,11 +16,7 @@ CORS_ORIGIN=https://tu-frontend.example.com
 # limiting use la IP real (X-Forwarded-For) y no falle con ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
 TRUST_PROXY=1
 
-# Configuración del cron job (formato cron)
-# Por defecto: diariamente a las 00:00
-CRON_SCHEDULE=0 0 * * *
-
-# Zona horaria en la que se interpreta CRON_SCHEDULE / la expresión del scheduler
+# Zona horaria en la que se interpreta la hora del Daily Job de cada organización
 # Por defecto: America/Caracas (UTC-4). Sin esta variable, el cron usa la hora del servidor (generalmente UTC).
 SCHEDULER_TIMEZONE=America/Caracas
 
@@ -267,7 +263,7 @@ El sistema usa Firebase Firestore para persistencia de datos. Los datos se manti
 - `refreshTokenSessions` - Sesiones de refresh token (rotación/revocación)
 - `whatsappMessages` - Historial de mensajes WhatsApp (scoped por `organizationId`)
 - `pushSubscriptions` - Suscripciones web push (scoped por `organizationId`)
-- `schedulerConfig` - Configuración del cron POR ORGANIZACIÓN (`schedulerConfig/{orgId}`). El schedule automático se programa individualmente por org con su propio `cronSchedule` y `enabled`. La config `global` (`schedulerConfig/global`) y la var `CRON_SCHEDULE` no impulsan la ejecución automática.
+- `schedulerConfig` - Configuración del cron POR ORGANIZACIÓN (`schedulerConfig/{orgId}`). El schedule automático se programa individualmente por org con su propio `cronSchedule` y `enabled`.
 - `schedulerLogs` - Histórico de ejecuciones del scheduler (por org): timing, status, detalle del resultado. `GET /scheduler/logs`.
 - `domainEvents` - Auditoría de eventos de dominio (scoped por `organizationId`)
 

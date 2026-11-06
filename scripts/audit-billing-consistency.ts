@@ -45,6 +45,17 @@ async function readAll(collection: string, fields: string[]): Promise<Doc[]> {
   }
 }
 
+/** Agrupa por clave y devuelve solo los IDs de los grupos repetidos: nunca el valor (cédula, email). */
+function findDuplicates(documents: Doc[], keyOf: (document: Doc) => string | undefined): string[] {
+  const groups = new Map<string, string[]>();
+  for (const document of documents) {
+    const key = keyOf(document);
+    if (!key) continue;
+    groups.set(key, [...(groups.get(key) ?? []), document.id]);
+  }
+  return [...groups.values()].filter((ids) => ids.length > 1).map((ids) => ids.join(', '));
+}
+
 function report(title: string, explanation: string, items: string[]): void {
   console.log(`\n${title}: ${items.length}`);
   console.log(`  ${explanation}`);
@@ -59,9 +70,9 @@ async function main(): Promise<void> {
   initializeFirebase();
 
   const now = new Date();
-  const [organizations, clients, subscriptions, periods] = await Promise.all([
+  const [organizations, clients, subscriptions, periods, users] = await Promise.all([
     readAll('organizations', ['active', 'plan', 'planStatus', 'trialEndsAt', 'planExpiresAt']),
-    readAll('clients', ['organizationId']),
+    readAll('clients', ['organizationId', 'dni']),
     readAll('subscriptions', [
       'organizationId',
       'clientId',
@@ -73,11 +84,12 @@ async function main(): Promise<void> {
       'overduePeriods',
     ]),
     readAll('billingPeriods', ['organizationId', 'subscriptionId', 'startDate', 'endDate', 'status', 'amount']),
+    readAll('users', ['email']),
   ]);
 
   console.log(
     `Leídos: ${organizations.length} organizaciones, ${clients.length} clientes, ` +
-      `${subscriptions.length} suscripciones, ${periods.length} períodos.`
+      `${subscriptions.length} suscripciones, ${periods.length} períodos, ${users.length} usuarios.`
   );
 
   const organizationsById = new Map(organizations.map((org) => [org.id, org]));
@@ -221,6 +233,16 @@ async function main(): Promise<void> {
   report('Suscripciones sin cliente', 'El cliente fue eliminado.', noClient);
   report('Períodos sin suscripción', 'La suscripción ya no existe.', orphanPeriods);
   report('Períodos con fechas inválidas', 'No se pudieron analizar.', invalidDates);
+  report(
+    'Clientes con cédula repetida',
+    'Misma cédula en una organización: el portal público solo encuentra a uno de ellos.',
+    findDuplicates(clients, (client) => (client.dni ? `${client.organizationId}|${client.dni}` : undefined))
+  );
+  report(
+    'Usuarios con email repetido',
+    'Mismo email, sin distinguir mayúsculas: el login solo encuentra a uno de ellos.',
+    findDuplicates(users, (user) => (typeof user.email === 'string' ? user.email.trim().toLowerCase() : undefined))
+  );
 }
 
 main()

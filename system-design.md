@@ -47,7 +47,9 @@ User {
  id: string
  name: string
  email: string
- role: "admin"
+ role: "super-admin" | "admin"
+
+ organizationId: string | null
  createdAt: Date
 }
 Client
@@ -65,9 +67,13 @@ Client {
 
  id: string
 
- name: string
+ firstName: string
+
+ lastName: string
 
  phone: string
+
+ dni?: string
 
  email?: string
 
@@ -482,9 +488,7 @@ Los documentos anteriores sin este campo se tratan como AUTOMATIC.
 
 8. Cambio de plan
 
-Permitido.
-
-Pero:
+Permitido solo cuando la suscripción no tiene períodos pendientes ni vencidos.
 
 El cambio aplica al siguiente período.
 
@@ -553,17 +557,9 @@ Crear nuevos períodos.
 Suspender servicios.
 Reactivar servicios cuando corresponda (la reactivación se dispara al registrar el pago que salda toda la deuda).
 11. Colecciones Firebase propuestas
-users
+Núcleo: users, clients, plans, subscriptions, billingPeriods.
 
-clients
-
-plans
-
-subscriptions
-
-billingPeriods
-
-Mantener pocas colecciones.
+Soporte: organizations, organizationStats, paymentReports, organizationPlanPayments, organizationPlanPaymentReports, planQuoteRequests, adminInvites, refreshTokenSessions, schedulerConfig, schedulerLogs, jobLocks, domainEvents, whatsappMessages, whatsappConversations, pushSubscriptions, twilioPhoneNumbers.
 
 12. Filosofía del sistema
 
@@ -601,10 +597,10 @@ El backend ignora el organizationId que envíe el frontend para un admin y usa e
 
 Entidades
 
-- Organization: id, name, slug, active, createdAt, createdBy.
+- Organization: id, name, slug, active, plan, clientLimit, planStatus, billingDay, trialEndsAt, planExpiresAt, clientCount, createdAt, createdBy.
 - User: agrega role ('super-admin' | 'admin') y organizationId (null para super-admin).
 - Client, Plan, Subscription, BillingPeriod, PushSubscription: agregan organizationId obligatorio.
-- WhatsAppMessage: organizationId opcional (los mensajes inbound de números sin cliente no tienen org).
+- WhatsAppMessage: organizationId opcional (un inbound sin organización solo puede llegar con la validación de firma desactivada).
 - BillingPeriod conserva organizationId desnormalizado para filtros directos sin joins.
 - domainEvents: colección de auditoría con organizationId, type, entity, entityId, payload.
 - Payment: sigue siendo un value object embebido en BillingPeriod (paidAt, paymentMethod, amount, notes).
@@ -613,9 +609,9 @@ Alcance por rol
 
 | Operación | admin | super-admin |
 |-----------|-------|-------------|
-| CRUD clientes/planes/suscripciones/períodos | Solo su org | Todas o `?organizationId=org_X` |
+| CRUD clientes/planes/suscripciones/períodos | Solo su org | `?organizationId=org_X` (obligatorio) |
 | POST /subscriptions | Valida clientId y planId en su org (CROSS_TENANT_REFERENCE si no) | Idem contra la org indicada |
-| Dashboard | Solo su org | Todas o filtradas |
+| Dashboard | Solo su org | `?organizationId=org_X` (obligatorio) |
 | Scheduler | Su org | `?organizationId` (obligatorio) |
 | Admins | Solo su org | Todos |
 | Organizations | - | CRUD completo |
@@ -644,6 +640,23 @@ Los pagos de períodos, la revisión de reportes, los pagos adelantados y la edi
 Migración
 
 npm run migrate:tenant crea organizations/org_default, asigna organizationId a todos los documentos existentes y valida que no queden huérfanos. Con --promote-super-admin promueve al primer admin a super-admin.
+
+14. Planes de negocio
+
+Cada organización contrata un plan del sistema (no confundir con Plan, que es lo que ella vende a sus clientes).
+
+| Plan | Precio mensual | Clientes | Administradores | Prueba |
+|------|----------------|----------|-----------------|--------|
+| basico | 15 USD | 30 | 1 | 14 días |
+| pro | 25 USD | 75 | 3 | - |
+| negocio | 40 USD | 150 | 5 | - |
+| a-medida | acordado | 151 o más | 5 | - |
+
+Los valores viven en `src/domain/business-plan.ts`, que también define las reglas de vencimiento, prepago (hasta 12 meses) y conversión de saldo al cambiar de plan. Estados: prueba y activo permiten escribir; vencido y suspendido dejan la organización en solo lectura.
+
+Fechas
+
+Las fechas de períodos se guardan y comparan en días UTC. La hora del Daily Job se interpreta en `SCHEDULER_TIMEZONE`.
 
 ## Estado de implementación
 

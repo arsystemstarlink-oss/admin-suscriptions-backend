@@ -237,6 +237,8 @@ interface DebtorItem {
 | PUT | /auth/me | Bearer admin/super-admin | Editar name/email/phone |
 | POST | /auth/change-password | Bearer admin/super-admin | Cambiar contraseña |
 
+<!-- Cédula (por organización) y email son únicos también ante altas simultáneas: 409 DNI_TAKEN | 409 EMAIL_TAKEN. -->
+
 **POST /auth/setup**
 ```typescript
 // Header: X-Setup-Key: {SETUP_KEY}
@@ -611,6 +613,7 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 | DELETE | /clients/:id | Eliminar cliente |
 
 **GET /clients**
+<!-- Con subscriptionStatus o hasOverdue, los filtros se aplican antes de paginar: total y hasMore son exactos. -->
 ```typescript
 // Query params
 { search?: string; include?: 'subscriptions'; subscriptionStatus?: SubscriptionStatus | 'MIXED' | 'NONE'; hasOverdue?: boolean; limit?: number; offset?: number }
@@ -811,6 +814,7 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 // Request
 { paymentMethod: PaymentMethod; amount: number; paidAt: string; notes?: string }
 // paidAt formato YYYY-MM-DD
+// Los reportes pendientes de ese periodo se cierran como REJECTED, porque ya no se podrian aprobar
 // Response 200
 {
   billingPeriod: BillingPeriod;

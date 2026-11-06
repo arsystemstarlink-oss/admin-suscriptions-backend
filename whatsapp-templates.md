@@ -141,13 +141,14 @@ POST /communications/webhook
 - Valida firma `X-Twilio-Signature` (obligatoria en production)
 - Requiere `BASE_URL` coincidente con la URL configurada en Twilio Console
 - En development se puede desactivar con `TWILIO_WEBHOOK_VALIDATION=false`
+- Es idempotente: un reintento de Twilio con el mismo `MessageSid` no duplica el mensaje ni la notificacion
 
 **Status callback (Twilio):**
 ```
 POST /communications/status
 ```
 - Publico (sin JWT admin); envia `MessageStatus` y `MessageSid` en el body
-- Actualiza el estado del mensaje (`SENT`, `DELIVERED`, `READ`, `FAILED`) y guarda `errorMessage`
+- Actualiza el estado del mensaje (`SENT`, `DELIVERED`, `READ`, `FAILED`) y guarda `errorMessage`. Un estado atrasado no pisa uno mas avanzado
 - Configurar en Twilio Console: StatusCallback URL = `{BASE_URL}/communications/status` (metodo POST)
 - Valida firma con el `authToken` de la organizacion a la que pertenece el mensaje
 
@@ -159,5 +160,5 @@ POST /communications/status
 - El formato de fecha debe ser `YYYY-MM-DD`
 - El numero de telefono debe incluir el codigo de pais (ej: `+584123456789`)
 - Todos los mensajes se guardan en Firestore para auditoria
-- El scheduler se ejecuta diariamente segun el cron configurado en `CRON_SCHEDULE`
+- El scheduler se ejecuta una vez al dia, a la hora configurada por cada organizacion (`PUT /scheduler/config`)
 - `send` e historial requieren JWT de admin; solo el webhook de Twilio es público

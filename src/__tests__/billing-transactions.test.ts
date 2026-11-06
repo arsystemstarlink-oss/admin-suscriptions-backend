@@ -242,14 +242,15 @@ describe('transacciones de facturación', () => {
       expect(fake.read('billingPeriods', openPeriod.id)?.status).toBe(finalStatus === 'APPROVED' ? 'PAID' : 'PENDING');
     });
 
-    it('si el período se cobró directamente, aprobar falla y no cambia el reporte', async () => {
+    it('si el período se cobró directamente, el reporte queda cerrado y no se puede aprobar', async () => {
       await pay();
 
       const response = await review({ action: 'approve' });
 
       expect(response.status).toBe(409);
-      expect(await response.text()).toContain('PERIOD_ALREADY_PAID');
-      expect(fake.read('paymentReports', report.id)?.status).toBe('PENDING');
+      expect(await response.text()).toContain('PAYMENT_REPORT_ALREADY_REVIEWED');
+      expect(fake.read('paymentReports', report.id)?.status).toBe('REJECTED');
+      expect(events('billing_period.paid')).toHaveLength(1);
     });
   });
 

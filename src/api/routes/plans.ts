@@ -5,7 +5,7 @@ import { BusinessError } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
-import { createPlanSchema, parseBody, updatePlanSchema } from '../validation';
+import { createPlanSchema, parseBody, parsePagination, updatePlanSchema } from '../validation';
 
 const router = Router();
 
@@ -47,8 +47,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const search = req.query.search as string;
     const active = req.query.active as string;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
     const organizationId = requireOrganizationId(req);
 

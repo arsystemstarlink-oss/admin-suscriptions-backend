@@ -18,6 +18,8 @@ import {
   validatePasswordStrength,
 } from './auth';
 
+import { parsePagination } from '../validation';
+
 const router = Router();
 
 /** Las credenciales propias se cambian confirmando la contraseña actual, en /auth/me y /auth/change-password. */
@@ -33,8 +35,7 @@ function assertNotOwnCredentials(targetId: string, actorId: string): void {
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const search = req.query.search as string;
-    const limit = parseInt(req.query.limit as string) || 50;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
     const organizationId = requireOrganizationId(req);
 
@@ -47,7 +48,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
           orderBy: 'createdAt',
           direction: 'asc',
           requireTotal: !cursor,
-          select: ['name', 'email', 'phone', 'role', 'organizationId', 'lastLoginAt', 'createdAt'],
+          select: ['name', 'email', 'phone', 'role', 'organizationId', 'lastLoginAt', 'mustChangePassword', 'createdAt'],
         });
       return res.json({
         admins: page.items.map(toUserDto),
@@ -226,7 +227,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     const updatedUser: User = { ...user, ...updates };
-    await userRepository.update(updatedUser);
+    await (emailChanged ? userRepository.updateWithUniqueEmail(updatedUser) : userRepository.update(updatedUser));
 
     try {
       if (emailChanged) {

@@ -17,7 +17,6 @@ import {
   isDateAfter,
   isPeriodPastDue,
   isValidBillingDay,
-  isValidBillingPeriodStatus,
   isValidMaxOverduePeriods,
   isValidSubscriptionStatus,
 } from './business-rules';
@@ -614,20 +613,6 @@ export class SubscriptionBusinessService {
 
     if (!isValidSubscriptionStatus(subscription.status)) {
       throw new BusinessError('INVALID_SUBSCRIPTION_STATUS', 'El estado de la suscripción es inválido.');
-    }
-  }
-
-  validateBillingPeriod(billingPeriod: BillingPeriod): void {
-    if (!billingPeriod.subscriptionId) {
-      throw new BusinessError('INVALID_BILLING_PERIOD_SUBSCRIPTION', 'El período debe pertenecer a una suscripción.');
-    }
-
-    if (!isValidBillingPeriodStatus(billingPeriod.status)) {
-      throw new BusinessError('INVALID_BILLING_PERIOD_STATUS', 'El estado del período es inválido.');
-    }
-
-    if (billingPeriod.amount <= 0) {
-      throw new BusinessError('INVALID_BILLING_PERIOD_AMOUNT', 'El monto del período debe ser mayor a cero.');
     }
   }
 }

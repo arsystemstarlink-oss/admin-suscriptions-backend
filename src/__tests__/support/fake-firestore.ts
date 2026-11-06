@@ -96,22 +96,38 @@ export function createFakeFirestore() {
   }
 
   class FakeQuery {
-    constructor(public collection: string, public filters: Filter[] = [], private max?: number) {}
+    constructor(
+      public collection: string,
+      public filters: Filter[] = [],
+      private max?: number,
+      private order?: string
+    ) {}
     where(field: string, op: string, value: unknown) {
-      return new FakeQuery(this.collection, [...this.filters, [field, op, value]], this.max);
+      return new FakeQuery(this.collection, [...this.filters, [field, op, value]], this.max, this.order);
     }
     limit(max: number) {
-      return new FakeQuery(this.collection, this.filters, max);
+      return new FakeQuery(this.collection, this.filters, max, this.order);
+    }
+    orderBy(field: string) {
+      return new FakeQuery(this.collection, this.filters, this.max, field);
     }
     doc(id: string) {
       return new FakeRef(this.collection, id);
     }
     matchingRefs(): FakeRef[] {
-      const refs = [...documents(this.collection).entries()]
+      const entries = [...documents(this.collection).entries()];
+      if (this.order) {
+        const order = this.order;
+        entries.sort(([, a], [, b]) => (a[order] < b[order] ? -1 : a[order] > b[order] ? 1 : 0));
+      }
+      const refs = entries
         .filter(([id, data]) =>
           this.filters.every(([field, op, value]) => {
-            const actual = field === DOCUMENT_ID ? id : data[field];
-            return op === 'in' ? (value as unknown[]).includes(actual) : actual === value;
+            const actual = field === DOCUMENT_ID ? id : field.split('.').reduce((node, key) => node?.[key], data);
+            if (op === 'in') return (value as unknown[]).includes(actual);
+            if (op === '>=') return actual !== undefined && actual >= (value as never);
+            if (op === '<=') return actual !== undefined && actual <= (value as never);
+            return actual === value;
           })
         )
         .map(([id]) => new FakeRef(this.collection, id));

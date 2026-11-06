@@ -1,3 +1,7 @@
+export interface Identifiable {
+  id: string;
+}
+
 export type UserRole = 'super-admin' | 'admin';
 export type SubscriptionStatus = 'ACTIVE' | 'SUSPENDED';
 export type SubscriptionSuspensionSource = 'AUTOMATIC' | 'MANUAL';
@@ -336,14 +340,10 @@ export interface PushSubscription {
 }
 
 export type DomainEventType =
-  | 'client.created'
   | 'subscription.created'
   | 'subscription.updated'
   | 'subscription.deleted'
   | 'subscription.suspended'
-  | 'subscription.reactivated'
-  | 'subscription.plan_changed'
-  | 'subscription.periods_regenerated'
   | 'billing_period.overdue'
   | 'billing_period.paid'
   | 'billing_period.generated'

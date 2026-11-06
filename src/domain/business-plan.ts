@@ -129,27 +129,6 @@ export function isOrganizationPlanPaymentMethod(
   return value === 'transferencia' || value === 'usdt' || value === 'efectivo';
 }
 
-/**
- * El día de corte debe existir como día válido dentro del mes de referencia, de lo
- * contrario el ciclo de facturación no se puede anclar. Se valida contra el mes actual
- * porque un `billingDay` alto (ej. 28) no está disponible en todos los meses.
- */
-export function assertBillingDayValidForMonth(billingDay: unknown, reference = new Date()): void {
-  if (!Number.isInteger(billingDay)) {
-    throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un entero.');
-  }
-  const day = billingDay as number;
-  const lastDay = new Date(
-    Date.UTC(reference.getUTCFullYear(), reference.getUTCMonth() + 1, 0)
-  ).getUTCDate();
-  if (day < 1 || day > lastDay) {
-    throw new BusinessError(
-      'INVALID_BILLING_DAY',
-      `El día de corte debe estar entre 1 y ${lastDay} en el mes actual.`
-    );
-  }
-}
-
 export const CUSTOM_PLAN_MIN_CLIENTS = 151;
 
 export function normalizeOrganizationBillingDay(value: unknown): number {
@@ -570,7 +549,3 @@ export function assertFuturePlanDates(input: {
   }
 }
 
-
-export function expiredPlanStatus(organization: Organization, now = new Date()): OrganizationPlanStatus | undefined {
-  return isPlanExpired(organization, now) ? 'vencido' : undefined;
-}

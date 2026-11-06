@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request } from 'express';
 import { BusinessError } from '../../domain/entities';
 import { AuthContext, isSuperAdmin } from '../../domain/auth-context';
 import { AuthenticatedRequest } from './auth';
@@ -64,28 +64,5 @@ export function assertResourceInScope(
       'FORBIDDEN_CROSS_TENANT',
       'No tienes acceso a este recurso. Pertenece a otra organización.'
     );
-  }
-}
-
-export function requireTenantScope(
-  req: Request,
-  res: Response,
-  next: NextFunction
-): void {
-  try {
-    const auth = getAuth(req);
-    if (isSuperAdmin(auth)) {
-      next();
-      return;
-    }
-    if (!auth.organizationId) {
-      throw new BusinessError(
-        'TENANT_REQUIRED',
-        'El usuario no tiene una organización asignada.'
-      );
-    }
-    next();
-  } catch (err) {
-    next(err);
   }
 }

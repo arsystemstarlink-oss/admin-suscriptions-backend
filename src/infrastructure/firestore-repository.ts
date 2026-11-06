@@ -1,6 +1,5 @@
 import { getFirestore, admin } from './firebase';
-import { Identifiable } from '../domain/in-memory-repository';
-import { BusinessError } from '../domain/entities';
+import { BusinessError, Identifiable } from '../domain/entities';
 import {
   getRequestContext,
   recordAggregation,

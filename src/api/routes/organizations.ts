@@ -439,11 +439,12 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
             (planEnd !== undefined && planEnd <= now.getTime())
           );
         }
+        const clientLimit = resolveEffectiveClientLimit(organization.plan, organization.clientLimit);
         return (
           Number.isInteger(organization.clientCount) &&
-          Number.isInteger(organization.clientLimit) &&
-          organization.clientLimit! > 0 &&
-          organization.clientCount! / organization.clientLimit! >= 0.8
+          clientLimit !== null &&
+          clientLimit > 0 &&
+          organization.clientCount! / clientLimit >= 0.8
         );
       });
       organizations.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());

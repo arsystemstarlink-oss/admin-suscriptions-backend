@@ -5,9 +5,16 @@ import { getFirestore } from '../../infrastructure/firebase';
 import billingPeriodsRouter from '../../api/routes/billing-periods';
 import paymentReportsRouter from '../../api/routes/payment-reports';
 import subscriptionsRouter from '../../api/routes/subscriptions';
+import publicRouter from '../../api/routes/public';
 import { errorHandler } from '../../api/middleware/error-handler';
 import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
-import { clientRepository, organizationRepository } from '../../infrastructure/repositories';
+import {
+  clientRepository,
+  organizationRepository,
+  userRepository,
+  whatsappConversationRepository,
+  whatsappMessageRepository,
+} from '../../infrastructure/repositories';
 import { runDailyJobForOrganization } from '../../infrastructure/scheduler';
 import { BillingPeriod, Organization, Plan, Subscription } from '../../domain/entities';
 
@@ -128,6 +135,7 @@ describe('transacciones contra el emulador de Firestore', () => {
     app.use('/subscriptions', subscriptionsRouter);
     app.use('/billing-periods', billingPeriodsRouter);
     app.use('/payment-reports', paymentReportsRouter);
+    app.use('/public', publicRouter);
     app.use(errorHandler);
     server = app.listen(0, () => {
       baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -475,6 +483,107 @@ describe('transacciones contra el emulador de Firestore', () => {
       expect(reads.map((response) => response.status)).toEqual([403, 403]);
       expect(write.status).toBe(403);
       expect((await read('users', 'user_1'))?.role).toBe('admin');
+    });
+  });
+
+  describe('unicidad y conversaciones', () => {
+    const client = (id: string) => ({
+      id,
+      organizationId: ORG,
+      firstName: 'Ana',
+      lastName: 'López',
+      phone: '+584120000000',
+      dni: 'V-99999999',
+      createdAt: now,
+    });
+
+    it('altas simultáneas con la misma cédula crean un solo cliente', async () => {
+      await seed('organizations', organization);
+
+      const results = await Promise.allSettled(
+        ['a', 'b', 'c'].map((id) => clientRepository.createWithinPlanLimit(client(id)))
+      );
+
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(await count('clients', 'dni', 'V-99999999')).toBe(1);
+      expect((await read('organizations', ORG))?.clientCount).toBe(2);
+    });
+
+    it('altas simultáneas con el mismo email crean un solo usuario', async () => {
+      const user = (id: string) => ({
+        id,
+        name: id,
+        email: 'mismo@example.com',
+        password: 'hash',
+        role: 'admin' as const,
+        organizationId: ORG,
+        createdAt: now,
+      });
+
+      const results = await Promise.allSettled(['a', 'b', 'c'].map((id) => userRepository.createWithUniqueEmail(user(id))));
+
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      expect(await count('users')).toBe(1);
+    });
+
+    it('reportes públicos simultáneos del mismo período crean uno solo', async () => {
+      await seed('organizations', { ...organization, slug: 'org' } as Organization);
+      await seed('clients', { ...client(subscription.clientId), dni: 'V-12345678' });
+      await seed('subscriptions', subscription);
+      await seed('billingPeriods', openPeriod);
+      const report = () =>
+        send('POST', '/public/org/org/reports', {
+          dni: 'V-12345678',
+          phone: '+584120000000',
+          billingPeriodId: openPeriod.id,
+          paymentMethod: 'TRANSFER',
+          paidAt: paidAtText,
+        });
+
+      const statuses = await statusesOf([report(), report(), report()]);
+
+      expect(statuses.filter((status) => status === 201)).toHaveLength(1);
+      expect(statuses.filter((status) => status !== 201 && status !== 409)).toEqual([]);
+      expect(await count('paymentReports')).toBe(1);
+    });
+
+    it('mensajes y lecturas simultáneos conservan todos los mensajes', async () => {
+      const message = (id: string) => ({
+        id,
+        organizationId: ORG,
+        phone: '+584120000000',
+        direction: 'INBOUND' as const,
+        messageSid: id,
+        body: 'x',
+        status: 'DELIVERED' as const,
+        createdAt: new Date(),
+      });
+      await whatsappConversationRepository.upsertFromMessage(message('m1'), ORG);
+
+      await Promise.all([
+        whatsappConversationRepository.markRead(ORG, '+584120000000'),
+        whatsappConversationRepository.upsertFromMessage(message('m2'), ORG),
+        whatsappConversationRepository.upsertFromMessage(message('m3'), ORG),
+      ]);
+
+      const conversations = await db().collection('whatsappConversations').get();
+      expect(conversations.docs[0].data().messageCount).toBe(3);
+    });
+
+    it('un mensaje entrante se guarda una sola vez', async () => {
+      const inbound = {
+        id: 'inbound_SM1',
+        organizationId: ORG,
+        phone: '+584120000000',
+        direction: 'INBOUND' as const,
+        messageSid: 'SM1',
+        body: 'x',
+        status: 'DELIVERED' as const,
+        createdAt: now,
+      };
+
+      await expect(whatsappMessageRepository.createInboundOnce(inbound)).resolves.toBe(true);
+      await expect(whatsappMessageRepository.createInboundOnce(inbound)).resolves.toBe(false);
     });
   });
 

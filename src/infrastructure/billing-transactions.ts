@@ -3,6 +3,7 @@ import {
   BillingPeriod,
   BusinessError,
   DomainEvent,
+  PaymentReport,
   Plan,
   Subscription,
   SubscriptionStatus,
@@ -23,6 +24,7 @@ export interface SubscriptionTransaction {
   periods: BillingPeriod[];
   getPlan(planId: string): Promise<Plan | undefined>;
   getDocument<T>(collection: string, id: string): Promise<T | undefined>;
+  findPendingReports(billingPeriodId: string): Promise<PaymentReport[]>;
   set(collection: string, document: { id: string }): void;
   addEvent(event: Omit<DomainEvent, 'id' | 'createdAt'>): void;
 }
@@ -100,6 +102,19 @@ class SubscriptionTransactionRepository extends FirestoreRepository<{ id: string
         periods,
         getPlan: (planId) => read<Plan>('plans', planId),
         getDocument: read,
+        findPendingReports: async (billingPeriodId) => {
+          const snapshot = await transaction.get(
+            db
+              .collection('paymentReports')
+              .where('organizationId', '==', organizationId)
+              .where('billingPeriodId', '==', billingPeriodId)
+              .where('status', '==', 'PENDING')
+          );
+          recordDocReads(snapshot.size);
+          return snapshot.docs.map(
+            (doc) => this.deserialize({ id: doc.id, ...doc.data() }) as unknown as PaymentReport
+          );
+        },
         set,
         addEvent: (event) => {
           const domainEvent: DomainEvent = { ...event, id: createId(), createdAt: new Date() };
@@ -245,10 +260,12 @@ export async function applyPeriodPayment(
     notes?: string;
     paymentReference?: string;
     actorUserId: string;
+    /** Reporte que origina el pago, si lo hay: no se cierra aquí porque lo aprueba quien llama. */
+    sourceReportId?: string;
     eventPayload?: Record<string, unknown>;
   }
 ): Promise<AppliedPeriodPayment> {
-  const { period, paymentMethod, amount, paidAt, notes, paymentReference, actorUserId, eventPayload } = params;
+  const { period, paymentMethod, amount, paidAt, notes, paymentReference, actorUserId, sourceReportId, eventPayload } = params;
   const billingPeriod: BillingPeriod = {
     ...businessService.applyPaymentToBillingPeriod({
       billingPeriod: period,
@@ -268,6 +285,28 @@ export async function applyPeriodPayment(
     entityId: billingPeriod.id,
     payload: { subscriptionId: period.subscriptionId, amount, paymentMethod, ...eventPayload },
   });
+
+  // Un reporte pendiente de un período ya pagado no se podría aprobar: quedaría abierto para siempre.
+  const pendingReports = await context.findPendingReports(period.id);
+  for (const report of pendingReports) {
+    if (report.id === sourceReportId) continue;
+    const closed: PaymentReport = {
+      ...report,
+      status: 'REJECTED',
+      reviewedAt: new Date(),
+      reviewedByUserId: actorUserId,
+      reviewNotes: 'El período ya se registró como pagado.',
+    };
+    context.set('paymentReports', closed);
+    context.addEvent({
+      type: 'payment_report.rejected',
+      organizationId: period.organizationId,
+      actorUserId,
+      entity: 'paymentReport',
+      entityId: report.id,
+      payload: { billingPeriodId: period.id, reason: closed.reviewNotes },
+    });
+  }
 
   const { subscription } = context;
   if (!subscription) {

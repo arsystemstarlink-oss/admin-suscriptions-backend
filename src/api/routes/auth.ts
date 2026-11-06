@@ -87,7 +87,7 @@ async function validateAndCreateUser(input: {
     createdAt: new Date(),
   };
 
-  await userRepository.create(user);
+  await userRepository.createWithUniqueEmail(user);
 
   try {
     await admin.auth().createUser({
@@ -522,7 +522,7 @@ router.put('/me', authenticateAdmin, async (req: Request, res: Response, next: N
     }
 
     const updatedUser: User = { ...user, ...updates };
-    await userRepository.update(updatedUser);
+    await (emailChanged ? userRepository.updateWithUniqueEmail(updatedUser) : userRepository.update(updatedUser));
 
     if (!emailChanged) {
       res.json({ user: await toAuthenticatedUserDto(updatedUser) });

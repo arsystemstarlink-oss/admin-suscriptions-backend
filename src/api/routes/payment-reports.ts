@@ -19,6 +19,8 @@ import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { ReviewPaymentReportDto } from '../dto';
 
+import { parsePagination } from '../validation';
+
 const router = Router();
 
 /** Dentro de la transacción: dos revisiones simultáneas no pueden aplicar el mismo reporte. */
@@ -68,8 +70,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = requireOrganizationId(req);
     const status = (req.query.status as string) || 'PENDING';
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
 
     const filters: QueryFilter[] = [];
@@ -217,6 +218,7 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
           notes: report.notes,
           paymentReference: report.notes,
           actorUserId: auth.userId,
+          sourceReportId: report.id,
           eventPayload: { viaReport: report.id },
         });
 

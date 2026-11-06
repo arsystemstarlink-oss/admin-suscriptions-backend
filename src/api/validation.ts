@@ -77,6 +77,17 @@ export const registerAdvancePaymentSchema = z.object({
   anchorPeriodId: requiredId.optional(),
 });
 
+/** Límite y desplazamiento acotados: un valor negativo o excesivo no llega a Firestore. */
+export function parsePagination(
+  query: { limit?: unknown; offset?: unknown },
+  options: { defaultLimit?: number; maxLimit?: number } = {}
+): { limit: number; offset: number } {
+  const { defaultLimit = 50, maxLimit = 200 } = options;
+  const limit = parseInt(String(query.limit), 10) || defaultLimit;
+  const offset = parseInt(String(query.offset), 10) || 0;
+  return { limit: Math.min(Math.max(limit, 1), maxLimit), offset: Math.max(offset, 0) };
+}
+
 /** Los campos faltantes siguen dando el error específico de cada ruta o del dominio. */
 export function parseBody<T>(schema: z.ZodType, body: unknown): T {
   const result = schema.safeParse(body ?? {});

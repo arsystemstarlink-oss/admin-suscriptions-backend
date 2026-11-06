@@ -11,7 +11,7 @@ import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni, buildClientName, buildClientSortName } from '../../domain/business-rules';
 import { normalizePhoneToE164 } from '../../domain/phone';
 import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../middleware/tenant';
-import { createClientSchema, parseBody, updateClientSchema } from '../validation';
+import { createClientSchema, parseBody, parsePagination, updateClientSchema } from '../validation';
 
 const router = Router();
 
@@ -96,10 +96,6 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       if (!isValidDni(dni)) {
         throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
       }
-      const existing = await clientRepository.findByDni(dni, organizationId);
-      if (existing) {
-        throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad en esta organización.');
-      }
     }
 
     const client = {
@@ -131,8 +127,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const include = req.query.include as string;
     const subscriptionStatus = req.query.subscriptionStatus as string;
     const hasOverdue = req.query.hasOverdue as string;
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
     const organizationId = requireOrganizationId(req);
 
@@ -140,7 +135,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       include === 'subscriptions' || Boolean(subscriptionStatus) || hasOverdue !== undefined;
 
     if (search) {
-      const matched = await clientRepository.searchBounded(organizationId, search, limit);
+      // Trae hasta el final de la página pedida y uno más, para saber si hay otra.
+      const matched = await clientRepository.searchBounded(organizationId, search, offset + limit + 1);
       let clients: any[] = matched;
       if (shouldIncludeSubscriptions) {
         clients = await enrichClients(clients, organizationId, include === 'subscriptions');
@@ -160,6 +156,25 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
+    // Estos filtros dependen de las suscripciones: hay que aplicarlos antes de paginar para
+    // que las páginas y el total sean correctos.
+    if (subscriptionStatus || hasOverdue !== undefined) {
+      const all = await clientRepository.listByOrganization(organizationId);
+      all.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      let clients = await enrichClients(all, organizationId, include === 'subscriptions');
+      if (subscriptionStatus) {
+        clients = clients.filter((c) => c.subscriptionStatus === subscriptionStatus);
+      }
+      if (hasOverdue !== undefined) {
+        const wantOverdue = hasOverdue === 'true';
+        clients = clients.filter((c) => c.hasDebt === wantOverdue);
+      }
+      return res.json({
+        clients: clients.slice(offset, offset + limit),
+        pagination: { total: clients.length, limit, offset, hasMore: offset + limit < clients.length },
+      });
+    }
+
     const page = await clientRepository.listPage({
       organizationId,
       limit,
@@ -170,19 +185,9 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       requireTotal: !cursor,
     });
 
-    let pageClients: any[] = page.items;
-    if (shouldIncludeSubscriptions) {
-      pageClients = await enrichClients(page.items, organizationId, include === 'subscriptions');
-    }
-
-    if (subscriptionStatus) {
-      pageClients = pageClients.filter((c) => c.subscriptionStatus === subscriptionStatus);
-    }
-
-    if (hasOverdue !== undefined) {
-      const wantOverdue = hasOverdue === 'true';
-      pageClients = pageClients.filter((c) => c.hasDebt === wantOverdue);
-    }
+    const pageClients: any[] = shouldIncludeSubscriptions
+      ? await enrichClients(page.items, organizationId, include === 'subscriptions')
+      : page.items;
 
     return res.json({
       clients: pageClients,
@@ -287,10 +292,6 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
         if (!isValidDni(normalized)) {
           throw new BusinessError('INVALID_DNI', 'Cédula inválida. Use formato V-12345678 o J-123456789 (7-9 dígitos).');
         }
-        const existingWithDni = await clientRepository.findByDni(normalized, organizationId);
-        if (existingWithDni && existingWithDni.id !== existing.id) {
-          throw new BusinessError('DNI_TAKEN', 'Ya existe un cliente registrado con esa cédula de identidad en esta organización.');
-        }
         updated = { ...updated, dni: normalized };
       }
     }
@@ -298,7 +299,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     const nameChanged =
       updated.firstName !== existing.firstName || updated.lastName !== existing.lastName;
 
-    await clientRepository.update(updated);
+    await clientRepository.updateWithUniqueDni(updated);
     if (nameChanged) {
       try {
         await subscriptionRepository.updateClientNameByClientId(

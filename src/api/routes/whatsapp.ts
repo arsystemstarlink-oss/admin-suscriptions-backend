@@ -20,6 +20,8 @@ import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isFirestoreIndexError } from '../../infrastructure/firestore-error';
 
+import { parsePagination } from '../validation';
+
 const router = Router();
 
 async function verifyDeletionPassword(userId: string, password: unknown): Promise<void> {
@@ -41,17 +43,21 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
   try {
     const auth = getAuth(req);
     const organizationId = requireOrganizationId(req);
-    const { to, body, templateName, variables } = req.body;
+    const { to: rawTo, body, templateName, variables } = req.body;
 
-    if (!to) {
+    if (!rawTo || typeof rawTo !== 'string') {
       throw new BusinessError('INVALID_DATA', 'Número de teléfono es obligatorio.');
     }
+
+    // Mismo formato que los clientes y el webhook: si no, un chat se partiría en dos conversaciones.
+    const normalizedTo = normalizePhoneNumber(rawTo);
+    const to = normalizedTo.startsWith('+') ? normalizedTo : `+${normalizedTo}`;
 
     if (!body && !templateName) {
       throw new BusinessError('INVALID_DATA', 'Mensaje o template son obligatorios.');
     }
 
-    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+    const phoneRegex = /^\+[1-9]\d{1,14}$/;
     if (!phoneRegex.test(to)) {
       throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
     }
@@ -155,7 +161,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
 
     if (isProduction || !validationDisabled) {
       const credentials = resolveTwilioCredentials(organization ?? null);
-      const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}/communications/webhook`;
+      const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}${req.originalUrl}`;
       const isValid = whatsappService.validateWebhook(
         req.headers,
         req.body,
@@ -185,7 +191,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const whatsappMsg: WhatsAppMessage = {
-      id: createId(),
+      id: `inbound_${parsed.messageSid}`,
       organizationId,
       clientId: client?.id,
       phone: parsed.from,
@@ -197,7 +203,10 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       createdAt: new Date(),
     };
 
-    await whatsappMessageRepository.create(whatsappMsg);
+    if (!(await whatsappMessageRepository.createInboundOnce(whatsappMsg))) {
+      res.status(200).json({ success: true, message: 'Mensaje ya registrado.' });
+      return;
+    }
 
     if (organizationId) {
       try {
@@ -279,8 +288,10 @@ router.get('/messages/:phone', authenticateAdmin, async (req: Request, res: Resp
   try {
     const { phone } = req.params;
     const organizationId = requireOrganizationId(req);
-    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>, {
+      defaultLimit: 100,
+      maxLimit: 500,
+    });
     const cursor = req.query.cursor as string | undefined;
 
     const page = await whatsappMessageRepository.listByPhonePage({
@@ -386,6 +397,9 @@ router.delete('/messages/:phone', authenticateAdmin, requireWritablePlan, async 
   }
 });
 
+// Twilio no garantiza el orden de los callbacks: un estado atrasado no debe pisar uno más avanzado.
+const MESSAGE_STATUS_RANK: Record<MessageStatus, number> = { SENT: 0, DELIVERED: 1, READ: 2, FAILED: 2 };
+
 function mapTwilioStatus(rawStatus: string): MessageStatus | undefined {
   switch (String(rawStatus).toLowerCase()) {
     case 'queued':
@@ -444,6 +458,11 @@ async function handleStatusCallback(req: Request, res: Response, next: NextFunct
     const status = mapTwilioStatus(rawStatus);
     if (!status) {
       throw new BusinessError('INVALID_DATA', `Estado de mensaje desconocido: ${rawStatus}`);
+    }
+
+    if (MESSAGE_STATUS_RANK[status] < MESSAGE_STATUS_RANK[message.status]) {
+      res.status(200).json({ success: true });
+      return;
     }
 
     const errorMessage =

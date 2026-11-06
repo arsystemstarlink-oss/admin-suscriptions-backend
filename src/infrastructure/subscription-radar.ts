@@ -119,6 +119,7 @@ export function hasRadarChanged(previous: Subscription, next: Subscription): boo
     (previous.totalPeriods ?? 0) !== (next.totalPeriods ?? 0) ||
     toTime(previous.nearestPendingDate) !== toTime(next.nearestPendingDate) ||
     toTime(previous.closestOverdueDate) !== toTime(next.closestOverdueDate) ||
+    toTime(previous.currentPeriodStartDate) !== toTime(next.currentPeriodStartDate) ||
     toTime(previous.currentPeriodEndDate) !== toTime(next.currentPeriodEndDate)
   );
 }

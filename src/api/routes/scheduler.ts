@@ -5,6 +5,8 @@ import { BusinessError } from '../../domain/entities';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { isSuperAdmin } from '../../domain/auth-context';
 
+import { parsePagination } from '../validation';
+
 const router = Router();
 const DAILY_CRON_REGEX = /^([0-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) \* \* \*$/;
 
@@ -84,7 +86,7 @@ router.post('/run', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/logs', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const organizationId = requireOrganizationId(req);
-    const limit = parseInt(req.query.limit as string) || 50;
+    const { limit } = parsePagination(req.query as Record<string, unknown>);
 
     const logs = await schedulerLogRepository.listByOrganization(organizationId, limit);
     return res.json({ logs, total: logs.length, limit });

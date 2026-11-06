@@ -391,7 +391,7 @@ async function runDailyJobForOrganizationUnlocked(
 
     let subscriptionPeriods = updatedPeriods
       .filter((p) => p.subscriptionId === subscription.id)
-      .sort((a, b) => b.endDate.getTime() - a.endDate.getTime());
+      .sort((a, b) => b.startDate.getTime() - a.startDate.getTime());
 
     if (subscriptionPeriods.length === 0) {
       // Sin períodos visibles para esta suscripción: rehidratar solo el actual
@@ -407,7 +407,7 @@ async function runDailyJobForOrganizationUnlocked(
       const currentFromRadar = currentFromRadarById.get(subscription.currentPeriodId);
       if (currentFromRadar) {
         subscriptionPeriods = [currentFromRadar, ...subscriptionPeriods].sort(
-          (a, b) => b.endDate.getTime() - a.endDate.getTime()
+          (a, b) => b.startDate.getTime() - a.startDate.getTime()
         );
       }
     }

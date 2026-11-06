@@ -8,6 +8,7 @@ import {
 import { RegisterPaymentDto, UpdateBillingPeriodDto } from '../dto';
 import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
+import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { applyPeriodPayment, subscriptionTransactions } from '../../infrastructure/billing-transactions';
@@ -15,7 +16,7 @@ import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { validatePaymentMethod } from '../../domain/payment-methods';
 import { assertPaidAtNotFuture } from '../../domain/payment-date';
-import { parseBody, registerPaymentSchema, updateBillingPeriodSchema } from '../validation';
+import { parseBody, parsePagination, registerPaymentSchema, updateBillingPeriodSchema } from '../validation';
 
 const router = Router();
 const businessService = new SubscriptionBusinessService();
@@ -82,8 +83,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const status = req.query.status as string;
     const search = req.query.search as string;
     const expiresBefore = req.query.expiresBefore as string;
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 200);
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req.query as Record<string, unknown>);
     const cursor = req.query.cursor as string | undefined;
     const organizationId = requireOrganizationId(req);
 
@@ -293,6 +293,7 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
       }
     );
     scheduleStatsRecompute(organizationId);
+    invalidateBadges(organizationId);
 
     res.json({
       billingPeriod: payment.billingPeriod,

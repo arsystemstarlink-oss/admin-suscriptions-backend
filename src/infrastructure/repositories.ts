@@ -430,6 +430,8 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
   }
 }
 
+const DNI_TAKEN_MESSAGE = 'Ya existe un cliente registrado con esa cédula de identidad en esta organización.';
+
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
     super('clients');
@@ -441,11 +443,15 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
 
     const result: { code: string; message: string; details?: Record<string, unknown> } | undefined =
       await this.db.runTransaction(async (transaction) => {
-      const [organizationSnapshot, clientSnapshot] = await Promise.all([
+      const [organizationSnapshot, clientSnapshot, sameDni] = await Promise.all([
         transaction.get(organizationRef),
         transaction.get(clientRef),
+        client.dni ? transaction.get(this.sameDniQuery(client.organizationId, client.dni)) : undefined,
       ]);
-      recordDocReads(2);
+      recordDocReads(2 + (sameDni?.size ?? 0));
+      if (sameDni && !sameDni.empty) {
+        return { code: 'DNI_TAKEN', message: DNI_TAKEN_MESSAGE };
+      }
       if (!organizationSnapshot.exists) {
         return { code: 'ORGANIZATION_NOT_FOUND', message: 'Organización no encontrada.' };
       }
@@ -524,6 +530,29 @@ export class ClientFirestoreRepository extends FirestoreRepository<Client> {
     if (result) {
       throw new BusinessError(result.code, result.message, result.details);
     }
+  }
+
+  private sameDniQuery(organizationId: string, dni: string) {
+    return this.db
+      .collection(this.collectionName)
+      .where('organizationId', '==', organizationId)
+      .where('dni', '==', dni);
+  }
+
+  /** La cédula se comprueba dentro de la transacción: dos altas simultáneas no pueden compartirla. */
+  async updateWithUniqueDni(client: Client): Promise<void> {
+    const clientRef = this.db.collection(this.collectionName).doc(client.id);
+    await this.db.runTransaction(async (transaction) => {
+      if (client.dni) {
+        const sameDni = await transaction.get(this.sameDniQuery(client.organizationId, client.dni));
+        recordDocReads(sameDni.size);
+        if (sameDni.docs.some((doc) => doc.id !== client.id)) {
+          throw new BusinessError('DNI_TAKEN', DNI_TAKEN_MESSAGE);
+        }
+      }
+      recordWrite();
+      transaction.update(clientRef, this.serializeForUpdate(client));
+    });
   }
 
   async deleteAndDecrementClientCount(id: string, organizationId: string): Promise<boolean> {
@@ -981,6 +1010,38 @@ export class UserFirestoreRepository extends FirestoreRepository<User> {
   async listByOrganization(organizationId: string): Promise<User[]> {
     return this.listByField('organizationId', organizationId);
   }
+
+  private async assertEmailAvailable(
+    transaction: FirebaseFirestore.Transaction,
+    user: User
+  ): Promise<void> {
+    const sameEmail = await transaction.get(
+      this.db.collection(this.collectionName).where('email', '==', user.email)
+    );
+    recordDocReads(sameEmail.size);
+    if (sameEmail.docs.some((doc) => doc.id !== user.id)) {
+      throw new BusinessError('EMAIL_TAKEN', 'Ya existe un usuario con ese email.');
+    }
+  }
+
+  /** El email se comprueba dentro de la transacción: dos altas simultáneas no pueden compartirlo. */
+  async createWithUniqueEmail(user: User): Promise<void> {
+    const ref = this.db.collection(this.collectionName).doc(user.id);
+    await this.db.runTransaction(async (transaction) => {
+      await this.assertEmailAvailable(transaction, user);
+      recordWrite();
+      transaction.create(ref, this.serialize(user));
+    });
+  }
+
+  async updateWithUniqueEmail(user: User): Promise<void> {
+    const ref = this.db.collection(this.collectionName).doc(user.id);
+    await this.db.runTransaction(async (transaction) => {
+      await this.assertEmailAvailable(transaction, user);
+      recordWrite();
+      transaction.update(ref, this.serializeForUpdate(user));
+    });
+  }
 }
 
 export class AdminInviteFirestoreRepository extends FirestoreRepository<AdminInvite> {
@@ -1184,17 +1245,24 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     ]);
   }
 
+  /** Guarda un mensaje entrante una sola vez: Twilio reintenta el webhook con el mismo SID. */
+  async createInboundOnce(message: WhatsAppMessage): Promise<boolean> {
+    const ref = this.db.collection(this.collectionName).doc(message.id);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      recordDocReads();
+      if (snapshot.exists) return false;
+      recordWrite();
+      transaction.create(ref, this.serialize(message));
+      return true;
+    });
+  }
+
   async findByMessageSid(messageSid: string): Promise<WhatsAppMessage | undefined> {
     const results = await this.listByField('messageSid', messageSid);
     return results[0];
   }
 
-  /**
-   * Idempotencia del daily job: indica si ya se envió exactamente el mismo
-   * mensaje saliente (mismo body serializado = mismo template + período) al
-   * teléfono desde `since`. Evita reenviar si el job corre más de una vez al día.
-   * Usa el índice (organizationId, phone, createdAt) y filtra direction/body en memoria.
-   */
   /**
    * Lectura por lotes para idempotencia del daily job: trae en una sola
    * consulta (por chunks de 30 telefonos, con `in`) los mensajes salientes
@@ -1224,22 +1292,6 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
       results.push(...messages.filter((message) => message.direction === 'OUTBOUND'));
     }
     return results;
-  }
-
-  async existsOutboundMessageSince(params: {
-    organizationId: string;
-    phone: string;
-    body: string;
-    since: Date;
-    limit?: number;
-  }): Promise<boolean> {
-    const results = await this.listOutboundSince({
-      organizationId: params.organizationId,
-      phones: [params.phone],
-      since: params.since,
-      limit: params.limit ?? 100,
-    });
-    return results.some((message) => message.body === params.body);
   }
 
   async updateStatusByMessageSid(
@@ -1416,65 +1468,9 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
   async upsertManyFromMessages(messages: WhatsAppMessage[], organizationId: string): Promise<void> {
     if (messages.length === 0) return;
 
-    const messagesByPhone = new Map<string, WhatsAppMessage[]>();
+    // Cada mensaje en su transacción: un lote leído antes podría pisar uno entrante simultáneo.
     for (const message of messages) {
-      const list = messagesByPhone.get(message.phone) || [];
-      list.push(message);
-      messagesByPhone.set(message.phone, list);
-    }
-
-    const phones = [...messagesByPhone.keys()];
-    const ids = phones.map((phone) =>
-      WhatsAppConversationFirestoreRepository.docId(organizationId, phone)
-    );
-    const docsById = new Map<string, FirebaseFirestore.DocumentSnapshot>();
-    const MAX_GET_ALL = 300;
-    for (let i = 0; i < ids.length; i += MAX_GET_ALL) {
-      const chunk = ids.slice(i, i + MAX_GET_ALL);
-      const refs = chunk.map((id) => this.db.collection(this.collectionName).doc(id));
-      const docs = await this.db.getAll(...refs);
-      docs.forEach((doc, index) => {
-        recordDocReads();
-        docsById.set(chunk[index], doc);
-      });
-    }
-
-    const now = new Date();
-    const updatedRecords: WhatsAppConversationRecord[] = [];
-    for (const [phone, phoneMessages] of messagesByPhone) {
-      const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
-      const doc = docsById.get(id);
-      let record = doc && doc.exists ? this.toRecord(doc.data(), id) : undefined;
-      for (const message of phoneMessages) {
-        record = this.applyMessageToRecord(record, message, id, organizationId, now);
-      }
-      if (record) {
-        updatedRecords.push(record);
-      }
-    }
-
-    if (updatedRecords.length === 0) return;
-
-    const maxBatchWrites = 400;
-    for (let i = 0; i < updatedRecords.length; i += maxBatchWrites) {
-      const chunk = updatedRecords.slice(i, i + maxBatchWrites);
-      const batch = this.db.batch();
-      chunk.forEach((record) => {
-        recordWrite();
-        batch.set(this.db.collection(this.collectionName).doc(record.id), this.serialize(record));
-      });
-      await batch.commit();
-    }
-
-    let hasUnread = false;
-    for (const record of updatedRecords) {
-      this.upsertInCaches(record);
-      if (record.hasUnread) {
-        hasUnread = true;
-      }
-    }
-    if (hasUnread) {
-      invalidateBadges(organizationId);
+      await this.upsertFromMessage(message, organizationId);
     }
   }
 
@@ -1485,23 +1481,30 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
   async markRead(organizationId: string, phone: string, readAt: Date = new Date()): Promise<boolean> {
     const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
     const docRef = this.db.collection(this.collectionName).doc(id);
-    recordDocReads();
-    const doc = await docRef.get();
-    if (!doc.exists) {
-      return false;
+    const updated = await this.db.runTransaction(async (transaction) => {
+      recordDocReads();
+      const doc = await transaction.get(docRef);
+      if (!doc.exists) {
+        return false;
+      }
+
+      const record = this.toRecord(doc.data(), id);
+      if (record.hasUnread !== true && record.lastReadAt) {
+        return true;
+      }
+
+      record.hasUnread = false;
+      record.lastReadAt = readAt;
+
+      recordWrite();
+      transaction.set(docRef, this.serialize(record));
+      return record;
+    });
+
+    if (typeof updated === 'boolean') {
+      return updated;
     }
-
-    const record = this.toRecord(doc.data(), id);
-    if (record.hasUnread !== true && record.lastReadAt) {
-      return true;
-    }
-
-    record.hasUnread = false;
-    record.lastReadAt = readAt;
-
-    recordWrite();
-    await docRef.set(this.serialize(record));
-    this.upsertInCaches(record);
+    this.upsertInCaches(updated);
     invalidateBadges(organizationId);
     return true;
   }
@@ -1530,27 +1533,33 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
   ): Promise<void> {
     const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
     const docRef = this.db.collection(this.collectionName).doc(id);
-    recordDocReads();
-    const doc = await docRef.get();
-    if (!doc.exists) {
-      return;
+    const updated = await this.db.runTransaction(async (transaction) => {
+      recordDocReads();
+      const doc = await transaction.get(docRef);
+      if (!doc.exists) {
+        return undefined;
+      }
+
+      const record = this.toRecord(doc.data(), id);
+      if (record.lastMessage?.messageSid !== messageSid) {
+        return undefined;
+      }
+
+      record.lastMessage = {
+        ...record.lastMessage,
+        status,
+        ...(errorMessage ? { errorMessage } : {}),
+      };
+      record.updatedAt = new Date();
+
+      recordWrite();
+      transaction.set(docRef, this.serialize(record));
+      return record;
+    });
+
+    if (updated) {
+      this.upsertInCaches(updated);
     }
-
-    const record = this.toRecord(doc.data(), id);
-    if (record.lastMessage?.messageSid !== messageSid) {
-      return;
-    }
-
-    record.lastMessage = {
-      ...record.lastMessage,
-      status,
-      ...(errorMessage ? { errorMessage } : {}),
-    };
-    record.updatedAt = new Date();
-
-    recordWrite();
-    await docRef.set(this.serialize(record));
-    this.upsertInCaches(record);
   }
 
   async deleteByPhone(organizationId: string, phone: string): Promise<void> {
@@ -1648,21 +1657,6 @@ export class PaymentReportFirestoreRepository extends FirestoreRepository<Paymen
     super('paymentReports');
   }
 
-  async findPendingByPeriod(billingPeriodId: string, organizationId?: string): Promise<PaymentReport | undefined> {
-    const filters: Array<[string, any]> =
-      organizationId !== undefined
-        ? [
-            ['organizationId', organizationId],
-            ['billingPeriodId', billingPeriodId],
-            ['status', 'PENDING'],
-          ]
-        : [
-            ['billingPeriodId', billingPeriodId],
-            ['status', 'PENDING'],
-          ];
-    const results = await this.listByFields(filters, 1);
-    return results[0];
-  }
 }
 
 export class OrganizationPlanPaymentReportFirestoreRepository extends FirestoreRepository<OrganizationPlanPaymentReport> {
