@@ -47,14 +47,18 @@ export class PushService {
     });
   }
 
-  async listByAdmin(adminId: string): Promise<PushSubscription[]> {
-    return pushSubscriptionRepository.listByAdminId(adminId);
+  async listByAdmin(adminId: string, organizationId?: string): Promise<PushSubscription[]> {
+    return pushSubscriptionRepository.listByAdminId(adminId, organizationId);
   }
 
-  async deleteByEndpoint(adminId: string, endpoint: string): Promise<void> {
+  async deleteByEndpoint(adminId: string, endpoint: string, organizationId?: string): Promise<void> {
     const subscription = await pushSubscriptionRepository.findByEndpoint(endpoint);
 
-    if (!subscription || subscription.adminId !== adminId) {
+    if (
+      !subscription ||
+      subscription.adminId !== adminId ||
+      (organizationId && subscription.organizationId !== organizationId)
+    ) {
       throw new BusinessError(
         'PUSH_SUBSCRIPTION_NOT_FOUND',
         'La suscripción push no existe o no pertenece al administrador.'
@@ -84,10 +88,10 @@ export class PushService {
     const adminIds = await userRepository
       .listByOrganization(organizationId)
       .then((admins) => admins.filter((u) => u.role === 'admin').map((u) => u.id));
-    return this.sendToAdmins(adminIds, { title, body, data });
+    return this.sendToAdmins(adminIds, { title, body, data }, organizationId);
   }
 
-  async sendToAdmins(adminIds: string[], payload: PushPayload): Promise<number> {
+  async sendToAdmins(adminIds: string[], payload: PushPayload, organizationId?: string): Promise<number> {
     this.ensureConfigured();
 
     if (!payload.title || !payload.body) {
@@ -97,13 +101,12 @@ export class PushService {
       );
     }
 
-    const subscriptions = await pushSubscriptionRepository.listByAdminIds(adminIds);
+    const subscriptions = await pushSubscriptionRepository.listByAdminIds(adminIds, organizationId);
 
     let sent = 0;
     for (const subscription of subscriptions) {
       try {
-        await this.deliverWithRetry(subscription, payload);
-        sent++;
+        if (await this.deliverWithRetry(subscription, payload)) sent++;
       } catch (error) {
         console.error(
           `[Push] Error enviando a suscripción ${subscription.id}:`,
@@ -158,7 +161,7 @@ export class PushService {
     subscription: PushSubscription,
     payload: PushPayload,
     attempt = 1
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       await webpush.sendNotification(
         this.toWebPushSubscription(subscription),
@@ -173,28 +176,28 @@ export class PushService {
         console.log(
           `[Push] Suscripción ${subscription.id} eliminada (HTTP ${statusCode}).`
         );
-        return;
+        return false;
       }
 
       if (statusCode === 429 && attempt < 3) {
         const backoffMs = 1000 * Math.pow(2, attempt - 1);
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
-        await this.deliverWithRetry(subscription, payload, attempt + 1);
-        return;
+        return this.deliverWithRetry(subscription, payload, attempt + 1);
       }
 
       if (statusCode === 403) {
         console.warn(`[Push] Sin permisos para suscripción ${subscription.id} (HTTP 403).`);
-        return;
+        return false;
       }
 
       if (statusCode === 413) {
         console.warn(`[Push] Payload demasiado grande para suscripción ${subscription.id} (HTTP 413).`);
-        return;
+        return false;
       }
 
       throw error;
     }
+    return true;
   }
 }
 

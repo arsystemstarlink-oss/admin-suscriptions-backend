@@ -1659,11 +1659,13 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
     return results[0];
   }
 
-  async listByAdminId(adminId: string): Promise<PushSubscription[]> {
-    return this.listByField('adminId', adminId);
+  async listByAdminId(adminId: string, organizationId?: string): Promise<PushSubscription[]> {
+    const filters: Array<[string, any]> = [['adminId', adminId]];
+    if (organizationId) filters.push(['organizationId', organizationId]);
+    return this.listByFields(filters);
   }
 
-  async listByAdminIds(adminIds: string[]): Promise<PushSubscription[]> {
+  async listByAdminIds(adminIds: string[], organizationId?: string): Promise<PushSubscription[]> {
     const unique = [...new Set(adminIds.filter(Boolean))];
     if (unique.length === 0) {
       return [];
@@ -1673,7 +1675,9 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
     const results: PushSubscription[] = [];
     for (let i = 0; i < unique.length; i += MAX_IN_FILTER) {
       const chunk = unique.slice(i, i + MAX_IN_FILTER);
-      const snapshot = await this.buildQuery([['adminId', 'in', chunk]]).get();
+      const filters: QueryFilter[] = [['adminId', 'in', chunk]];
+      if (organizationId) filters.push(['organizationId', '==', organizationId]);
+      const snapshot = await this.buildQuery(filters).get();
       recordQuery();
       recordDocReads(snapshot.size);
       snapshot.docs.forEach((doc) =>
@@ -1691,36 +1695,44 @@ export class PushSubscriptionFirestoreRepository extends FirestoreRepository<Pus
     endpoint: string,
     data: { organizationId: string; adminId: string; p256dh: string; auth: string; userAgent?: string }
   ): Promise<PushSubscription> {
-    const existing = await this.findByEndpoint(endpoint);
-    const now = new Date();
+    return this.db.runTransaction(async (transaction) => {
+      const query = this.db.collection(this.collectionName)
+        .where('endpoint', '==', endpoint)
+        .limit(1);
+      const snapshot = await transaction.get(query);
+      const now = new Date();
+      const existing = snapshot.empty
+        ? undefined
+        : this.deserialize({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() });
 
-    if (existing) {
-      const updated: PushSubscription = {
-        ...existing,
-        organizationId: data.organizationId,
-        adminId: data.adminId,
-        p256dh: data.p256dh,
-        auth: data.auth,
-        userAgent: data.userAgent,
-        updatedAt: now,
-      };
-      await this.update(updated);
-      return updated;
-    }
+      const subscription: PushSubscription = existing
+        ? {
+            ...existing,
+            organizationId: data.organizationId,
+            adminId: data.adminId,
+            p256dh: data.p256dh,
+            auth: data.auth,
+            userAgent: data.userAgent,
+            updatedAt: now,
+          }
+        : {
+            id: createId(),
+            organizationId: data.organizationId,
+            adminId: data.adminId,
+            endpoint,
+            p256dh: data.p256dh,
+            auth: data.auth,
+            userAgent: data.userAgent,
+            createdAt: now,
+            updatedAt: now,
+          };
 
-    const created: PushSubscription = {
-      id: createId(),
-      organizationId: data.organizationId,
-      adminId: data.adminId,
-      endpoint,
-      p256dh: data.p256dh,
-      auth: data.auth,
-      userAgent: data.userAgent,
-      createdAt: now,
-      updatedAt: now,
-    };
-    await this.create(created);
-    return created;
+      transaction.set(
+        this.db.collection(this.collectionName).doc(subscription.id),
+        this.serialize(subscription)
+      );
+      return subscription;
+    });
   }
 }
 

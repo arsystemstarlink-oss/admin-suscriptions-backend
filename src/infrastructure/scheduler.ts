@@ -608,7 +608,13 @@ async function runDailyJobForOrganizationUnlocked(
         organizationId,
         title: 'Resumen diario',
         body: summaryParts.join(' · '),
-        data: { url: '/dashboard', topic: 'subscriptions' },
+        data: {
+          url: '/dashboard',
+          topic: 'subscriptions',
+          kind: 'daily-summary',
+          overdueCount,
+          suspendedCount,
+        },
       });
       console.log(`[Daily Job] Push de resumen enviado a los admins de ${organizationId}.`);
     } catch (error) {
@@ -864,7 +870,7 @@ async function deliverPendingNotifications(
   if (notifications.length === 0) return 0;
 
   let sentCount = 0;
-  const sentBodies = new Set<string>();
+  const sentNotifications = new Set<string>();
   try {
     const phones = [...new Set(notifications.map((notification) => notification.client.phone))];
     const outbound = await whatsappMessageRepository.listOutboundSince({
@@ -874,7 +880,7 @@ async function deliverPendingNotifications(
     });
     outbound.forEach((message) => {
       if (message.body) {
-        sentBodies.add(message.body);
+        sentNotifications.add(`${message.phone}:${message.body}`);
       }
     });
   } catch (error) {
@@ -898,7 +904,10 @@ async function deliverPendingNotifications(
   };
 
   for (const notification of notifications) {
-    if (notification.dedupBody && sentBodies.has(notification.dedupBody)) {
+    const dedupKey = notification.dedupBody
+      ? `${notification.client.phone}:${notification.dedupBody}`
+      : undefined;
+    if (dedupKey && sentNotifications.has(dedupKey)) {
       console.log(
         `[WhatsApp] Notificación ${notification.type} ya enviada hoy a ${notification.client.phone}. Skipping.`
       );
@@ -917,7 +926,7 @@ async function deliverPendingNotifications(
     if (result.sent) {
       sentCount++;
       if (notification.dedupBody) {
-        sentBodies.add(notification.dedupBody);
+        sentNotifications.add(`${notification.client.phone}:${notification.dedupBody}`);
       }
       sentMessages.push(result.message);
       // Se guarda de inmediato: Twilio puede avisar un fallo segundos después del envío

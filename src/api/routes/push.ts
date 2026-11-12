@@ -60,7 +60,7 @@ router.post('/subscriptions', async (req: Request, res: Response, next: NextFunc
 router.get('/subscriptions', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = getAuth(req).userId;
-    const subscriptions = await pushService.listByAdmin(adminId);
+    const subscriptions = await pushService.listByAdmin(adminId, getAuth(req).organizationId ?? undefined);
 
     res.json({
       subscriptions: subscriptions.map((s) => ({
@@ -78,7 +78,7 @@ router.get('/subscriptions', async (req: Request, res: Response, next: NextFunct
 router.delete('/subscriptions/:endpoint', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const adminId = getAuth(req).userId;
-    await pushService.deleteByEndpoint(adminId, req.params.endpoint);
+    await pushService.deleteByEndpoint(adminId, req.params.endpoint, getAuth(req).organizationId ?? undefined);
 
     res.json({ message: 'Suscripción eliminada' });
   } catch (err) {
