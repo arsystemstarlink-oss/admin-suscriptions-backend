@@ -13,6 +13,7 @@ import {
   UNASSIGNED_WHATSAPP_ID,
   resolveWhatsAppMode,
   resolveWhatsAppNotificationConfig,
+  resolveWhatsAppTemplateMode,
 } from './whatsapp-configuration';
 import { normalizePhoneNumber, resolveTwilioCredentials } from './whatsapp-service';
 import { syncPendingTemplateRequests, toTemplateVariablesResponse } from './whatsapp-setup';
@@ -49,6 +50,7 @@ export async function toSendingOrganization(organization: Organization): Promise
     whatsappNotifications: {
       rules: resolveWhatsAppNotificationConfig(organization).rules,
       templates: resolveWhatsAppNotificationConfig(platform).templates,
+      templateModes: resolveWhatsAppNotificationConfig(platform).templateModes,
     },
   };
 }
@@ -145,7 +147,8 @@ export function toPlatformSummary(organization: Organization, platform: Organiza
     templates: WHATSAPP_TEMPLATE_KEYS.map((key) => {
       const contentSid = config.templates[key] ?? null;
       const request = config.templateRequests?.[key];
-      const text = getTemplateText(key, 'platform');
+      const mode = resolveWhatsAppTemplateMode(platform, key);
+      const text = getTemplateText(key, mode);
       return {
         key,
         label: WHATSAPP_TEMPLATE_CATALOG[key].label,

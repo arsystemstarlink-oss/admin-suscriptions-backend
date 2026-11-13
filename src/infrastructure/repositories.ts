@@ -26,6 +26,7 @@ import {
   RefreshTokenSession,
   PushSubscription,
   Organization,
+  OrganizationWhatsAppTemplateKey,
   OrganizationPlanPayment,
   OrganizationPlanPaymentReport,
   OrganizationTwilioConfig,
@@ -34,7 +35,11 @@ import {
   PaymentReport,
   PlanQuoteRequest,
 } from '../domain/entities';
-import { createInitialWhatsAppNotifications, PLATFORM_WHATSAPP_ID } from './whatsapp-configuration';
+import {
+  createInitialWhatsAppNotifications,
+  PLATFORM_WHATSAPP_ID,
+  resolveWhatsAppNotificationConfig,
+} from './whatsapp-configuration';
 import {
   isPlanExpired,
   resolveEffectiveClientLimit,
@@ -2034,6 +2039,160 @@ export class PlatformWhatsAppFirestoreRepository extends FirestoreRepository<Org
       applyClaims();
       return this.remember(this.toAccount({ twilio, whatsappNotifications }));
     });
+  }
+
+  async migrateOrganizationToPlatform(
+    organizationId: string,
+    expectedTwilio: OrganizationTwilioConfig,
+    apply = true
+  ): Promise<{ organization: Organization; platform: Organization; migratedTemplates: OrganizationWhatsAppTemplateKey[] }> {
+    if (!organizationId || organizationId === PLATFORM_WHATSAPP_ID || organizationId === '__unassigned__') {
+      throw new BusinessError('INVALID_DATA', 'Indica una organización válida para migrar.');
+    }
+
+    const result = await this.db.runTransaction(async (transaction) => {
+      const organizationRef = this.db.collection('organizations').doc(organizationId);
+      const [organizationSnapshot, platformSnapshot] = await Promise.all([
+        transaction.get(organizationRef),
+        transaction.get(this.docRef),
+      ]);
+      recordDocReads(2);
+      if (!organizationSnapshot.exists) {
+        throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
+      }
+
+      const organization = deserializeOrganization(organizationId, organizationSnapshot.data()!);
+      const twilio = organization.twilio;
+      if (
+        !twilio?.accountSid ||
+        !twilio.authToken ||
+        !twilio.phoneNumber ||
+        twilio.enabled === false
+      ) {
+        throw new BusinessError(
+          'WHATSAPP_NOT_CONFIGURED',
+          'La organización debe tener una cuenta Twilio completa y habilitada para migrarla.'
+        );
+      }
+      if (
+        twilio.accountSid !== expectedTwilio.accountSid ||
+        twilio.authToken !== expectedTwilio.authToken ||
+        twilio.phoneNumber !== expectedTwilio.phoneNumber
+      ) {
+        throw new BusinessError(
+          'WHATSAPP_PLATFORM_CONFLICT',
+          'La configuración de Twilio cambió durante la migración. Recarga e inténtalo de nuevo.'
+        );
+      }
+
+      const platform = this.toAccount(platformSnapshot.data());
+      const platformTwilio = platform.twilio;
+      if (
+        platformTwilio &&
+        (platformTwilio.accountSid !== twilio.accountSid ||
+          platformTwilio.authToken !== twilio.authToken ||
+          platformTwilio.phoneNumber !== twilio.phoneNumber ||
+          platformTwilio.enabled === false)
+      ) {
+        throw new BusinessError(
+          'WHATSAPP_PLATFORM_CONFLICT',
+          'La cuenta de la plataforma ya tiene otra configuración Twilio; no se modificó ninguna cuenta.'
+        );
+      }
+
+      const phone = twilio.phoneNumber;
+      const claimRef = twilioPhoneClaimRef(this.db, phone);
+      const [claimSnapshot, ownersSnapshot] = await Promise.all([
+        transaction.get(claimRef),
+        transaction.get(this.db.collection('organizations').where('twilio.phoneNumber', '==', phone)),
+      ]);
+      recordDocReads(1 + ownersSnapshot.size);
+      const claimOwner = claimSnapshot.data()?.organizationId;
+      const hasOtherOwner = ownersSnapshot.docs.some((doc) => doc.id !== organizationId);
+      if (
+        (claimOwner && claimOwner !== organizationId && claimOwner !== PLATFORM_WHATSAPP_ID) ||
+        hasOtherOwner
+      ) {
+        throw new BusinessError(
+          'TWILIO_NUMBER_IN_USE',
+          'El número Twilio está asociado a otra organización; no se modificó ninguna cuenta.'
+        );
+      }
+
+      const sourceConfig = resolveWhatsAppNotificationConfig(organization);
+      const platformConfig = resolveWhatsAppNotificationConfig(platform);
+      const templates = { ...platformConfig.templates };
+      const templateRequests = { ...platformConfig.templateRequests };
+      const templateModes = { ...platformConfig.templateModes };
+      const migratedTemplates: OrganizationWhatsAppTemplateKey[] = [];
+
+      for (const [rawKey, contentSid] of Object.entries(organization.whatsappNotifications?.templates ?? {})) {
+        const key = rawKey as OrganizationWhatsAppTemplateKey;
+        const alreadyConfigured = Boolean(templates[key]);
+        if (alreadyConfigured && templates[key] !== contentSid) {
+          throw new BusinessError(
+            'WHATSAPP_PLATFORM_CONFLICT',
+            `La plantilla "${key}" ya tiene otro SID en la cuenta de la plataforma.`
+          );
+        }
+        templates[key] = contentSid;
+        if (!alreadyConfigured) templateModes[key] = 'own';
+        migratedTemplates.push(key);
+      }
+      for (const [rawKey, request] of Object.entries(organization.whatsappNotifications?.templateRequests ?? {})) {
+        const key = rawKey as OrganizationWhatsAppTemplateKey;
+        const existing = templateRequests[key];
+        if (existing && existing.contentSid !== request?.contentSid) {
+          throw new BusinessError(
+            'WHATSAPP_PLATFORM_CONFLICT',
+            `La solicitud de plantilla "${key}" ya tiene otro SID en la cuenta de la plataforma.`
+          );
+        }
+        if (request) {
+          templateRequests[key] = request;
+          if (!existing) templateModes[key] = 'own';
+        }
+      }
+
+      const migratedPlatform: Organization = {
+        ...platform,
+        twilio,
+        whatsappNotifications: {
+          ...platformConfig,
+          templates,
+          templateModes,
+          templateRequests,
+        },
+      };
+      const migratedOrganization: Organization = {
+        ...organization,
+        twilio: undefined,
+        whatsappMode: 'platform',
+        whatsappNotifications: { rules: sourceConfig.rules, templates: {} },
+      };
+
+      if (apply) {
+        transaction.set(
+          this.docRef,
+          {
+            twilio,
+            whatsappNotifications: this.serialize(migratedPlatform.whatsappNotifications),
+          },
+          { merge: true }
+        );
+        transaction.update(organizationRef, {
+          twilio: admin.firestore.FieldValue.delete(),
+          whatsappMode: 'platform',
+          whatsappNotifications: this.serialize(migratedOrganization.whatsappNotifications),
+        });
+        transaction.set(claimRef, { organizationId: PLATFORM_WHATSAPP_ID, updatedAt: new Date() });
+        recordWrite(3);
+      }
+
+      return { organization: migratedOrganization, platform: migratedPlatform, migratedTemplates };
+    });
+
+    return { ...result, platform: apply ? this.remember(result.platform) : result.platform };
   }
 
   async mutateWhatsAppNotifications(

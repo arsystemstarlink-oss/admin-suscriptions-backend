@@ -47,6 +47,8 @@ export type WhatsAppMode = 'platform' | 'own';
 export interface OrganizationWhatsAppConfig {
   rules: OrganizationWhatsAppRules;
   templates: OrganizationWhatsAppTemplates;
+  /** Orden de variables asociado a cada SID activo; permite conservar plantillas migradas. */
+  templateModes?: Partial<Record<OrganizationWhatsAppTemplateKey, WhatsAppMode>>;
   templateRequests?: Partial<Record<OrganizationWhatsAppTemplateKey, OrganizationWhatsAppTemplateRequest>>;
   /** Último mensaje de prueba enviado desde la configuración (ISO 8601). */
   lastTestAt?: string;

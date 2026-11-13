@@ -31,7 +31,11 @@ import {
   SchedulerLog,
   Subscription,
 } from '../domain/entities';
-import { resolveWhatsAppMode, resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import {
+  resolveWhatsAppMode,
+  resolveWhatsAppNotificationConfig,
+  resolveWhatsAppTemplateMode,
+} from './whatsapp-configuration';
 import {
   describePlatformLimitReached,
   getPlatformWhatsAppUsage,
@@ -760,7 +764,7 @@ function buildNotificationVariables(
       serviceCode: subscription.kitNumber,
       dueDate: period.endDate.toISOString().split('T')[0],
     },
-    organization ? resolveWhatsAppMode(organization) : 'own'
+    organization ? resolveWhatsAppTemplateMode(organization, type) : 'own'
   );
 }
 

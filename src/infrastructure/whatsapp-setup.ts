@@ -29,8 +29,8 @@ import { isFirestoreIndexError } from './firestore-error';
 import {
   accountTemplateMode,
   PLATFORM_WHATSAPP_ID,
-  resolveWhatsAppMode,
   resolveWhatsAppNotificationConfig,
+  resolveWhatsAppTemplateMode,
 } from './whatsapp-configuration';
 import {
   extractTwilioError,
@@ -181,6 +181,7 @@ export async function submitTemplateForApproval(
     const currentConfig = resolveWhatsAppNotificationConfig(current);
     return {
       ...currentConfig,
+      templateModes: { ...currentConfig.templateModes, [key]: mode },
       templateRequests: { ...currentConfig.templateRequests, [key]: request },
     };
   });
@@ -295,11 +296,11 @@ export function toTemplateVariablesResponse(variables: readonly WhatsAppTemplate
 
 export function toTemplatesResponse(organization: Organization) {
   const config = resolveWhatsAppNotificationConfig(organization);
-  const mode = accountTemplateMode(organization);
   return {
     templates: WHATSAPP_TEMPLATE_KEYS.map((key) => {
       const definition = WHATSAPP_TEMPLATE_CATALOG[key];
-      const text = getTemplateText(key, mode);
+      const templateMode = resolveWhatsAppTemplateMode(organization, key);
+      const text = getTemplateText(key, templateMode);
       return {
         key,
         label: definition.label,
@@ -449,7 +450,11 @@ export function pickTestTemplate(
   return {
     key,
     contentSid: config.templates[key]!,
-    variables: buildTemplateSamples(key, mode, organizationName ? { organizationName } : {}),
+    variables: buildTemplateSamples(
+      key,
+      config.templateModes?.[key] ?? mode,
+      organizationName ? { organizationName } : {}
+    ),
   };
 }
 
@@ -470,7 +475,7 @@ export function resolveTemplateForSend(
       `La plantilla "${definition.label}" todavía no está activa. Actívala en Configuración › WhatsApp.`
     );
   }
-  const mode = resolveWhatsAppMode(organization);
+  const mode = resolveWhatsAppTemplateMode(organization, key);
   // El nombre del negocio lo pone el servidor: quien envía no puede hacerse pasar por otro.
   const provided = { ...((context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>), organizationName: organization.name };
   const missing = getTemplateText(key, mode).variables.filter((variable) => {

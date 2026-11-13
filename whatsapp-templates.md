@@ -17,6 +17,21 @@ El texto sugerido termina con la firma `A|R SYSTEM` y aclara que es una notifica
 que no requiere respuesta. Para actualizar una plantilla ya aprobada, solicita una nueva versión;
 la vigente sigue activa hasta que WhatsApp apruebe la nueva.
 
+Para trasladar una cuenta Twilio existente de una organización (caso de migración inicial a
+multi-tenant), usa el script de una sola vez:
+
+```powershell
+npm run migrate:whatsapp-to-platform -- org_X
+npm run migrate:whatsapp-to-platform -- org_X --apply
+```
+
+La primera ejecución es solo una validación: comprueba las credenciales y conflictos sin escribir.
+La segunda transfiere atómicamente la cuenta, las plantillas y la reserva del número a
+`platform/whatsapp`, elimina las credenciales propias de la organización y la pone en modo
+`platform`, conservando sus reglas de notificación. No sobrescribe otra cuenta ni SIDs distintos
+ya configurados en la plataforma. Los Content SID existentes mantienen su orden original de
+variables; al solicitar nuevas plantillas se usa el texto de plataforma con el nombre del negocio.
+
 `toSendingOrganization` (`src/infrastructure/whatsapp-platform.ts`) resuelve con qué cuenta envía
 cada organización; el job diario, `POST /whatsapp/send`, el mensaje de prueba y los webhooks pasan
 por ahí. El cupo (`BUSINESS_PLAN_WHATSAPP_LIMITS`) se cuenta en `organizations/{id}.whatsappUsage`.
@@ -27,18 +42,21 @@ recientemente con ese teléfono. Si un mismo teléfono es cliente de dos organiz
 
 ## Configuración por organización
 
-El administrador lo configura en **Configuración › WhatsApp** (`/config/whatsapp`): conecta su
-cuenta, solicita las plantillas, conecta la recepción de respuestas y envía una prueba.
+En modo `own`, el administrador lo configura en **Configuración › WhatsApp** (`/config/whatsapp`):
+conecta su cuenta, solicita las plantillas, conecta la recepción de respuestas y envía una prueba.
+En modo `platform`, la organización mantiene sus reglas; las credenciales y plantillas las gestiona
+el super-admin desde la configuración de WhatsApp de la plataforma.
 
 La recepción de respuestas se conecta con un botón: `POST /api/whatsapp/config/webhooks/connect`
 escribe en el número de Twilio la URL de mensajes entrantes y conserva el resto de su webhook.
 Copiar la URL a mano en la consola de Twilio sigue siendo válido, y es la única opción si los
 mensajes entrantes se gestionan desde un Messaging Service.
 
-Cada organización configura sus credenciales, Content SID y reglas desde
-`GET/PUT /api/whatsapp/config`. La configuración queda guardada en su documento de organización;
-el Auth Token nunca se devuelve en la respuesta (solo `authTokenConfigured`). El
-administrador solo puede modificar la configuración de su propia organización.
+Las credenciales, Content SID y reglas se administran desde `GET/PUT /api/whatsapp/config`.
+La cuenta propia y sus reglas quedan en el documento de la organización; la cuenta compartida y
+sus plantillas se guardan en `platform/whatsapp`. El Auth Token nunca se devuelve en la respuesta
+(solo `authTokenConfigured`). Un administrador solo puede modificar su organización; el
+super-admin es quien administra la cuenta de plataforma.
 
 El scheduler es independiente: sigue ejecutando las reglas de suscripciones y pagos
 aunque Twilio esté deshabilitado o incompleto. En ese caso no se envía WhatsApp y
@@ -78,16 +96,18 @@ automáticos del job diario siguen necesitando una regla en `scheduler.ts`, que 
 
 ### Solicitud de plantillas desde la app
 
-`POST /api/whatsapp/config/templates/:key/submit` crea la plantilla en la cuenta Twilio de la
-organización y la envía a aprobación como `UTILITY`. El SID solo pasa a `templates` cuando se
-aprueba, así que una plantilla activa sigue en uso durante la revisión y si la nueva se rechaza.
-El estado se consulta al abrir la configuración y al inicio del job diario de la organización.
+`POST /api/whatsapp/config/templates/:key/submit` crea la plantilla en la cuenta Twilio del
+contexto seleccionado (organización o plataforma) y la envía a aprobación como `UTILITY`. El SID
+solo pasa a `templates` cuando se aprueba, así que una plantilla activa sigue en uso durante la
+revisión y si la nueva se rechaza. El estado se consulta al abrir la configuración y al inicio
+del job diario de la organización.
 
 ### Plantillas disponibles
 
-Los Content SID de las plantillas se configuran por organización; deben corresponder
-a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización. El catálogo
-(`src/domain/whatsapp-templates.ts`) también define las variables que envía el scheduler.
+Los Content SID deben corresponder a plantillas aprobadas y disponibles en la cuenta Twilio
+efectiva: la de la organización en modo `own` o la de la plataforma en modo `platform`. El catálogo
+(`src/domain/whatsapp-templates.ts`) también define las variables que envía el scheduler; para
+plantillas migradas se conserva el orden que ya tenía cada SID.
 
 #### Recordatorio de pago
 

@@ -29,6 +29,17 @@ export function accountTemplateMode(organization: Organization): WhatsAppMode {
   return organization.id === PLATFORM_WHATSAPP_ID ? 'platform' : 'own';
 }
 
+/** El modo se guarda por plantilla porque una cuenta migrada puede conservar SIDs anteriores. */
+export function resolveWhatsAppTemplateMode(
+  organization: Organization,
+  key: keyof typeof WHATSAPP_TEMPLATE_CATALOG
+): WhatsAppMode {
+  return (
+    organization.whatsappNotifications?.templateModes?.[key] ??
+    (organization.id === PLATFORM_WHATSAPP_ID ? 'platform' : resolveWhatsAppMode(organization))
+  );
+}
+
 /**
  * Con cuántos días de antelación se puede recordar un vencimiento. El día del vencimiento
  * tiene su propio aviso, así que no hay recordatorios más cercanos.
@@ -75,6 +86,7 @@ export function resolveWhatsAppNotificationConfig(
   return {
     rules: withAllowedReminderDays(saved?.rules ?? DEFAULT_WHATSAPP_RULES),
     templates: saved?.templates ?? legacyTemplates,
+    ...(saved?.templateModes ? { templateModes: saved.templateModes } : {}),
     ...(saved?.templateRequests ? { templateRequests: saved.templateRequests } : {}),
     ...(saved?.lastTestAt ? { lastTestAt: saved.lastTestAt } : {}),
   };

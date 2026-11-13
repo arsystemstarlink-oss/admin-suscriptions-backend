@@ -307,9 +307,22 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
       const rules = 'rules' in req.body
         ? validateRulesPatch(req.body.rules, currentConfig.rules)
         : currentConfig.rules;
+      const templateModes = { ...currentConfig.templateModes };
+      if ('templates' in req.body) {
+        const submittedTemplates = req.body.templates as Record<string, unknown>;
+        for (const key of WHATSAPP_TEMPLATE_KEYS) {
+          if (!(key in submittedTemplates)) continue;
+          if (templates[key]) {
+            templateModes[key] = isPlatformAccount ? 'platform' : 'own';
+          } else {
+            delete templateModes[key];
+          }
+        }
+      }
       whatsappNotifications = {
         templates,
         rules,
+        templateModes,
         templateRequests: dropReplacedRequests(
           currentConfig.templateRequests,
           currentConfig.templates,
