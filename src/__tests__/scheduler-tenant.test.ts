@@ -475,7 +475,10 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     expect(result.notifications).toBe(1);
     expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
-      expect.objectContaining({ templateName: 'HX_org_A_reminder' }),
+      expect.objectContaining({
+        templateName: 'HX_org_A_reminder',
+        variables: { '1': 'Ana López', '2': '2026-07-15', '3': `KIT-${orgA}` },
+      }),
       organization
     );
     expect(mockedWhatsAppMessages.listOutboundSince).toHaveBeenCalledWith(
@@ -633,7 +636,11 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
         phone: '+584123456789',
         direction: 'OUTBOUND',
         messageSid: 'SM_sent',
-        body: `[Template: HX_org_A_reminder] Variables: ${JSON.stringify({ '1': 'Ana López', '2': '2026-07-15' })}`,
+        body: `[Template: HX_org_A_reminder] Variables: ${JSON.stringify({
+          '1': 'Ana López',
+          '2': '2026-07-15',
+          '3': `KIT-${orgA}`,
+        })}`,
         templateName: 'HX_org_A_reminder',
         status: 'SENT',
         createdAt: new Date(),

@@ -26,6 +26,7 @@ import {
 import {
   getWhatsAppConfigurationReadiness,
   PLATFORM_WHATSAPP_ID,
+  REMINDER_DAY_OPTIONS,
   resolveWhatsAppMode,
   resolveWhatsAppNotificationConfig,
 } from '../../infrastructure/whatsapp-configuration';
@@ -167,11 +168,11 @@ function validateRulesPatch(
     const days = input.reminderDaysBefore;
     if (
       !Array.isArray(days) ||
-      days.some((day) => !Number.isInteger(day) || day < 1 || day > 30)
+      days.some((day) => !REMINDER_DAY_OPTIONS.includes(day))
     ) {
       throw new BusinessError(
         'INVALID_DATA',
-        '"rules.reminderDaysBefore" debe ser una lista de enteros únicos entre 1 y 30.'
+        `"rules.reminderDaysBefore" solo admite ${REMINDER_DAY_OPTIONS.join(', ')} días de antelación.`
       );
     }
     if (new Set(days).size !== days.length) {

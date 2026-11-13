@@ -19,6 +19,7 @@ import {
 import {
   buildTemplateSamples,
   buildTemplateVariables,
+  getTemplateText,
   WHATSAPP_TEMPLATE_CATALOG,
   WHATSAPP_TEMPLATE_KEYS,
 } from '../domain/whatsapp-templates';
@@ -84,9 +85,28 @@ describe('catálogo de plantillas', () => {
   it('convierte los datos con nombre al orden de cada plantilla', () => {
     const context = { clientName: 'Ana', serviceCode: 'KIT1', dueDate: '2026-12-01' };
 
-    expect(buildTemplateVariables('reminder', context)).toEqual({ '1': 'Ana', '2': '2026-12-01' });
+    expect(buildTemplateVariables('reminder', context)).toEqual({
+      '1': 'Ana',
+      '2': '2026-12-01',
+      '3': 'KIT1',
+    });
+    expect(
+      buildTemplateVariables('reminder', { ...context, organizationName: 'Internet Los Andes' }, 'platform')
+    ).toEqual({
+      '1': 'Ana',
+      '2': 'Internet Los Andes',
+      '3': '2026-12-01',
+      '4': 'KIT1',
+    });
     expect(buildTemplateVariables('dueDateWarning', context)).toEqual({ '1': 'Ana', '2': 'KIT1', '3': '2026-12-01' });
     expect(buildTemplateVariables('suspensionNotice', context)).toEqual({ '1': 'Ana', '2': 'KIT1' });
+  });
+
+  it.each(WHATSAPP_TEMPLATE_KEYS)('%s de la plataforma termina con la firma automática', (key) => {
+    const body = getTemplateText(key, 'platform').defaultBody;
+
+    expect(body).toContain('\n\nA|R SYSTEM\nNotificación automática. Por favor, no respondas a este mensaje.');
+    expect(() => validateTemplateBody(key, body, 'platform')).not.toThrow();
   });
 });
 
@@ -100,14 +120,14 @@ describe('validateTemplateBody', () => {
   });
 
   it.each([
-    ['falta una variable', 'Hola {{1}}, tu pago vence pronto.', /\{\{2\}\}/],
-    ['variable que la app no envía', 'Hola {{1}}, vence el {{2}} por {{3}}.', /Quita \{\{3\}\}/],
-    ['variable con nombre', 'Hola {{nombre}} y {{1}}, vence el {{2}}.', /Quita \{\{nombre\}\}/],
-    ['empieza con variable', '{{1}}, tu pago vence el {{2}}.', /empezar ni terminar/],
-    ['termina con variable', 'Hola {{1}}, tu pago vence el {{2}}', /empezar ni terminar/],
+    ['falta una variable', 'Hola {{1}}, tu servicio fue suspendido.', /\{\{2\}\}/],
+    ['variable que la app no envía', 'Hola {{1}}, kit {{2}} suspendido {{3}}.', /Quita \{\{3\}\}/],
+    ['variable con nombre', 'Hola {{nombre}} y {{1}}, kit {{2}}.', /Quita \{\{nombre\}\}/],
+    ['empieza con variable', '{{1}} para el kit {{2}} fue suspendido.', /empezar ni terminar/],
+    ['termina con variable', 'Hola {{1}}, el kit es {{2}}', /empezar ni terminar/],
     ['vacío', '   ', /Escribe/],
   ])('rechaza: %s', (_name, body, message) => {
-    expect(() => validateTemplateBody('reminder', body)).toThrow(message);
+    expect(() => validateTemplateBody('suspensionNotice', body)).toThrow(message);
   });
 });
 
@@ -123,7 +143,7 @@ describe('submitTemplateForApproval', () => {
       expect.objectContaining({
         language: 'es',
         body: WHATSAPP_TEMPLATE_CATALOG.reminder.defaultBody,
-        samples: { '1': 'María Pérez', '2': '2026-12-15' },
+        samples: { '1': 'María Pérez', '2': '2026-12-15', '3': 'KIT28J720NS8' },
       })
     );
     expect(submit.mock.calls[0][2]).toMatch(/^payment_reminder_[a-z0-9]+$/);

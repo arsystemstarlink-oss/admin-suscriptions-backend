@@ -1229,7 +1229,7 @@ El scheduler es siempre por organización: no existe una configuración global n
     authTokenConfigured: boolean; // El secreto nunca se devuelve.
   };
   rules: {
-    reminderDaysBefore: number[]; // Enteros únicos entre 1 y 30; [] desactiva recordatorios previos.
+    reminderDaysBefore: number[]; // Solo 3, 5 o 7, sin repetir; [] desactiva recordatorios previos. Otro valor → 400 INVALID_DATA; los guardados antes se ignoran.
     dueDateWarningEnabled: boolean;
     suspensionNoticeEnabled: boolean;
   };

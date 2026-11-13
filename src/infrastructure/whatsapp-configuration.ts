@@ -29,6 +29,18 @@ export function accountTemplateMode(organization: Organization): WhatsAppMode {
   return organization.id === PLATFORM_WHATSAPP_ID ? 'platform' : 'own';
 }
 
+/**
+ * Con cuántos días de antelación se puede recordar un vencimiento. El día del vencimiento
+ * tiene su propio aviso, así que no hay recordatorios más cercanos.
+ */
+export const REMINDER_DAY_OPTIONS: readonly number[] = [3, 5, 7];
+
+/** Descarta los días guardados antes de que las opciones se limitaran. */
+function withAllowedReminderDays(rules: OrganizationWhatsAppConfig['rules']): OrganizationWhatsAppConfig['rules'] {
+  const days = (rules.reminderDaysBefore ?? []).filter((day) => REMINDER_DAY_OPTIONS.includes(day));
+  return days.length === rules.reminderDaysBefore?.length ? rules : { ...rules, reminderDaysBefore: days };
+}
+
 export const DEFAULT_WHATSAPP_RULES: OrganizationWhatsAppConfig['rules'] = {
   reminderDaysBefore: [3],
   dueDateWarningEnabled: true,
@@ -61,7 +73,7 @@ export function resolveWhatsAppNotificationConfig(
   ) as OrganizationWhatsAppTemplates;
 
   return {
-    rules: saved?.rules ?? DEFAULT_WHATSAPP_RULES,
+    rules: withAllowedReminderDays(saved?.rules ?? DEFAULT_WHATSAPP_RULES),
     templates: saved?.templates ?? legacyTemplates,
     ...(saved?.templateRequests ? { templateRequests: saved.templateRequests } : {}),
     ...(saved?.lastTestAt ? { lastTestAt: saved.lastTestAt } : {}),

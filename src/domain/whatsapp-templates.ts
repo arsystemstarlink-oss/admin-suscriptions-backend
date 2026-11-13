@@ -7,7 +7,7 @@ import type { OrganizationWhatsAppRules, WhatsAppMode } from './entities';
 const TEMPLATE_VARIABLES = {
   clientName: { description: 'nombre del cliente', sample: 'María Pérez' },
   organizationName: { description: 'nombre del negocio', sample: 'Internet Los Andes' },
-  serviceCode: { description: 'código del servicio', sample: 'KIT28J720NS8' },
+  serviceCode: { description: 'número de kit (código del servicio)', sample: 'KIT28J720NS8' },
   dueDate: { description: 'fecha de vencimiento', sample: '2026-12-15' },
 } as const;
 
@@ -36,6 +36,9 @@ interface WhatsAppTemplateDefinition extends WhatsAppTemplateText {
   requiredWhen?: (rules: OrganizationWhatsAppRules) => boolean;
 }
 
+const PLATFORM_TEMPLATE_FOOTER =
+  '\n\nA|R SYSTEM\nNotificación automática. Por favor, no respondas a este mensaje.';
+
 /**
  * Única definición de las plantillas: añadir una entrada basta para que se pueda solicitar
  * desde la configuración, activar al aprobarse y enviar por su clave.
@@ -45,12 +48,12 @@ const TEMPLATES = {
     label: 'Recordatorio de pago',
     templateName: 'payment_reminder',
     defaultBody:
-      'Hola {{1}}, te recordamos que tu pago vence el {{2}}. Si ya lo realizaste, puedes ignorar este mensaje.',
-    variables: ['clientName', 'dueDate'],
+      'Hola {{1}}, te recordamos que tu pago vence el {{2}}, asociado al kit {{3}}. Si ya lo realizaste, puedes ignorar este mensaje.',
+    variables: ['clientName', 'dueDate', 'serviceCode'],
     platform: {
       defaultBody:
-        'Hola {{1}}, {{2}} te recuerda que tu pago vence el {{3}}. Si ya lo realizaste, puedes ignorar este mensaje.',
-      variables: ['clientName', 'organizationName', 'dueDate'],
+        `Hola {{1}}, {{2}} te recuerda que tu pago vence el {{3}}, asociado al kit {{4}}. Si ya lo realizaste, puedes ignorar este mensaje.${PLATFORM_TEMPLATE_FOOTER}`,
+      variables: ['clientName', 'organizationName', 'dueDate', 'serviceCode'],
     },
     requiredWhen: (rules) => rules.reminderDaysBefore.length > 0,
   },
@@ -62,7 +65,7 @@ const TEMPLATES = {
     variables: ['clientName', 'serviceCode', 'dueDate'],
     platform: {
       defaultBody:
-        'Hola {{1}}, {{2}} te informa que el servicio {{3}} tiene un período vencido desde el {{4}}. Por favor, responde a este mensaje para regularizar el pago.',
+        `Hola {{1}}, {{2}} te informa que el servicio {{3}} tiene un período vencido desde el {{4}}. Por favor, comunícate con nosotros para regularizar el pago.${PLATFORM_TEMPLATE_FOOTER}`,
       variables: ['clientName', 'organizationName', 'serviceCode', 'dueDate'],
     },
     requiredWhen: (rules) => rules.dueDateWarningEnabled,
@@ -75,7 +78,7 @@ const TEMPLATES = {
     variables: ['clientName', 'serviceCode'],
     platform: {
       defaultBody:
-        'Hola {{1}}, {{2}} te informa que el servicio {{3}} fue suspendido por falta de pago. Responde a este mensaje para reactivarlo.',
+        `Hola {{1}}, {{2}} te informa que el servicio {{3}} fue suspendido por falta de pago. Comunícate con nosotros para reactivarlo.${PLATFORM_TEMPLATE_FOOTER}`,
       variables: ['clientName', 'organizationName', 'serviceCode'],
     },
     requiredWhen: (rules) => rules.suspensionNoticeEnabled,

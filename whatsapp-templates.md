@@ -13,6 +13,9 @@ El super-admin configura la cuenta de la plataforma en **Configuración › What
 (los mismos endpoints con `?organizationId=__platform__`); se guarda en `platform/whatsapp`, fuera
 de las organizaciones. Sus plantillas (`platform` en `src/domain/whatsapp-templates.ts`) llevan el
 nombre del negocio como variable adicional y se aprueban una sola vez para todas las organizaciones.
+El texto sugerido termina con la firma `A|R SYSTEM` y aclara que es una notificación automática
+que no requiere respuesta. Para actualizar una plantilla ya aprobada, solicita una nueva versión;
+la vigente sigue activa hasta que WhatsApp apruebe la nueva.
 
 `toSendingOrganization` (`src/infrastructure/whatsapp-platform.ts`) resuelve con qué cuenta envía
 cada organización; el job diario, `POST /whatsapp/send`, el mensaje de prueba y los webhooks pasan
@@ -88,7 +91,9 @@ a plantillas aprobadas y disponibles en la cuenta Twilio de esa organización. E
 
 #### Recordatorio de pago
 
-Variables: `{1}` nombre completo del cliente, `{2}` fecha de vencimiento (`YYYY-MM-DD`).
+Variables: `{1}` nombre completo del cliente, `{2}` fecha de vencimiento (`YYYY-MM-DD`), `{3}` número de kit.
+En la cuenta de la plataforma, `{1}` es el nombre del cliente, `{2}` el del negocio, `{3}` la fecha y `{4}` el número de kit.
+Las plantillas de recordatorio ya aprobadas deben solicitarse de nuevo para incluir esta variable; la vigente sigue activa hasta que se apruebe la nueva.
 
 #### Aviso de vencimiento
 
@@ -102,7 +107,7 @@ Variables: `{1}` nombre completo, `{2}` código del servicio (`kitNumber`), `{3}
 
 | Condicion | Tipo | Template | Variables |
 |---|---|---|---|
-| `ACTIVE` + `PENDING` + uno de los días configurados | `reminder` | Recordatorio de pago | `{1}` nombre, `{2}` fecha |
+| `ACTIVE` + `PENDING` + uno de los días configurados | `reminder` | Recordatorio de pago | `{1}` nombre, `{2}` fecha, `{3}` número de kit |
 | `ACTIVE` + `PENDING` + vencimiento hoy | `suspension-warning` | Aviso de vencimiento | `{1}` nombre, `{2}` código del servicio (`kitNumber`), `{3}` fecha |
 | Cambio a `SUSPENDED` | `suspended-notice` | Aviso de suspensión | `{1}` nombre, `{2}` código del servicio (`kitNumber`) |
 | `SUSPENDED` (sin cambio) | — | Silencio | — |

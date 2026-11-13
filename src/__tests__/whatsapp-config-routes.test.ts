@@ -208,7 +208,7 @@ describe('rutas de configuración de WhatsApp', () => {
         .mockResolvedValue({ status: 'received' });
 
       const submitted = await send('POST', '/config/templates/reminder/submit', {
-        body: 'Hola {{1}}, tu pago vence el {{2}}. Gracias.',
+        body: 'Hola {{1}}, tu pago vence el {{2}}, asociado al kit {{3}}. Gracias.',
       });
       expect(submitted.status).toBe(201);
       const reminder = (await submitted.json()).templates.find((t: { key: string }) => t.key === 'reminder');
@@ -250,6 +250,7 @@ describe('rutas de configuración de WhatsApp', () => {
       variables: [
         { placeholder: '{{1}}', description: 'nombre del cliente', sample: 'María Pérez' },
         { placeholder: '{{2}}', description: 'fecha de vencimiento', sample: '2026-12-15' },
+        { placeholder: '{{3}}', description: 'número de kit (código del servicio)', sample: 'KIT28J720NS8' },
       ],
     });
     expect(templates.find((template: any) => template.key === 'suspensionNotice').required).toBe(false);
@@ -678,6 +679,28 @@ describe('rutas de configuración de WhatsApp', () => {
       expect(fake.all('whatsappMessages')).toEqual([expect.objectContaining({ templateName: 'HX_due' })]);
     });
 
+    it('incluye el número de kit al enviar un recordatorio', async () => {
+      fake.clear();
+      seedOrganization({ whatsappNotifications: { rules, templates: { reminder: 'HX_reminder' } } });
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_reminder');
+
+      const response = await send('POST', '/send', {
+        to: '+584120000000',
+        templateKey: 'reminder',
+        context,
+      });
+
+      expect(response.status).toBe(201);
+      expect(sendTemplate).toHaveBeenCalledWith(
+        {
+          to: '+584120000000',
+          templateName: 'HX_reminder',
+          variables: { '1': 'Ana López', '2': '2026-12-01', '3': 'KIT1' },
+        },
+        expect.objectContaining({ id: 'org_1' })
+      );
+    });
+
     it('no envía si faltan datos que la plantilla necesita', async () => {
       withTemplate();
       const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate');
@@ -689,7 +712,9 @@ describe('rutas de configuración de WhatsApp', () => {
       });
 
       expect(response.status).toBe(400);
-      expect((await response.json()).error.message).toContain('código del servicio, fecha de vencimiento');
+      expect((await response.json()).error.message).toContain(
+        'número de kit (código del servicio), fecha de vencimiento'
+      );
       expect(sendTemplate).not.toHaveBeenCalled();
     });
 
