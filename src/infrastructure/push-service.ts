@@ -83,6 +83,12 @@ export class PushService {
     return this.sendToAdmins(adminIds, payload);
   }
 
+  async sendToSuperAdmins(payload: PushPayload): Promise<number> {
+    const users = await userRepository.list();
+    const superAdminIds = users.filter((u) => u.role === 'super-admin').map((u) => u.id);
+    return this.sendToAdmins(superAdminIds, payload);
+  }
+
   async sendBroadcastToOrganization(params: { organizationId: string; title: string; body: string; data?: PushPayload['data'] }): Promise<number> {
     const { organizationId, title, body, data } = params;
     const adminIds = await userRepository

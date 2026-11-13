@@ -1,13 +1,16 @@
-import { BusinessError, Organization } from '../domain/entities';
+import { BusinessError, Client, Organization } from '../domain/entities';
 import { resolveWhatsAppMonthlyLimit } from '../domain/business-plan';
 import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS, getTemplateText } from '../domain/whatsapp-templates';
 import {
+  clientRepository,
   organizationRepository,
   platformWhatsAppRepository,
   whatsappConversationRepository,
+  whatsappMessageRepository,
 } from './repositories';
 import {
   PLATFORM_WHATSAPP_ID,
+  UNASSIGNED_WHATSAPP_ID,
   resolveWhatsAppMode,
   resolveWhatsAppNotificationConfig,
 } from './whatsapp-configuration';
@@ -155,10 +158,47 @@ export function toPlatformSummary(organization: Organization, platform: Organiza
   };
 }
 
+/** Las organizaciones activas que envían con la plataforma, entre las indicadas. */
+async function loadPlatformSenders(organizationIds: Array<string | undefined>): Promise<Map<string, Organization>> {
+  const ids = [...new Set(organizationIds.filter((id): id is string => Boolean(id) && id !== UNASSIGNED_WHATSAPP_ID))];
+  const organizations = await Promise.all(ids.map((id) => organizationRepository.getById(id)));
+  const senders = new Map<string, Organization>();
+  for (const organization of organizations) {
+    if (organization && organization.active !== false && isPlatformSender(organization)) {
+      senders.set(organization.id, organization);
+    }
+  }
+  return senders;
+}
+
 /**
- * Un mensaje que llega al número de la plataforma no dice a qué negocio va dirigido. Se asigna
- * a la organización que habló por última vez con ese teléfono a través de la plataforma.
+ * A qué organización pertenece un teléfono que escribe al número de la plataforma, que no dice
+ * a qué negocio va dirigido:
+ * 1. Si es cliente de una sola organización, a esa.
+ * 2. Si es cliente de varias, a la que conversó con él más recientemente.
+ * 3. Si no es cliente de ninguna, a la que le escribió más recientemente.
+ * Sin respuesta, el chat queda en la bandeja del super-admin.
  */
+export async function findPlatformInboxOwner(phone: string): Promise<Organization | undefined> {
+  const [clients, conversations] = await Promise.all([
+    clientRepository.listByField('phone', phone),
+    whatsappConversationRepository.listByPhone(phone),
+  ]);
+
+  const owners = await loadPlatformSenders(clients.map((client) => client.organizationId));
+  if (owners.size === 1) return [...owners.values()][0];
+
+  const candidates =
+    owners.size > 1 ? owners : await loadPlatformSenders(conversations.map(({ organizationId }) => organizationId));
+  // `listByPhone` las devuelve de la más reciente a la más antigua.
+  for (const conversation of conversations) {
+    const organization = candidates.get(conversation.organizationId);
+    if (organization) return organization;
+  }
+  return undefined;
+}
+
+/** Un mensaje dirigido al número de la plataforma: con qué cuenta se firma y de quién es. */
 export async function resolvePlatformInbound(
   to: string,
   from: string
@@ -167,12 +207,27 @@ export async function resolvePlatformInbound(
   const platformNumber = platform.twilio?.phoneNumber ? normalizePhoneNumber(platform.twilio.phoneNumber) : '';
   if (!platformNumber || platformNumber !== normalizePhoneNumber(to)) return undefined;
 
-  const conversations = await whatsappConversationRepository.listByPhone(normalizePhoneNumber(from));
-  for (const conversation of conversations) {
-    const organization = await organizationRepository.getById(conversation.organizationId);
-    if (organization && isPlatformSender(organization)) {
-      return { platform, organization: await toSendingOrganization(organization) };
-    }
-  }
-  return { platform };
+  return { platform, organization: await findPlatformInboxOwner(normalizePhoneNumber(from)) };
+}
+
+/** Pasa a una organización el chat que estaba en la bandeja del super-admin, con su historial. */
+export async function moveUnassignedChat(phone: string, organizationId: string, clientId?: string): Promise<boolean> {
+  await whatsappMessageRepository.moveByPhone(phone, UNASSIGNED_WHATSAPP_ID, organizationId, clientId);
+  return whatsappConversationRepository.moveToOrganization(phone, UNASSIGNED_WHATSAPP_ID, organizationId, clientId);
+}
+
+/**
+ * Al registrar el teléfono de un cliente, su organización recibe el chat que ese número tuviera
+ * sin asignar. No se mueve si otra organización de la plataforma tiene el mismo teléfono: no se
+ * sabe a cuál le escribió, y lo decide el super-admin.
+ */
+export async function claimUnassignedChat(client: Pick<Client, 'id' | 'organizationId' | 'phone'>): Promise<boolean> {
+  if (!client.organizationId || !client.phone) return false;
+  if (!(await whatsappConversationRepository.exists(UNASSIGNED_WHATSAPP_ID, client.phone))) return false;
+
+  const sameNumber = await clientRepository.listByField('phone', client.phone);
+  const owners = await loadPlatformSenders([client.organizationId, ...sameNumber.map((other) => other.organizationId)]);
+  if (owners.size !== 1 || !owners.has(client.organizationId)) return false;
+
+  return moveUnassignedChat(client.phone, client.organizationId, client.id);
 }

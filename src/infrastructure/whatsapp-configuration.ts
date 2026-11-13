@@ -9,6 +9,12 @@ import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS } from '../domain/wha
 /** Identificador de la cuenta de WhatsApp de la plataforma: no es una organización real. */
 export const PLATFORM_WHATSAPP_ID = '__platform__';
 
+/**
+ * Bandeja del super-admin: chats que llegaron al número de la plataforma y no se pudieron
+ * atribuir a ninguna organización. Ocupa el lugar del id de organización, sin ser una.
+ */
+export const UNASSIGNED_WHATSAPP_ID = '__unassigned__';
+
 /** Con qué cuenta envía una organización. Las anteriores a este modo conservan la suya si la tenían. */
 export function resolveWhatsAppMode(organization: Organization): WhatsAppMode {
   if (organization.id === PLATFORM_WHATSAPP_ID) return 'platform';

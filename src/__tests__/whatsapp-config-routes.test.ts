@@ -6,6 +6,7 @@ import whatsappConfigRouter from '../api/routes/whatsapp-config';
 import whatsappRouter from '../api/routes/whatsapp';
 import { errorHandler } from '../api/middleware/error-handler';
 import { whatsappService } from '../infrastructure/whatsapp-service';
+import { claimUnassignedChat } from '../infrastructure/whatsapp-platform';
 import { createInitialWhatsAppNotifications, getWhatsAppConfigurationReadiness } from '../infrastructure/whatsapp-configuration';
 import { Organization } from '../domain/entities';
 
@@ -394,6 +395,152 @@ describe('rutas de configuración de WhatsApp', () => {
       expect(fake.all('whatsappMessages')).toEqual([
         expect.objectContaining({ direction: 'INBOUND', organizationId: 'org_1', body: 'Ya pagué' }),
       ]);
+    });
+
+    describe('a quién le llega un mensaje al número central', () => {
+      const PHONE = '+584120000000';
+      let sid = 0;
+
+      const seedClient = (organizationId: string) =>
+        fake.seed('clients', {
+          id: `client_${organizationId}`,
+          organizationId,
+          firstName: 'Ana',
+          lastName: 'Pérez',
+          phone: PHONE,
+          createdAt: new Date(),
+        });
+      const seedConversation = (organizationId: string, lastMessageAt: Date) =>
+        fake.seed('whatsappConversations', {
+          id: `${organizationId}__${PHONE}`,
+          organizationId,
+          phone: PHONE,
+          messageCount: 1,
+          lastMessage: { direction: 'OUTBOUND', createdAt: lastMessageAt },
+          createdAt: lastMessageAt,
+          updatedAt: lastMessageAt,
+        });
+      const seedSecondOrganization = (overrides: Record<string, unknown> = {}) =>
+        seedOrganization({ id: 'org_2', slug: 'org-2', twilio: undefined, ...overrides });
+      const receive = async (): Promise<string | undefined> => {
+        jest.spyOn(whatsappService, 'validateWebhook').mockReturnValue(true);
+        const messageSid = `SM_routing_${++sid}`;
+        const response = await send('POST', '/webhook', {
+          From: `whatsapp:${PHONE}`,
+          To: 'whatsapp:+584000000000',
+          Body: 'Hola',
+          MessageSid: messageSid,
+        });
+        expect(response.status).toBe(200);
+        const stored = fake.read('whatsappMessages', `inbound_${messageSid}`) as { organizationId?: string };
+        return stored.organizationId;
+      };
+
+      it('un número que nadie conoce queda en la bandeja sin asignar del super-admin', async () => {
+        seedPlatformMode();
+
+        expect(await receive()).toBe('__unassigned__');
+        expect(fake.read('whatsappConversations', `__unassigned____${PHONE}`)).toMatchObject({
+          organizationId: '__unassigned__',
+          hasUnread: true,
+        });
+      });
+
+      it('el cliente registrado en una organización le llega a ella aunque nunca le hayan escrito', async () => {
+        seedPlatformMode();
+        seedClient('org_1');
+
+        expect(await receive()).toBe('org_1');
+        expect(fake.read('whatsappMessages', `inbound_SM_routing_${sid}`)).toMatchObject({ clientId: 'client_org_1' });
+      });
+
+      it('estar registrado pesa más que la última conversación con otra organización', async () => {
+        seedPlatformMode();
+        seedSecondOrganization();
+        seedClient('org_1');
+        seedConversation('org_2', new Date());
+
+        expect(await receive()).toBe('org_1');
+      });
+
+      it('si es cliente de dos organizaciones, va a la que le escribió más recientemente', async () => {
+        seedPlatformMode();
+        seedSecondOrganization();
+        seedClient('org_1');
+        seedClient('org_2');
+        seedConversation('org_1', new Date('2026-11-01T00:00:00.000Z'));
+        seedConversation('org_2', new Date('2026-11-10T00:00:00.000Z'));
+
+        expect(await receive()).toBe('org_2');
+      });
+
+      it('si es cliente de dos organizaciones y ninguna le ha escrito, decide el super-admin', async () => {
+        seedPlatformMode();
+        seedSecondOrganization();
+        seedClient('org_1');
+        seedClient('org_2');
+
+        expect(await receive()).toBe('__unassigned__');
+      });
+
+      it('no cuenta la organización que usa su propio número ni la desactivada', async () => {
+        seedPlatformMode();
+        seedSecondOrganization({ whatsappMode: 'own' });
+        seedOrganization({ id: 'org_3', slug: 'org-3', twilio: undefined, active: false });
+        seedClient('org_2');
+        seedClient('org_3');
+        seedConversation('org_3', new Date());
+
+        expect(await receive()).toBe('__unassigned__');
+      });
+
+      it('al registrar el cliente, su organización recibe el chat sin asignar con su historial', async () => {
+        seedPlatformMode();
+        await receive();
+        await receive();
+        seedClient('org_1');
+
+        const claimed = await claimUnassignedChat({ id: 'client_org_1', organizationId: 'org_1', phone: PHONE });
+
+        expect(claimed).toBe(true);
+        expect(fake.all('whatsappMessages')).toEqual([
+          expect.objectContaining({ organizationId: 'org_1', clientId: 'client_org_1' }),
+          expect.objectContaining({ organizationId: 'org_1', clientId: 'client_org_1' }),
+        ]);
+        expect(fake.read('whatsappConversations', `__unassigned____${PHONE}`)).toBeUndefined();
+        expect(fake.read('whatsappConversations', `org_1__${PHONE}`)).toMatchObject({
+          organizationId: 'org_1',
+          clientId: 'client_org_1',
+          messageCount: 2,
+          hasUnread: true,
+          lastMessage: { organizationId: 'org_1' },
+        });
+        // Los siguientes mensajes ya le llegan directo.
+        expect(await receive()).toBe('org_1');
+      });
+
+      it('no mueve el chat si otra organización de la plataforma tiene el mismo teléfono', async () => {
+        seedPlatformMode();
+        seedSecondOrganization();
+        await receive();
+        seedClient('org_1');
+        seedClient('org_2');
+
+        expect(await claimUnassignedChat({ id: 'client_org_1', organizationId: 'org_1', phone: PHONE })).toBe(false);
+        expect(fake.read('whatsappConversations', `__unassigned____${PHONE}`)).toBeDefined();
+      });
+
+      it('un admin de organización no puede asignar chats', async () => {
+        seedPlatformMode();
+        await receive();
+
+        const response = await send('POST', `/conversations/${encodeURIComponent(PHONE)}/assign`, {
+          organizationId: 'org_1',
+        });
+
+        expect(response.status).toBe(403);
+        expect(fake.read('whatsappConversations', `__unassigned____${PHONE}`)).toBeDefined();
+      });
     });
 
     it('una organización con su cuenta de Twilio sigue en modo propio sin tocar nada', async () => {

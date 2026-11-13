@@ -18,9 +18,12 @@ import {
   assertPlatformQuotaAvailable,
   loadSendingOrganization,
   recordPlatformSend,
+  moveUnassignedChat,
   resolvePlatformInbound,
   toSendingOrganization,
 } from '../../infrastructure/whatsapp-platform';
+import { UNASSIGNED_WHATSAPP_ID } from '../../infrastructure/whatsapp-configuration';
+import { isSuperAdmin } from '../../domain/auth-context';
 import { resolveTemplateForSend } from '../../infrastructure/whatsapp-setup';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
@@ -172,6 +175,8 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     let organization = await resolveOrganizationFromWebhook(parsed.to);
     // Con qué cuenta se firma el webhook: la de la organización o la de la plataforma.
     let signingOrganization = organization;
+    // Llegó al número de la plataforma y nadie lo reclama: va a la bandeja del super-admin.
+    let unassigned = false;
     if (!organization) {
       const platformInbound = await resolvePlatformInbound(parsed.to, parsed.from).catch((error) => {
         console.error('[WhatsApp] Error resolviendo un mensaje al número de la plataforma:', error);
@@ -180,6 +185,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       if (platformInbound) {
         signingOrganization = platformInbound.platform;
         organization = platformInbound.organization;
+        unassigned = !organization;
       }
     }
 
@@ -205,7 +211,9 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       }
     }
 
-    let organizationId: string | undefined = organization?.id;
+    const organizationId = organization?.id;
+    // Dónde se guarda el chat: en la organización o en la bandeja sin asignar.
+    const inboxId = organizationId ?? (unassigned ? UNASSIGNED_WHATSAPP_ID : undefined);
     let client;
 
     if (organizationId) {
@@ -217,13 +225,11 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
         1
       );
       client = matchedClients[0];
-    } else {
-      client = undefined;
     }
 
     const whatsappMsg: WhatsAppMessage = {
       id: `inbound_${parsed.messageSid}`,
-      organizationId,
+      organizationId: inboxId,
       clientId: client?.id,
       phone: parsed.from,
       direction: 'INBOUND',
@@ -239,9 +245,9 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       return;
     }
 
-    if (organizationId) {
+    if (inboxId) {
       try {
-        await whatsappConversationRepository.upsertFromMessage(whatsappMsg, organizationId);
+        await whatsappConversationRepository.upsertFromMessage(whatsappMsg, inboxId);
       } catch (conversationError) {
         console.error('[WhatsApp] Error actualizando conversación entrante:', conversationError);
       }
@@ -250,7 +256,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     console.log(
       '[WhatsApp] Mensaje inbound recibido de',
       parsed.from,
-      organizationId ? `(org ${organizationId})` : '(sin organización)'
+      organizationId ? `(org ${organizationId})` : '(sin asignar)'
     );
 
     if (organizationId) {
@@ -263,10 +269,11 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
         console.error('[Push] Error notificando mensaje entrante:', error);
       });
     } else {
-      pushService.sendBroadcast({
-        title: 'Nuevo mensaje de WhatsApp',
+      // Sin organización solo lo ve el super-admin: avisar a los admins lo filtraría entre negocios.
+      pushService.sendToSuperAdmins({
+        title: 'Mensaje de WhatsApp sin asignar',
         body: parsed.profileName || parsed.from,
-        data: { url: '/chats', topic: 'chats' },
+        data: { url: '/chats?inbox=unassigned', topic: 'chats' },
       }).catch((error) => {
         console.error('[Push] Error notificando mensaje entrante:', error);
       });
@@ -310,6 +317,60 @@ router.post('/conversations/:phone/read', authenticateAdmin, requireWritablePlan
     const phone = normalizePhoneNumber(req.params.phone);
     const marked = await whatsappConversationRepository.markRead(organizationId, phone);
     res.json({ success: true, read: marked });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** El super-admin entrega a una organización un chat de la bandeja sin asignar, con su historial. */
+router.post('/conversations/:phone/assign', authenticateAdmin, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!isSuperAdmin(getAuth(req))) {
+      throw new BusinessError('FORBIDDEN', 'Solo el super-admin puede asignar chats.');
+    }
+    const organizationId = req.body?.organizationId;
+    if (typeof organizationId !== 'string' || !organizationId) {
+      throw new BusinessError('INVALID_DATA', 'Indica la organización que recibirá el chat.');
+    }
+
+    const organization = await organizationRepository.getById(organizationId);
+    if (!organization) {
+      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
+    }
+    if (!organization.active) {
+      throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
+    }
+    if (!isPlatformSender(organization)) {
+      throw new BusinessError(
+        'INVALID_DATA',
+        'Esa organización usa su propio número: no puede atender chats del WhatsApp de la plataforma.'
+      );
+    }
+
+    const phone = normalizePhoneNumber(req.params.phone);
+    if (!(await whatsappConversationRepository.exists(UNASSIGNED_WHATSAPP_ID, phone))) {
+      throw new BusinessError('NOT_FOUND', 'Ese chat ya no está en la bandeja sin asignar.');
+    }
+
+    const [client] = await clientRepository.listByFields(
+      [
+        ['organizationId', organizationId],
+        ['phone', phone],
+      ],
+      1
+    );
+    await moveUnassignedChat(phone, organizationId, client?.id);
+
+    pushService.sendBroadcastToOrganization({
+      organizationId,
+      title: 'Nuevo chat de WhatsApp',
+      body: client ? `${client.firstName} ${client.lastName}` : phone,
+      data: { url: '/chats', topic: 'chats' },
+    }).catch((error) => {
+      console.error('[Push] Error notificando chat asignado:', error);
+    });
+
+    res.json({ success: true, organizationId, clientId: client?.id });
   } catch (err) {
     next(err);
   }

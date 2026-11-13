@@ -7,6 +7,7 @@ import {
 } from '../../infrastructure/repositories';
 import { CreateClientDto, UpdateClientDto } from '../dto';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
+import { claimUnassignedChat } from '../../infrastructure/whatsapp-platform';
 import { BusinessError, Client } from '../../domain/entities';
 import { createId, normalizeDni, isValidDni, buildClientName, buildClientSortName } from '../../domain/business-rules';
 import { normalizePhoneToE164 } from '../../domain/phone';
@@ -14,6 +15,15 @@ import { getAuth, requireOrganizationId, resolveCreateOrganizationId } from '../
 import { createClientSchema, parseBody, parsePagination, updateClientSchema } from '../validation';
 
 const router = Router();
+
+/** El cliente ya quedó guardado: no poder traer su chat sin asignar no debe hacer fallar el alta. */
+async function claimUnassignedChatSafely(client: Pick<Client, 'id' | 'organizationId' | 'phone'>): Promise<void> {
+  try {
+    await claimUnassignedChat(client);
+  } catch (error) {
+    console.error('[Clients] No se pudo traer el chat sin asignar del cliente:', { clientId: client.id }, error);
+  }
+}
 
 async function enrichClients(
   clients: Client[],
@@ -114,6 +124,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     };
 
     await clientRepository.createWithinPlanLimit(client);
+    await claimUnassignedChatSafely(client);
     scheduleStatsRecompute(organizationId);
     res.status(201).json(client);
   } catch (err) {
@@ -300,6 +311,9 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       updated.firstName !== existing.firstName || updated.lastName !== existing.lastName;
 
     await clientRepository.updateWithUniqueDni(updated);
+    if (updated.phone !== existing.phone) {
+      await claimUnassignedChatSafely(updated);
+    }
     if (nameChanged) {
       try {
         await subscriptionRepository.updateClientNameByClientId(

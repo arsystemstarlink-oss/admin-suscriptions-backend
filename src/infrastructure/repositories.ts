@@ -1402,6 +1402,31 @@ export class WhatsAppMessageFirestoreRepository extends FirestoreRepository<What
     });
   }
 
+  /** Pasa todos los mensajes de un teléfono de una bandeja a otra. */
+  async moveByPhone(
+    phone: string,
+    fromOrganizationId: string,
+    toOrganizationId: string,
+    clientId?: string
+  ): Promise<number> {
+    const snapshot = await this.buildQuery([
+      ['organizationId', '==', fromOrganizationId],
+      ['phone', '==', phone],
+    ]).get();
+    recordQuery();
+    recordDocReads(snapshot.size);
+
+    const changes = { organizationId: toOrganizationId, ...(clientId ? { clientId } : {}) };
+    const MAX_BATCH_WRITES = 400;
+    for (let i = 0; i < snapshot.docs.length; i += MAX_BATCH_WRITES) {
+      const chunk = snapshot.docs.slice(i, i + MAX_BATCH_WRITES);
+      const batch = this.db.batch();
+      chunk.forEach((doc) => batch.update(doc.ref, changes));
+      recordWrite(chunk.length);
+      await batch.commit();
+    }
+    return snapshot.size;
+  }
 }
 
 export class WhatsAppConversationFirestoreRepository extends FirestoreRepository<WhatsAppConversationRecord> {
@@ -1673,6 +1698,74 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     await this.db.collection(this.collectionName).doc(id).delete();
     this.removeFromCaches(organizationId, phone);
     invalidateBadges(organizationId);
+  }
+
+  async exists(organizationId: string, phone: string): Promise<boolean> {
+    const id = WhatsAppConversationFirestoreRepository.docId(organizationId, phone);
+    const doc = await this.db.collection(this.collectionName).doc(id).get();
+    recordDocReads();
+    return doc.exists;
+  }
+
+  /**
+   * Pasa la conversación de un teléfono de una bandeja a otra. Si el destino ya tenía una con
+   * ese teléfono, las une: conserva el mensaje más reciente y suma los contadores.
+   */
+  async moveToOrganization(
+    phone: string,
+    fromOrganizationId: string,
+    toOrganizationId: string,
+    clientId?: string
+  ): Promise<boolean> {
+    const sourceId = WhatsAppConversationFirestoreRepository.docId(fromOrganizationId, phone);
+    const targetId = WhatsAppConversationFirestoreRepository.docId(toOrganizationId, phone);
+    const collection = this.db.collection(this.collectionName);
+    const now = new Date();
+
+    const moved = await this.db.runTransaction(async (transaction) => {
+      const sourceDoc = await transaction.get(collection.doc(sourceId));
+      const targetDoc = await transaction.get(collection.doc(targetId));
+      recordDocReads(2);
+      if (!sourceDoc.exists) return undefined;
+
+      const source = this.toRecord(sourceDoc.data(), sourceId);
+      const target = targetDoc.exists ? this.toRecord(targetDoc.data(), targetId) : undefined;
+      const sourceLastAt = source.lastMessage?.createdAt?.getTime() ?? 0;
+      const targetLastAt = target?.lastMessage?.createdAt?.getTime() ?? 0;
+      const lastMessage = target && targetLastAt > sourceLastAt ? target.lastMessage : source.lastMessage;
+      const resolvedClientId = clientId ?? target?.clientId;
+
+      const record: WhatsAppConversationRecord = {
+        ...source,
+        ...target,
+        id: targetId,
+        organizationId: toOrganizationId,
+        phone,
+        clientId: resolvedClientId,
+        profileName: source.profileName ?? target?.profileName,
+        lastMessage: lastMessage && {
+          ...lastMessage,
+          organizationId: toOrganizationId,
+          clientId: resolvedClientId ?? lastMessage.clientId,
+        },
+        messageCount: source.messageCount + (target?.messageCount ?? 0),
+        hasUnread: source.hasUnread === true || target?.hasUnread === true,
+        createdAt: target && target.createdAt < source.createdAt ? target.createdAt : source.createdAt,
+        updatedAt: now,
+      };
+
+      recordWrite(2);
+      transaction.set(collection.doc(targetId), this.serialize(record));
+      transaction.delete(collection.doc(sourceId));
+      return record;
+    });
+
+    if (!moved) return false;
+    this.removeFromCaches(fromOrganizationId, phone);
+    this.upsertInCaches(moved);
+    invalidateBadges(fromOrganizationId);
+    invalidateBadges(toOrganizationId);
+    return true;
   }
 }
 
