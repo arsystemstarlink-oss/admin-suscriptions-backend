@@ -29,10 +29,12 @@ import {
   OrganizationPlanPayment,
   OrganizationPlanPaymentReport,
   OrganizationTwilioConfig,
+  WhatsAppMode,
   DomainEvent,
   PaymentReport,
   PlanQuoteRequest,
 } from '../domain/entities';
+import { createInitialWhatsAppNotifications, PLATFORM_WHATSAPP_ID } from './whatsapp-configuration';
 import {
   isPlanExpired,
   resolveEffectiveClientLimit,
@@ -257,6 +259,7 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
     organizationId: string,
     twilio: OrganizationTwilioConfig | undefined,
     whatsappNotifications: Organization['whatsappNotifications'],
+    whatsappMode?: WhatsAppMode,
   ): Promise<Organization> {
     const docRef = this.db.collection(this.collectionName).doc(organizationId);
     return this.db.runTransaction(async (transaction) => {
@@ -278,10 +281,25 @@ export class OrganizationFirestoreRepository extends FirestoreRepository<Organiz
         whatsappNotifications: whatsappNotifications
           ? this.serialize(whatsappNotifications)
           : admin.firestore.FieldValue.delete(),
+        ...(whatsappMode ? { whatsappMode } : {}),
       });
       recordWrite();
       applyClaims();
-      return { ...current, twilio, whatsappNotifications };
+      return { ...current, twilio, whatsappNotifications, ...(whatsappMode ? { whatsappMode } : {}) };
+    });
+  }
+
+  /** Suma mensajes al cupo mensual de la plataforma; el contador empieza de nuevo al cambiar de mes. */
+  async addWhatsAppUsage(organizationId: string, month: string, count: number): Promise<void> {
+    const docRef = this.db.collection(this.collectionName).doc(organizationId);
+    await this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(docRef);
+      recordDocReads();
+      if (!snapshot.exists) return;
+      const stored = snapshot.data()?.whatsappUsage;
+      const previous = stored?.month === month && Number.isFinite(stored.count) ? stored.count : 0;
+      transaction.update(docRef, { whatsappUsage: { month, count: previous + count } });
+      recordWrite();
     });
   }
 
@@ -1455,6 +1473,15 @@ export class WhatsAppConversationFirestoreRepository extends FirestoreRepository
     }
   }
 
+  /** Las conversaciones de un teléfono en todas las organizaciones, la más reciente primero. */
+  async listByPhone(phone: string): Promise<WhatsAppConversationRecord[]> {
+    const snapshot = await this.buildQuery([['phone', '==', phone]]).get();
+    recordQuery(snapshot.size);
+    const items = snapshot.docs.map((doc) => this.toRecord(doc.data(), doc.id));
+    this.sortByLastMessage(items);
+    return items;
+  }
+
   async listByOrganization(organizationId?: string): Promise<WhatsAppConversationRecord[]> {
     const key = this.cacheKey(organizationId);
     const cached = this.cache.get(key);
@@ -1844,6 +1871,98 @@ export class JobLockFirestoreRepository {
   }
 }
 
+/**
+ * La cuenta de WhatsApp de la plataforma. Se guarda aparte de las organizaciones, pero se lee
+ * con su misma forma para reutilizar la configuración, las plantillas y los envíos.
+ */
+export class PlatformWhatsAppFirestoreRepository extends FirestoreRepository<Organization> {
+  private cached?: { account: Organization; loadedAt: number };
+
+  private get cacheTtlMs(): number {
+    return Number(process.env.PLATFORM_WHATSAPP_CACHE_TTL_MS ?? 60000);
+  }
+
+  constructor() {
+    super('platform');
+  }
+
+  private get docRef() {
+    return this.db.collection(this.collectionName).doc('whatsapp');
+  }
+
+  private toAccount(data: FirebaseFirestore.DocumentData | undefined): Organization {
+    return {
+      id: PLATFORM_WHATSAPP_ID,
+      name: 'Plataforma',
+      active: true,
+      whatsappMode: 'platform',
+      twilio: data?.twilio,
+      whatsappNotifications: data?.whatsappNotifications ?? createInitialWhatsAppNotifications(),
+      createdAt: new Date(0),
+    };
+  }
+
+  private remember(account: Organization): Organization {
+    this.cached = { account, loadedAt: Date.now() };
+    return account;
+  }
+
+  /** Se consulta en cada envío, así que se guarda en memoria unos segundos. */
+  async get(): Promise<Organization> {
+    if (this.cached && Date.now() - this.cached.loadedAt < this.cacheTtlMs) {
+      return this.cached.account;
+    }
+    const snapshot = await this.docRef.get();
+    recordDocReads();
+    return this.remember(this.toAccount(snapshot.data()));
+  }
+
+  async updateWhatsAppConfiguration(
+    _id: string,
+    twilio: OrganizationTwilioConfig | undefined,
+    whatsappNotifications: Organization['whatsappNotifications'],
+  ): Promise<Organization> {
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(this.docRef);
+      recordDocReads();
+      const current = this.toAccount(snapshot.data());
+      const applyClaims = await planTwilioPhoneClaimChange(
+        this.db,
+        transaction,
+        PLATFORM_WHATSAPP_ID,
+        current.twilio?.phoneNumber,
+        twilio?.phoneNumber,
+      );
+      transaction.set(this.docRef, this.serialize({
+        ...(twilio ? { twilio } : {}),
+        ...(whatsappNotifications ? { whatsappNotifications } : {}),
+      }));
+      recordWrite();
+      applyClaims();
+      return this.remember(this.toAccount({ twilio, whatsappNotifications }));
+    });
+  }
+
+  async mutateWhatsAppNotifications(
+    _id: string,
+    mutate: (current: Organization) => NonNullable<Organization['whatsappNotifications']>,
+  ): Promise<Organization> {
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(this.docRef);
+      recordDocReads();
+      const current = this.toAccount(snapshot.data());
+      const whatsappNotifications = mutate(current);
+      transaction.set(this.docRef, this.serialize({
+        ...(current.twilio ? { twilio: current.twilio } : {}),
+        whatsappNotifications,
+      }));
+      recordWrite();
+      return this.remember({ ...current, whatsappNotifications });
+    });
+  }
+}
+
+export const platformWhatsAppRepository = new PlatformWhatsAppFirestoreRepository();
 export const organizationRepository = new OrganizationFirestoreRepository();
 export const clientRepository = new ClientFirestoreRepository();
 export const planRepository = new PlanFirestoreRepository();

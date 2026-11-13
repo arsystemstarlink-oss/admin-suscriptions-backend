@@ -63,6 +63,7 @@ export function getWhatsAppWebhookUrls(): { inbound: string; status: string } | 
 }
 
 export interface WhatsAppSenderInfo {
+  sid: string;
   status: string;
   callbackUrl?: string;
 }
@@ -221,7 +222,23 @@ export class WhatsAppService {
       (candidate) => normalizePhoneNumber(candidate.senderId) === credentials.phoneNumber
     );
     if (!sender) return undefined;
-    return { status: sender.status, callbackUrl: sender.webhook?.callbackUrl ?? undefined };
+    return { sid: sender.sid, status: sender.status, callbackUrl: sender.webhook?.callbackUrl ?? undefined };
+  }
+
+  /** Solo cambia la URL de mensajes entrantes: el resto del webhook del número se conserva. */
+  async setSenderInboundWebhook(credentials: TwilioCredentials, senderSid: string, url: string): Promise<void> {
+    const sender = this.getClient(credentials).messaging.v2.channelsSenders(senderSid);
+    const current = (await sender.fetch()).webhook;
+    // El SDK envía este objeto tal cual como JSON, así que usa los nombres de la API de Twilio.
+    const webhook = {
+      ...(current?.fallbackUrl ? { fallback_url: current.fallbackUrl } : {}),
+      ...(current?.fallbackMethod ? { fallback_method: current.fallbackMethod } : {}),
+      ...(current?.statusCallbackUrl ? { status_callback_url: current.statusCallbackUrl } : {}),
+      ...(current?.statusCallbackMethod ? { status_callback_method: current.statusCallbackMethod } : {}),
+      callback_url: url,
+      callback_method: 'POST',
+    };
+    await sender.update({ webhook } as never);
   }
 
   async createTextTemplate(

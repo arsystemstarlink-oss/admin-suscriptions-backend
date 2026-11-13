@@ -36,6 +36,27 @@ export const BUSINESS_PLAN_PRICES: Record<BusinessPlanKey, number | null> = {
   'a-medida': null,
 };
 
+/** Mensajes de WhatsApp al mes que cada plan incluye al enviar con la cuenta de la plataforma. */
+export const BUSINESS_PLAN_WHATSAPP_LIMITS: Record<BusinessPlanKey, number | null> = {
+  basico: 120,
+  pro: 300,
+  negocio: 600,
+  'a-medida': null,
+};
+
+/** En el plan a medida el cupo crece con los clientes contratados, en la misma proporción. */
+const WHATSAPP_MESSAGES_PER_CLIENT = 4;
+
+export function resolveWhatsAppMonthlyLimit(
+  plan: BusinessPlanKey | undefined,
+  clientLimit: number | undefined
+): number {
+  if (!plan) return 0;
+  const fixed = BUSINESS_PLAN_WHATSAPP_LIMITS[plan];
+  if (fixed !== null) return fixed;
+  return clientLimit && clientLimit > 0 ? clientLimit * WHATSAPP_MESSAGES_PER_CLIENT : 0;
+}
+
 export const MAX_PREPAID_MONTHS = 12;
 
 /** Opciones de prepago que ofrece la interfaz. Deben mantenerse dentro de `1..MAX_PREPAID_MONTHS`. */
@@ -106,6 +127,8 @@ export interface BusinessPlanCatalogItem {
   clientLimit: number | null;
   adminLimit: number;
   trialDays: number;
+  /** `null` en el plan a medida: depende de los clientes contratados. */
+  whatsappMonthlyLimit: number | null;
 }
 
 export function getBusinessPlanCatalog(): BusinessPlanCatalogItem[] {
@@ -116,6 +139,7 @@ export function getBusinessPlanCatalog(): BusinessPlanCatalogItem[] {
     clientLimit: BUSINESS_PLAN_LIMITS[key],
     adminLimit: BUSINESS_PLAN_ADMIN_LIMITS[key],
     trialDays: BUSINESS_PLAN_TRIAL_DAYS[key],
+    whatsappMonthlyLimit: BUSINESS_PLAN_WHATSAPP_LIMITS[key],
   }));
 }
 

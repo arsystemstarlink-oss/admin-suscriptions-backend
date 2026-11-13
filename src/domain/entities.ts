@@ -41,10 +41,15 @@ export interface OrganizationWhatsAppTemplateRequest {
   submittedAt: string;
 }
 
+/** Quién envía los avisos: la cuenta de la plataforma o la cuenta de Twilio de la organización. */
+export type WhatsAppMode = 'platform' | 'own';
+
 export interface OrganizationWhatsAppConfig {
   rules: OrganizationWhatsAppRules;
   templates: OrganizationWhatsAppTemplates;
   templateRequests?: Partial<Record<OrganizationWhatsAppTemplateKey, OrganizationWhatsAppTemplateRequest>>;
+  /** Último mensaje de prueba enviado desde la configuración (ISO 8601). */
+  lastTestAt?: string;
 }
 
 export interface Organization {
@@ -63,6 +68,10 @@ export interface Organization {
   planUpdatedBy?: string;
   twilio?: OrganizationTwilioConfig;
   whatsappNotifications?: OrganizationWhatsAppConfig;
+  /** Sin valor: `own` si ya tenía su cuenta de Twilio; si no, `platform`. */
+  whatsappMode?: WhatsAppMode;
+  /** Mensajes enviados con la cuenta de la plataforma en `month` (YYYY-MM, UTC). */
+  whatsappUsage?: { month: string; count: number };
   createdAt: Date;
   createdBy?: string;
 }

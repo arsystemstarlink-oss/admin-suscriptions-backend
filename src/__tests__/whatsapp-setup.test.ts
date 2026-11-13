@@ -9,6 +9,7 @@ import { getWhatsAppWebhookUrls, TwilioCredentials, whatsappService } from '../i
 import { createInitialWhatsAppNotifications } from '../infrastructure/whatsapp-configuration';
 import {
   checkWhatsAppConnection,
+  connectInboundWebhook,
   listRecentWhatsAppFailures,
   pickTestTemplate,
   submitTemplateForApproval,
@@ -273,23 +274,85 @@ describe('checkWhatsAppConnection', () => {
     jest.spyOn(whatsappService, 'verifyAccount').mockResolvedValue();
     const findSender = jest
       .spyOn(whatsappService, 'findSender')
-      .mockResolvedValue({ status: 'ONLINE', callbackUrl: 'https://api.example.com/communications/webhook' });
+      .mockResolvedValue({ sid: 'XE1', status: 'ONLINE', callbackUrl: 'https://api.example.com/communications/webhook' });
 
     await expect(checkWhatsAppConnection(given())).resolves.toEqual(
       expect.objectContaining({ status: 'ok', inboundWebhookConnected: true })
     );
 
-    findSender.mockResolvedValue({ status: 'ONLINE', callbackUrl: 'https://otro.example.com/hook' });
+    findSender.mockResolvedValue({ sid: 'XE1', status: 'ONLINE', callbackUrl: 'https://otro.example.com/hook' });
     await expect(checkWhatsAppConnection(given())).resolves.toEqual(
-      expect.objectContaining({ status: 'ok', inboundWebhookConnected: false })
+      expect.objectContaining({
+        status: 'ok',
+        inboundWebhookConnected: false,
+        inboundWebhookUrl: 'https://otro.example.com/hook',
+      })
     );
   });
 
   it('avisa si el número aún no está activo', async () => {
     jest.spyOn(whatsappService, 'verifyAccount').mockResolvedValue();
-    jest.spyOn(whatsappService, 'findSender').mockResolvedValue({ status: 'TWILIO_REVIEW' });
+    jest.spyOn(whatsappService, 'findSender').mockResolvedValue({ sid: 'XE1', status: 'TWILIO_REVIEW' });
 
     await expect(checkWhatsAppConnection(given())).resolves.toMatchObject({ status: 'sender_offline' });
+  });
+});
+
+describe('connectInboundWebhook', () => {
+  const originalBaseUrl = process.env.BASE_URL;
+  const inboundUrl = 'https://api.example.com/communications/webhook';
+  let setWebhook: jest.SpyInstance;
+
+  beforeEach(() => {
+    process.env.BASE_URL = 'https://api.example.com';
+    jest.spyOn(whatsappService, 'verifyAccount').mockResolvedValue();
+    setWebhook = jest.spyOn(whatsappService, 'setSenderInboundWebhook').mockResolvedValue();
+  });
+  afterEach(() => {
+    process.env.BASE_URL = originalBaseUrl;
+  });
+
+  it('apunta el número a esta app y devuelve la conexión comprobada', async () => {
+    jest
+      .spyOn(whatsappService, 'findSender')
+      .mockResolvedValueOnce({ sid: 'XE1', status: 'ONLINE', callbackUrl: 'https://otro.example.com/hook' })
+      .mockResolvedValue({ sid: 'XE1', status: 'ONLINE', callbackUrl: inboundUrl });
+
+    await expect(connectInboundWebhook(given())).resolves.toMatchObject({
+      status: 'ok',
+      inboundWebhookConnected: true,
+    });
+    expect(setWebhook).toHaveBeenCalledWith(expect.objectContaining({ accountSid: 'AC_a' }), 'XE1', inboundUrl);
+  });
+
+  it('no toca Twilio si el número ya usa esta URL', async () => {
+    jest.spyOn(whatsappService, 'findSender').mockResolvedValue({ sid: 'XE1', status: 'ONLINE', callbackUrl: inboundUrl });
+
+    await connectInboundWebhook(given());
+
+    expect(setWebhook).not.toHaveBeenCalled();
+  });
+
+  it('avisa si el número no pertenece a la cuenta', async () => {
+    jest.spyOn(whatsappService, 'findSender').mockResolvedValue(undefined);
+
+    await expect(connectInboundWebhook(given())).rejects.toMatchObject({ code: 'INVALID_TWILIO_CONFIG' });
+    expect(setWebhook).not.toHaveBeenCalled();
+  });
+
+  it('no ofrece una URL que Twilio no pueda alcanzar', async () => {
+    process.env.BASE_URL = 'http://localhost:3000';
+    const findSender = jest.spyOn(whatsappService, 'findSender');
+
+    await expect(connectInboundWebhook(given())).rejects.toMatchObject({ code: 'INVALID_DATA' });
+    expect(findSender).not.toHaveBeenCalled();
+  });
+
+  it('explica el error si Twilio rechaza el cambio', async () => {
+    jest.spyOn(whatsappService, 'findSender').mockResolvedValue({ sid: 'XE1', status: 'ONLINE' });
+    setWebhook.mockRejectedValue(twilioError(20404));
+
+    await expect(connectInboundWebhook(given())).rejects.toMatchObject({ code: 'TWILIO_ERROR' });
   });
 });
 
@@ -467,8 +530,42 @@ describe('peticiones reales del SDK de Twilio', () => {
     });
 
     await expect(whatsappService.findSender(credentials)).resolves.toEqual({
+      sid: 'XE1',
       status: 'ONLINE',
       callbackUrl: 'https://api.example.com/communications/webhook',
+    });
+  });
+
+  it('cambia solo la URL de mensajes entrantes y conserva el resto del webhook', async () => {
+    respondWith(200, {
+      sid: 'XE1',
+      status: 'ONLINE',
+      sender_id: 'whatsapp:+584111111111',
+      webhook: {
+        callback_url: 'https://otro.example.com/hook',
+        callback_method: 'GET',
+        status_callback_url: 'https://otro.example.com/status',
+        status_callback_method: 'POST',
+      },
+    });
+
+    await whatsappService.setSenderInboundWebhook(
+      credentials,
+      'XE1',
+      'https://api.example.com/communications/webhook'
+    );
+
+    expect(request.mock.calls[1][0]).toMatchObject({
+      method: 'post',
+      uri: 'https://messaging.twilio.com/v2/Channels/Senders/XE1',
+    });
+    expect(sentJson(1)).toEqual({
+      webhook: {
+        status_callback_url: 'https://otro.example.com/status',
+        status_callback_method: 'POST',
+        callback_url: 'https://api.example.com/communications/webhook',
+        callback_method: 'POST',
+      },
     });
   });
 

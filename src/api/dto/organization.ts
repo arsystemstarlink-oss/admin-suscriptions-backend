@@ -1,5 +1,6 @@
 import { Organization } from '../../domain/entities';
 import { getOrganizationBillingDay, resolveEffectiveClientLimit } from '../../domain/business-plan';
+import { resolveWhatsAppMode } from '../../infrastructure/whatsapp-configuration';
 
 export function toOrganizationDto(organization: Organization) {
   const { twilio, planUpdatedBy: _planUpdatedBy, ...rest } = organization;
@@ -9,6 +10,7 @@ export function toOrganizationDto(organization: Organization) {
     ...rest,
     billingDay: getOrganizationBillingDay(organization),
     clientLimit: effectiveClientLimit ?? organization.clientLimit,
+    whatsappMode: resolveWhatsAppMode(organization),
     twilioConfigured: Boolean(
       twilio?.accountSid &&
         twilio?.authToken &&

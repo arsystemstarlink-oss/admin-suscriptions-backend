@@ -44,6 +44,8 @@ BASE_URL=https://tu-api.example.com
 # En development se puede desactivar con false.
 # En production la validación de firma del webhook es siempre obligatoria.
 TWILIO_WEBHOOK_VALIDATION=true
+# Opcional: segundos en memoria de la cuenta de WhatsApp de la plataforma (por defecto 60000 ms)
+# PLATFORM_WHATSAPP_CACHE_TTL_MS=60000
 
 # Web Push (notificaciones push del navegador). Generar el par de llaves con:
 #   npx web-push generate-vapid-keys --json

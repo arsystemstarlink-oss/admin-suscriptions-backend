@@ -31,7 +31,14 @@ import {
   SchedulerLog,
   Subscription,
 } from '../domain/entities';
-import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import { resolveWhatsAppMode, resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import {
+  describePlatformLimitReached,
+  getPlatformWhatsAppUsage,
+  getRemainingPlatformMessages,
+  recordPlatformSend,
+  toSendingOrganization,
+} from './whatsapp-platform';
 import { syncPendingTemplateRequests } from './whatsapp-setup';
 import { buildTemplateVariables, WhatsAppTemplateKey } from '../domain/whatsapp-templates';
 import { canOrganizationWrite, resolveEffectiveClientLimit, validatePlanConfiguration } from '../domain/business-plan';
@@ -252,7 +259,9 @@ async function runDailyJobForOrganizationUnlocked(
     );
     return { overdue: 0, generated: 0, suspended: 0, notifications: 0, errors: [] };
   }
-  const notificationConfig = resolveWhatsAppNotificationConfig(currentOrganization);
+  // Solo para enviar: con el WhatsApp de la plataforma lleva su cuenta y sus plantillas.
+  const sendingOrganization = await toSendingOrganization(currentOrganization);
+  const notificationConfig = resolveWhatsAppNotificationConfig(sendingOrganization);
 
   // Ventana de recordatorios en días UTC. Incluye el día 0 para que el aviso de
   // corte siga funcionando aunque reminderDaysBefore esté vacío.
@@ -448,7 +457,7 @@ async function runDailyJobForOrganizationUnlocked(
       const client = clients.find((c) => c.id === subscription.clientId);
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
         change.notifications.push(
-          buildPendingNotification('suspensionNotice', client, subscription, currentPeriod, notificationConfig)
+          buildPendingNotification('suspensionNotice', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
         );
       }
 
@@ -520,14 +529,14 @@ async function runDailyJobForOrganizationUnlocked(
         if (client) {
           if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
             change.notifications.push(
-              buildPendingNotification('reminder', client, subscription, currentPeriod, notificationConfig)
+              buildPendingNotification('reminder', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
             );
           } else if (
             daysUntilDue === 0 &&
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
             change.notifications.push(
-              buildPendingNotification('dueDateWarning', client, subscription, currentPeriod, notificationConfig)
+              buildPendingNotification('dueDateWarning', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
             );
           }
         }
@@ -582,7 +591,7 @@ async function runDailyJobForOrganizationUnlocked(
   notificationCount += await deliverPendingNotifications(
     pendingNotifications,
     organizationId,
-    organization,
+    sendingOrganization,
     startOfTodayUtc,
     notificationErrors
   );
@@ -740,13 +749,19 @@ function buildNotificationVariables(
   type: NotificationType,
   client: { firstName: string; lastName: string },
   subscription: { kitNumber: string },
-  period: { endDate: Date }
+  period: { endDate: Date },
+  organization?: Organization
 ): Record<string, string> {
-  return buildTemplateVariables(type, {
-    clientName: `${client.firstName} ${client.lastName}`,
-    serviceCode: subscription.kitNumber,
-    dueDate: period.endDate.toISOString().split('T')[0],
-  });
+  return buildTemplateVariables(
+    type,
+    {
+      clientName: `${client.firstName} ${client.lastName}`,
+      organizationName: organization?.name,
+      serviceCode: subscription.kitNumber,
+      dueDate: period.endDate.toISOString().split('T')[0],
+    },
+    organization ? resolveWhatsAppMode(organization) : 'own'
+  );
 }
 
 function buildNotificationMessageBody(
@@ -790,7 +805,7 @@ async function sendWhatsAppNotification(
     return failure('La organización no tiene credenciales de Twilio configuradas o están deshabilitadas.');
   }
 
-  const variables = buildNotificationVariables(type, client, subscription, period);
+  const variables = buildNotificationVariables(type, client, subscription, period, organization);
 
   try {
     const messageSid = await whatsappService.sendTemplate({
@@ -848,13 +863,14 @@ function buildPendingNotification(
   client: { id: string; firstName: string; lastName: string; phone: string },
   subscription: { kitNumber: string },
   period: BillingPeriod,
-  notificationConfig?: OrganizationWhatsAppConfig
+  notificationConfig?: OrganizationWhatsAppConfig,
+  organization?: Organization
 ): PendingNotification {
   const templateName = notificationConfig?.templates[type];
   const dedupBody = templateName
     ? buildNotificationMessageBody(
         templateName,
-        buildNotificationVariables(type, client, subscription, period)
+        buildNotificationVariables(type, client, subscription, period, organization)
       )
     : undefined;
   return { client, subscription, period, type, dedupBody };
@@ -903,6 +919,9 @@ async function deliverPendingNotifications(
     }
   };
 
+  // Con el WhatsApp de la plataforma, cada plan incluye un cupo mensual de mensajes.
+  let remainingMessages = organization ? getRemainingPlatformMessages(organization) : Number.POSITIVE_INFINITY;
+
   for (const notification of notifications) {
     const dedupKey = notification.dedupBody
       ? `${notification.client.phone}:${notification.dedupBody}`
@@ -911,6 +930,16 @@ async function deliverPendingNotifications(
       console.log(
         `[WhatsApp] Notificación ${notification.type} ya enviada hoy a ${notification.client.phone}. Skipping.`
       );
+      continue;
+    }
+
+    if (remainingMessages <= 0 && organization) {
+      notificationErrors.push({
+        type: notification.type,
+        clientName: `${notification.client.firstName} ${notification.client.lastName}`,
+        phone: notification.client.phone,
+        errorMessage: describePlatformLimitReached(getPlatformWhatsAppUsage(organization).limit),
+      });
       continue;
     }
 
@@ -925,6 +954,8 @@ async function deliverPendingNotifications(
 
     if (result.sent) {
       sentCount++;
+      remainingMessages--;
+      if (organization) await recordPlatformSend(organization);
       if (notification.dedupBody) {
         sentNotifications.add(`${notification.client.phone}:${notification.dedupBody}`);
       }

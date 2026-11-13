@@ -13,6 +13,14 @@ import {
 } from '../../infrastructure/repositories';
 import { authService } from '../../domain/auth-service';
 import { pushService } from '../../infrastructure/push-service';
+import {
+  isPlatformSender,
+  assertPlatformQuotaAvailable,
+  loadSendingOrganization,
+  recordPlatformSend,
+  resolvePlatformInbound,
+  toSendingOrganization,
+} from '../../infrastructure/whatsapp-platform';
 import { resolveTemplateForSend } from '../../infrastructure/whatsapp-setup';
 import { BusinessError, WhatsAppMessage, Organization, MessageStatus } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
@@ -64,22 +72,26 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
       throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
     }
 
-    const organization = await organizationRepository.getById(organizationId);
-    if (!organization) {
+    const storedOrganization = await organizationRepository.getById(organizationId);
+    if (!storedOrganization) {
       throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
     }
 
-    if (!organization.active) {
+    if (!storedOrganization.active) {
       throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
     }
 
+    const organization = await toSendingOrganization(storedOrganization);
     const credentials = resolveTwilioCredentials(organization);
     if (!credentials) {
       throw new BusinessError(
         'WHATSAPP_NOT_CONFIGURED',
-        'WhatsApp (Twilio) no está configurado para esta organización.'
+        isPlatformSender(organization)
+          ? 'El WhatsApp de la plataforma todavía no está disponible.'
+          : 'WhatsApp (Twilio) no está configurado para esta organización.'
       );
     }
+    assertPlatformQuotaAvailable(organization);
 
     if (templateKey !== undefined) {
       ({ contentSid: templateName, variables } = resolveTemplateForSend(organization, templateKey, context));
@@ -96,6 +108,7 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
     } else {
       messageSid = await whatsappService.sendMessage({ to, body }, organization);
     }
+    await recordPlatformSend(organization);
 
     const matchedClients = await clientRepository.listByFields(
       [
@@ -156,7 +169,19 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
       throw new BusinessError('INVALID_DATA', 'Payload de webhook incompleto.');
     }
 
-    const organization = await resolveOrganizationFromWebhook(parsed.to);
+    let organization = await resolveOrganizationFromWebhook(parsed.to);
+    // Con qué cuenta se firma el webhook: la de la organización o la de la plataforma.
+    let signingOrganization = organization;
+    if (!organization) {
+      const platformInbound = await resolvePlatformInbound(parsed.to, parsed.from).catch((error) => {
+        console.error('[WhatsApp] Error resolviendo un mensaje al número de la plataforma:', error);
+        return undefined;
+      });
+      if (platformInbound) {
+        signingOrganization = platformInbound.platform;
+        organization = platformInbound.organization;
+      }
+    }
 
     if (organization && !organization.active) {
       throw new BusinessError('ORGANIZATION_INACTIVE', 'La organización está desactivada.');
@@ -166,7 +191,7 @@ router.post('/webhook', async (req: Request, res: Response, next: NextFunction) 
     const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';
 
     if (isProduction || !validationDisabled) {
-      const credentials = resolveTwilioCredentials(organization ?? null);
+      const credentials = resolveTwilioCredentials(signingOrganization ?? null);
       const webhookUrl = `${process.env.BASE_URL || 'http://localhost:3000'}${req.originalUrl}`;
       const isValid = whatsappService.validateWebhook(
         req.headers,
@@ -435,9 +460,8 @@ async function handleStatusCallback(req: Request, res: Response, next: NextFunct
 
     const message = await whatsappMessageRepository.findByMessageSid(messageSid);
     const organizationId = message?.organizationId;
-    const organization = organizationId
-      ? await organizationRepository.getById(organizationId)
-      : undefined;
+    // El mensaje pudo salir por la cuenta de la plataforma: su firma usa ese token.
+    const organization = organizationId ? await loadSendingOrganization(organizationId) : undefined;
 
     const isProduction = process.env.NODE_ENV === 'production';
     const validationDisabled = process.env.TWILIO_WEBHOOK_VALIDATION === 'false';

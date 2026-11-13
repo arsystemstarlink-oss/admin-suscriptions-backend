@@ -7,6 +7,7 @@ import {
   OrganizationWhatsAppRules,
   OrganizationWhatsAppTemplates,
   WhatsAppMessage,
+  WhatsAppMode,
 } from '../../domain/entities';
 import { createId } from '../../domain/business-rules';
 import {
@@ -18,16 +19,29 @@ import {
 } from '../../infrastructure/whatsapp-service';
 import {
   organizationRepository,
+  platformWhatsAppRepository,
   whatsappConversationRepository,
   whatsappMessageRepository,
 } from '../../infrastructure/repositories';
 import {
   getWhatsAppConfigurationReadiness,
+  PLATFORM_WHATSAPP_ID,
+  resolveWhatsAppMode,
   resolveWhatsAppNotificationConfig,
 } from '../../infrastructure/whatsapp-configuration';
 import {
+  assertPlatformQuotaAvailable,
+  getPlatformModeReadiness,
+  getPlatformWhatsAppAccount,
+  isPlatformSender,
+  recordPlatformSend,
+  toPlatformSummary,
+  toSendingOrganization,
+} from '../../infrastructure/whatsapp-platform';
+import {
   assertTwilioCredentialsAccepted,
   checkWhatsAppConnection,
+  connectInboundWebhook,
   describeWhatsAppError,
   listRecentWhatsAppFailures,
   pickTestTemplate,
@@ -184,13 +198,20 @@ function validateRulesPatch(
   return updated;
 }
 
-function toConfigResponse(organization: Organization) {
+async function toConfigResponse(organization: Organization) {
   const config = resolveWhatsAppNotificationConfig(organization);
-  const readiness = getWhatsAppConfigurationReadiness(organization, config);
   const { authToken, ...safeTwilio } = organization.twilio || {};
+  // La propia cuenta de la plataforma no tiene otra cuenta detrás.
+  const platform = organization.id === PLATFORM_WHATSAPP_ID ? undefined : await getPlatformWhatsAppAccount();
+  const readiness =
+    platform && isPlatformSender(organization)
+      ? getPlatformModeReadiness(organization, platform)
+      : getWhatsAppConfigurationReadiness(organization, config);
 
   return {
     organizationId: organization.id,
+    mode: resolveWhatsAppMode(organization),
+    platform: platform ? toPlatformSummary(organization, platform) : null,
     twilio: {
       ...safeTwilio,
       authTokenConfigured: Boolean(authToken),
@@ -199,11 +220,15 @@ function toConfigResponse(organization: Organization) {
     templates: config.templates,
     readiness,
     webhooks: getWhatsAppWebhookUrls(),
+    lastTestAt: config.lastTestAt ?? null,
   };
 }
 
+/** Solo un super-admin puede pedir otra organización, así que solo él llega a la cuenta de la plataforma. */
 async function requireOrganization(req: Request): Promise<Organization> {
-  const organization = await organizationRepository.getById(requireOrganizationId(req));
+  const organizationId = requireOrganizationId(req);
+  if (organizationId === PLATFORM_WHATSAPP_ID) return platformWhatsAppRepository.get();
+  const organization = await organizationRepository.getById(organizationId);
   if (!organization) {
     throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
   }
@@ -237,12 +262,7 @@ function dropReplacedRequests(
 
 router.get('/config', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const organizationId = requireOrganizationId(req);
-    const organization = await organizationRepository.getById(organizationId);
-    if (!organization) {
-      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
-    }
-    res.json(toConfigResponse(organization));
+    res.json(await toConfigResponse(await requireOrganization(req)));
   } catch (error) {
     next(error);
   }
@@ -253,16 +273,22 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
     if (!isRecord(req.body)) {
       throw new BusinessError('INVALID_DATA', 'El cuerpo de la solicitud debe ser un objeto.');
     }
-    const organizationId = requireOrganizationId(req);
-    const organization = await organizationRepository.getById(organizationId);
-    if (!organization) {
-      throw new BusinessError('ORGANIZATION_NOT_FOUND', 'La organización no existe.');
-    }
+    const organization = await requireOrganization(req);
+    const isPlatformAccount = organization.id === PLATFORM_WHATSAPP_ID;
 
     const currentConfig = resolveWhatsAppNotificationConfig(organization);
     let twilio = organization.twilio;
     let whatsappNotifications = organization.whatsappNotifications;
+    let mode: WhatsAppMode | undefined;
     let hasChanges = false;
+
+    if ('mode' in req.body && !isPlatformAccount) {
+      if (req.body.mode !== 'platform' && req.body.mode !== 'own') {
+        throw new BusinessError('INVALID_DATA', 'El campo "mode" debe ser "platform" u "own".');
+      }
+      mode = req.body.mode;
+      hasChanges = true;
+    }
 
     if ('twilio' in req.body) {
       twilio = validateTwilioPatch(req.body.twilio, organization.twilio);
@@ -288,20 +314,19 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
           currentConfig.templates,
           templates
         ),
+        ...(currentConfig.lastTestAt ? { lastTestAt: currentConfig.lastTestAt } : {}),
       };
       hasChanges = true;
     }
 
     if (!hasChanges) {
-      throw new BusinessError('INVALID_DATA', 'Indica al menos "twilio", "templates" o "rules".');
+      throw new BusinessError('INVALID_DATA', 'Indica al menos "mode", "twilio", "templates" o "rules".');
     }
 
-    const updated = await organizationRepository.updateWhatsAppConfiguration(
-      organizationId,
-      twilio,
-      whatsappNotifications,
-    );
-    res.json(toConfigResponse(updated));
+    const updated = isPlatformAccount
+      ? await platformWhatsAppRepository.updateWhatsAppConfiguration(organization.id, twilio, whatsappNotifications)
+      : await organizationRepository.updateWhatsAppConfiguration(organization.id, twilio, whatsappNotifications, mode);
+    res.json(await toConfigResponse(updated));
   } catch (error) {
     next(error);
   }
@@ -310,6 +335,14 @@ router.put('/config', async (req: Request, res: Response, next: NextFunction) =>
 router.get('/config/connection', async (req: Request, res: Response, next: NextFunction) => {
   try {
     res.json(await checkWhatsAppConnection(await requireOrganization(req)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/config/webhooks/connect', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    res.json(await connectInboundWebhook(await requireOrganization(req)));
   } catch (error) {
     next(error);
   }
@@ -362,11 +395,22 @@ router.post('/config/test-message', async (req: Request, res: Response, next: Ne
       throw new BusinessError('INVALID_PHONE', 'Escribe el número con código de país, por ejemplo +584123456789.');
     }
 
-    const organization = await requireOrganization(req);
+    const organization = await toSendingOrganization(await requireOrganization(req));
+    const usesPlatform = isPlatformSender(organization);
     if (!resolveTwilioCredentials(organization)) {
-      throw new BusinessError('WHATSAPP_NOT_CONFIGURED', 'Conecta primero la cuenta de Twilio de esta organización.');
+      throw new BusinessError(
+        'WHATSAPP_NOT_CONFIGURED',
+        usesPlatform
+          ? 'El WhatsApp de la plataforma todavía no está disponible.'
+          : 'Conecta primero la cuenta de Twilio de esta organización.'
+      );
     }
-    const template = pickTestTemplate(resolveWhatsAppNotificationConfig(organization));
+    assertPlatformQuotaAvailable(organization);
+    const template = pickTestTemplate(
+      resolveWhatsAppNotificationConfig(organization),
+      resolveWhatsAppMode(organization),
+      usesPlatform ? organization.name : undefined
+    );
 
     let messageSid: string;
     try {
@@ -399,6 +443,19 @@ router.post('/config/test-message', async (req: Request, res: Response, next: Ne
     await whatsappConversationRepository.upsertFromMessage(message, organization.id).catch((error) => {
       console.error('[WhatsApp] Error actualizando conversación de prueba:', error);
     });
+
+    await recordPlatformSend(organization);
+
+    // Solo sirve para que la configuración recuerde el paso: no debe invalidar una prueba ya enviada.
+    const lastTestAt = new Date().toISOString();
+    await (organization.id === PLATFORM_WHATSAPP_ID ? platformWhatsAppRepository : organizationRepository)
+      .mutateWhatsAppNotifications(organization.id, (current) => ({
+        ...resolveWhatsAppNotificationConfig(current),
+        lastTestAt,
+      }))
+      .catch((error) => {
+        console.error('[WhatsApp] No se pudo registrar la prueba enviada:', error);
+      });
 
     res.status(201).json({ messageSid, templateKey: template.key });
   } catch (error) {

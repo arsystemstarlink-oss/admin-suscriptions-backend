@@ -236,6 +236,204 @@ describe('rutas de configuración de WhatsApp', () => {
     });
   });
 
+  it('GET /config/templates indica el ejemplo de cada dato y si una regla activa la necesita', async () => {
+    fake.clear();
+    seedOrganization({
+      whatsappNotifications: { rules: { ...rules, suspensionNoticeEnabled: false }, templates: {} },
+    });
+
+    const { templates } = await (await send('GET', '/config/templates')).json();
+
+    expect(templates.find((template: any) => template.key === 'reminder')).toMatchObject({
+      required: true,
+      variables: [
+        { placeholder: '{{1}}', description: 'nombre del cliente', sample: 'María Pérez' },
+        { placeholder: '{{2}}', description: 'fecha de vencimiento', sample: '2026-12-15' },
+      ],
+    });
+    expect(templates.find((template: any) => template.key === 'suspensionNotice').required).toBe(false);
+  });
+
+  describe('WhatsApp de la plataforma', () => {
+    const originalTtl = process.env.PLATFORM_WHATSAPP_CACHE_TTL_MS;
+    const usageMonth = new Date().toISOString().slice(0, 7);
+
+    beforeAll(() => {
+      process.env.PLATFORM_WHATSAPP_CACHE_TTL_MS = '0';
+    });
+    afterAll(() => {
+      process.env.PLATFORM_WHATSAPP_CACHE_TTL_MS = originalTtl;
+    });
+
+    const seedPlatformMode = (overrides: Record<string, unknown> = {}) => {
+      fake.clear();
+      seedOrganization({ twilio: undefined, ...overrides });
+      fake.seed('platform', {
+        id: 'whatsapp',
+        twilio: {
+          accountSid: `AC${'b'.repeat(32)}`,
+          authToken: 'platform-token-1234567',
+          phoneNumber: '+584000000000',
+          enabled: true,
+        },
+        whatsappNotifications: { rules, templates: { dueDateWarning: 'HX_platform_due' } },
+      });
+    };
+
+    it('una organización sin cuenta propia envía con la plataforma y ve su cupo, nunca las credenciales', async () => {
+      seedPlatformMode();
+
+      const config = await storedConfig();
+
+      expect(config).toMatchObject({
+        mode: 'platform',
+        platform: { available: true, phoneNumber: '+584000000000', usage: { used: 0, limit: 300 } },
+        readiness: { ready: false },
+      });
+      expect(config.readiness.missing).toEqual([
+        'El recordatorio de pago aún no está disponible en la plataforma',
+        'El aviso de suspensión aún no está disponible en la plataforma',
+      ]);
+      expect(JSON.stringify(config)).not.toContain('platform-token');
+      expect(config.platform.templates.find((template: any) => template.key === 'dueDateWarning')).toMatchObject({
+        contentSid: 'HX_platform_due',
+        body: expect.stringContaining('{{2}} te informa'),
+      });
+    });
+
+    it('la prueba sale por la cuenta de la plataforma, nombra al negocio y descuenta el cupo', async () => {
+      seedPlatformMode();
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_platform');
+
+      const response = await send('POST', '/config/test-message', { to: '+584120000000' });
+
+      expect(response.status).toBe(201);
+      expect(sendTemplate).toHaveBeenCalledWith(
+        {
+          to: '+584120000000',
+          templateName: 'HX_platform_due',
+          variables: { '1': 'María Pérez', '2': 'ORG', '3': 'KIT28J720NS8', '4': '2026-12-15' },
+        },
+        expect.objectContaining({ id: 'org_1', twilio: expect.objectContaining({ phoneNumber: '+584000000000' }) })
+      );
+      expect((await storedConfig()).platform.usage).toMatchObject({ month: usageMonth, used: 1 });
+    });
+
+    it('no envía más cuando se agota el cupo del mes', async () => {
+      seedPlatformMode({ whatsappUsage: { month: usageMonth, count: 300 } });
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate');
+
+      const response = await send('POST', '/config/test-message', { to: '+584120000000' });
+
+      expect(response.status).toBe(409);
+      expect((await response.json()).error.code).toBe('WHATSAPP_LIMIT_REACHED');
+      expect(sendTemplate).not.toHaveBeenCalled();
+    });
+
+    it('el cupo vuelve a empezar al cambiar de mes', async () => {
+      seedPlatformMode({ whatsappUsage: { month: '2020-01', count: 300 } });
+
+      expect((await storedConfig()).platform.usage).toMatchObject({ month: usageMonth, used: 0 });
+    });
+
+    it('POST /send con templateKey usa la plantilla central y pone el nombre del negocio', async () => {
+      seedPlatformMode();
+      const sendTemplate = jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_platform');
+
+      const response = await send('POST', '/send', {
+        to: '+584120000000',
+        templateKey: 'dueDateWarning',
+        context: { clientName: 'Ana López', serviceCode: 'KIT1', dueDate: '2026-12-01', organizationName: 'Otra' },
+      });
+
+      expect(response.status).toBe(201);
+      expect(sendTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          templateName: 'HX_platform_due',
+          variables: { '1': 'Ana López', '2': 'ORG', '3': 'KIT1', '4': '2026-12-01' },
+        }),
+        expect.anything()
+      );
+    });
+
+    it('la organización puede pasar a su propio número y entonces se le piden sus datos', async () => {
+      seedPlatformMode();
+
+      const response = await send('PUT', '/config', { mode: 'own' });
+
+      expect(response.status).toBe(200);
+      const config = await response.json();
+      expect(config.mode).toBe('own');
+      expect(config.readiness.missing).toContain('Account SID de Twilio');
+      expect((await storedConfig()).mode).toBe('own');
+    });
+
+    it('la respuesta de un cliente al número central llega a la organización que le escribió', async () => {
+      seedPlatformMode();
+      fake.seed('whatsappConversations', {
+        id: 'org_1__+584120000000',
+        organizationId: 'org_1',
+        phone: '+584120000000',
+        messageCount: 1,
+        lastMessage: { direction: 'OUTBOUND', createdAt: new Date() },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      const validateWebhook = jest.spyOn(whatsappService, 'validateWebhook').mockReturnValue(true);
+
+      const response = await send('POST', '/webhook', {
+        From: 'whatsapp:+584120000000',
+        To: 'whatsapp:+584000000000',
+        Body: 'Ya pagué',
+        MessageSid: 'SM_inbound',
+      });
+
+      expect(response.status).toBe(200);
+      // La firma se comprueba con el token de la plataforma, no con el de la organización.
+      expect(validateWebhook.mock.calls[0][3]).toBe('platform-token-1234567');
+      expect(fake.all('whatsappMessages')).toEqual([
+        expect.objectContaining({ direction: 'INBOUND', organizationId: 'org_1', body: 'Ya pagué' }),
+      ]);
+    });
+
+    it('una organización con su cuenta de Twilio sigue en modo propio sin tocar nada', async () => {
+      expect((await storedConfig()).mode).toBe('own');
+    });
+  });
+
+  describe('POST /config/webhooks/connect', () => {
+    it('conecta el número y responde con la conexión comprobada', async () => {
+      process.env.BASE_URL = 'https://api.example.com';
+      const inboundUrl = 'https://api.example.com/communications/webhook';
+      jest.spyOn(whatsappService, 'verifyAccount').mockResolvedValue();
+      jest
+        .spyOn(whatsappService, 'findSender')
+        .mockResolvedValueOnce({ sid: 'XE1', status: 'ONLINE' })
+        .mockResolvedValue({ sid: 'XE1', status: 'ONLINE', callbackUrl: inboundUrl });
+      const setWebhook = jest.spyOn(whatsappService, 'setSenderInboundWebhook').mockResolvedValue();
+
+      const response = await send('POST', '/config/webhooks/connect');
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        status: 'ok',
+        inboundWebhookConnected: true,
+        inboundWebhookUrl: inboundUrl,
+      });
+      expect(setWebhook).toHaveBeenCalledWith(expect.anything(), 'XE1', inboundUrl);
+    });
+
+    it('exige tener la cuenta de Twilio conectada', async () => {
+      fake.clear();
+      seedOrganization({ twilio: undefined });
+
+      const response = await send('POST', '/config/webhooks/connect');
+
+      expect(response.status).toBe(503);
+      expect((await response.json()).error.code).toBe('WHATSAPP_NOT_CONFIGURED');
+    });
+  });
+
   describe('POST /config/templates/submit-missing', () => {
     it('solicita solo las que nunca se pidieron', async () => {
       fake.clear();
@@ -413,6 +611,19 @@ describe('rutas de configuración de WhatsApp', () => {
       );
       const stored = fake.all('whatsappMessages') as { messageSid: string; organizationId: string }[];
       expect(stored).toEqual([expect.objectContaining({ messageSid: 'SM_test', organizationId: 'org_1' })]);
+    });
+
+    it('recuerda la prueba enviada aunque después se guarden las reglas', async () => {
+      withTemplate();
+      jest.spyOn(whatsappService, 'sendTemplate').mockResolvedValue('SM_test');
+      expect((await storedConfig()).lastTestAt).toBeNull();
+
+      await send('POST', '/config/test-message', { to: '+584120000000' });
+      const { lastTestAt } = await storedConfig();
+      expect(Number.isNaN(Date.parse(lastTestAt))).toBe(false);
+
+      const saved = await send('PUT', '/config', { rules: { reminderDaysBefore: [5] } });
+      expect(await saved.json()).toMatchObject({ lastTestAt, templates: { dueDateWarning: 'HX_due' } });
     });
 
     it('explica el error de Twilio en lenguaje claro', async () => {

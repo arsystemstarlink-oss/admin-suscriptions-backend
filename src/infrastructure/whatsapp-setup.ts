@@ -4,21 +4,34 @@ import {
   OrganizationWhatsAppConfig,
   OrganizationWhatsAppTemplateKey,
   OrganizationWhatsAppTemplateRequest,
+  WhatsAppMode,
   WhatsAppTemplateRequestStatus,
 } from '../domain/entities';
 import {
   buildTemplateSamples,
   buildTemplateVariables,
   describeTemplateVariable,
+  getTemplateText,
   isWhatsAppTemplateKey,
+  sampleTemplateVariable,
   WHATSAPP_TEMPLATE_CATALOG,
   WHATSAPP_TEMPLATE_KEYS,
   WhatsAppTemplateContext,
   WhatsAppTemplateVariable,
 } from '../domain/whatsapp-templates';
-import { organizationRepository, schedulerLogRepository, whatsappMessageRepository } from './repositories';
+import {
+  organizationRepository,
+  platformWhatsAppRepository,
+  schedulerLogRepository,
+  whatsappMessageRepository,
+} from './repositories';
 import { isFirestoreIndexError } from './firestore-error';
-import { resolveWhatsAppNotificationConfig } from './whatsapp-configuration';
+import {
+  accountTemplateMode,
+  PLATFORM_WHATSAPP_ID,
+  resolveWhatsAppMode,
+  resolveWhatsAppNotificationConfig,
+} from './whatsapp-configuration';
 import {
   extractTwilioError,
   getWhatsAppWebhookUrls,
@@ -53,6 +66,11 @@ export function describeWhatsAppError(code: number | undefined, fallback: string
   return (code !== undefined && TWILIO_ERROR_DESCRIPTIONS[code]) || fallback;
 }
 
+/** Dónde se guarda la configuración de una cuenta: la de la plataforma vive fuera de las organizaciones. */
+function configStore(organization: Organization) {
+  return organization.id === PLATFORM_WHATSAPP_ID ? platformWhatsAppRepository : organizationRepository;
+}
+
 function requireCredentials(organization: Organization): TwilioCredentials {
   const credentials = resolveTwilioCredentials(organization);
   if (!credentials) {
@@ -64,8 +82,12 @@ function requireCredentials(organization: Organization): TwilioCredentials {
   return credentials;
 }
 
-export function validateTemplateBody(key: OrganizationWhatsAppTemplateKey, rawBody: unknown): string {
-  const definition = WHATSAPP_TEMPLATE_CATALOG[key];
+export function validateTemplateBody(
+  key: OrganizationWhatsAppTemplateKey,
+  rawBody: unknown,
+  mode: WhatsAppMode = 'own'
+): string {
+  const definition = getTemplateText(key, mode);
   const fail = (message: string): BusinessError => new BusinessError('INVALID_WHATSAPP_TEMPLATE', message);
 
   if (typeof rawBody !== 'string' || !rawBody.trim()) {
@@ -112,7 +134,8 @@ export async function submitTemplateForApproval(
   key: OrganizationWhatsAppTemplateKey,
   rawBody: unknown
 ): Promise<Organization> {
-  const body = validateTemplateBody(key, rawBody ?? WHATSAPP_TEMPLATE_CATALOG[key].defaultBody);
+  const mode = accountTemplateMode(organization);
+  const body = validateTemplateBody(key, rawBody ?? getTemplateText(key, mode).defaultBody, mode);
   const credentials = requireCredentials(organization);
   const config = resolveWhatsAppNotificationConfig(organization);
   if (config.templateRequests?.[key]?.status === 'pending') {
@@ -130,7 +153,7 @@ export async function submitTemplateForApproval(
       friendlyName: name,
       language: 'es',
       body,
-      samples: buildTemplateSamples(key),
+      samples: buildTemplateSamples(key, mode),
     });
   } catch (error) {
     rethrowAsCredentialsError(error);
@@ -154,7 +177,7 @@ export async function submitTemplateForApproval(
     status: 'pending',
     submittedAt: now.toISOString(),
   };
-  return organizationRepository.mutateWhatsAppNotifications(organization.id, (current) => {
+  return configStore(organization).mutateWhatsAppNotifications(organization.id, (current) => {
     const currentConfig = resolveWhatsAppNotificationConfig(current);
     return {
       ...currentConfig,
@@ -239,7 +262,7 @@ export async function syncPendingTemplateRequests(organization: Organization): P
   if (changes.size === 0) return organization;
 
   try {
-    return await organizationRepository.mutateWhatsAppNotifications(organization.id, (current) => {
+    return await configStore(organization).mutateWhatsAppNotifications(organization.id, (current) => {
       const config = resolveWhatsAppNotificationConfig(current);
       const templates = { ...config.templates };
       const templateRequests = { ...config.templateRequests };
@@ -262,19 +285,28 @@ export async function syncPendingTemplateRequests(organization: Organization): P
   }
 }
 
+export function toTemplateVariablesResponse(variables: readonly WhatsAppTemplateVariable[]) {
+  return variables.map((variable, index) => ({
+    placeholder: `{{${index + 1}}}`,
+    description: describeTemplateVariable(variable),
+    sample: sampleTemplateVariable(variable),
+  }));
+}
+
 export function toTemplatesResponse(organization: Organization) {
   const config = resolveWhatsAppNotificationConfig(organization);
+  const mode = accountTemplateMode(organization);
   return {
     templates: WHATSAPP_TEMPLATE_KEYS.map((key) => {
       const definition = WHATSAPP_TEMPLATE_CATALOG[key];
+      const text = getTemplateText(key, mode);
       return {
         key,
         label: definition.label,
-        defaultBody: definition.defaultBody,
-        variables: definition.variables.map((variable, index) => ({
-          placeholder: `{{${index + 1}}}`,
-          description: describeTemplateVariable(variable),
-        })),
+        defaultBody: text.defaultBody,
+        variables: toTemplateVariablesResponse(text.variables),
+        // Si una regla activa la envía sola: sin ella, ese aviso no sale.
+        required: definition.requiredWhen?.(config.rules) ?? false,
         activeContentSid: config.templates[key] ?? null,
         request: config.templateRequests?.[key] ?? null,
       };
@@ -295,63 +327,97 @@ export interface WhatsAppConnectionCheck {
   message: string;
   /** `null` cuando no se pudo comprobar. */
   inboundWebhookConnected: boolean | null;
+  /** URL a la que el número entrega hoy las respuestas; `null` si no tiene o no se pudo comprobar. */
+  inboundWebhookUrl: string | null;
+}
+
+function uncheckedConnection(status: WhatsAppConnectionStatus, message: string): WhatsAppConnectionCheck {
+  return { status, message, inboundWebhookConnected: null, inboundWebhookUrl: null };
 }
 
 export async function checkWhatsAppConnection(organization: Organization): Promise<WhatsAppConnectionCheck> {
   const credentials = resolveTwilioCredentials(organization);
-  if (!credentials) {
-    return {
-      status: 'not_configured',
-      message: 'Falta conectar la cuenta de Twilio.',
-      inboundWebhookConnected: null,
-    };
-  }
+  if (!credentials) return uncheckedConnection('not_configured', 'Falta conectar la cuenta de Twilio.');
 
   try {
     await whatsappService.verifyAccount(credentials);
   } catch (error) {
     if (extractTwilioError(error)?.code === TWILIO_AUTH_ERROR_CODE) {
-      return {
-        status: 'invalid_credentials',
-        message: TWILIO_ERROR_DESCRIPTIONS[TWILIO_AUTH_ERROR_CODE],
-        inboundWebhookConnected: null,
-      };
+      return uncheckedConnection('invalid_credentials', TWILIO_ERROR_DESCRIPTIONS[TWILIO_AUTH_ERROR_CODE]);
     }
     console.error('[WhatsApp] No se pudo verificar la cuenta de Twilio:', error);
-    return {
-      status: 'unverified',
-      message: 'No pudimos comunicarnos con Twilio. Inténtalo de nuevo en unos minutos.',
-      inboundWebhookConnected: null,
-    };
+    return uncheckedConnection(
+      'unverified',
+      'No pudimos comunicarnos con Twilio. Inténtalo de nuevo en unos minutos.'
+    );
   }
 
   try {
     const sender = await whatsappService.findSender(credentials);
     if (!sender) {
-      return {
-        status: 'sender_not_found',
-        message: `La cuenta es válida, pero ${credentials.phoneNumber} no aparece como número de WhatsApp en ella.`,
-        inboundWebhookConnected: null,
-      };
+      return uncheckedConnection(
+        'sender_not_found',
+        `La cuenta es válida, pero ${credentials.phoneNumber} no aparece como número de WhatsApp en ella.`
+      );
     }
     const webhookUrls = getWhatsAppWebhookUrls();
-    const inboundWebhookConnected = webhookUrls ? sender.callbackUrl === webhookUrls.inbound : null;
+    const webhook = {
+      inboundWebhookConnected: webhookUrls ? sender.callbackUrl === webhookUrls.inbound : null,
+      inboundWebhookUrl: sender.callbackUrl ?? null,
+    };
     if (!sender.status.startsWith('ONLINE')) {
       return {
         status: 'sender_offline',
         message: `El número existe, pero WhatsApp aún no lo tiene activo (estado: ${sender.status}).`,
-        inboundWebhookConnected,
+        ...webhook,
       };
     }
-    return { status: 'ok', message: 'Cuenta y número verificados con Twilio.', inboundWebhookConnected };
+    return { status: 'ok', message: 'Cuenta y número verificados con Twilio.', ...webhook };
   } catch (error) {
     console.error('[WhatsApp] No se pudo consultar el número en Twilio:', error);
-    return {
-      status: 'unverified',
-      message: 'Las credenciales son válidas, pero no pudimos comprobar el número. El mensaje de prueba lo confirma.',
-      inboundWebhookConnected: null,
-    };
+    return uncheckedConnection(
+      'unverified',
+      'Las credenciales son válidas, pero no pudimos comprobar el número. El mensaje de prueba lo confirma.'
+    );
   }
+}
+
+/**
+ * Apunta el número a esta app para que las respuestas de los clientes lleguen a Chats,
+ * sin que el administrador tenga que pegar la URL en la consola de Twilio.
+ */
+export async function connectInboundWebhook(organization: Organization): Promise<WhatsAppConnectionCheck> {
+  const credentials = requireCredentials(organization);
+  const webhookUrls = getWhatsAppWebhookUrls();
+  if (!webhookUrls) {
+    throw new BusinessError(
+      'INVALID_DATA',
+      'Este servidor no tiene una dirección pública https para recibir mensajes.'
+    );
+  }
+
+  try {
+    const sender = await whatsappService.findSender(credentials);
+    if (!sender) {
+      throw new BusinessError(
+        'INVALID_TWILIO_CONFIG',
+        `${credentials.phoneNumber} no aparece como número de WhatsApp en tu cuenta de Twilio.`
+      );
+    }
+    if (sender.callbackUrl !== webhookUrls.inbound) {
+      await whatsappService.setSenderInboundWebhook(credentials, sender.sid, webhookUrls.inbound);
+    }
+  } catch (error) {
+    if (error instanceof BusinessError) throw error;
+    rethrowAsCredentialsError(error);
+    const twilioError = extractTwilioError(error);
+    if (!twilioError) throw error;
+    throw new BusinessError('TWILIO_ERROR', describeWhatsAppError(twilioError.code, twilioError.message), {
+      twilioCode: twilioError.code,
+      moreInfo: twilioError.moreInfo,
+    });
+  }
+  return checkWhatsAppConnection(organization);
 }
 
 /** Solo rechaza lo que Twilio niega: una caída de su API no debe impedir guardar. */
@@ -369,7 +435,9 @@ export async function assertTwilioCredentialsAccepted(credentials: TwilioCredent
  * no ha escrito al número en las últimas 24 horas.
  */
 export function pickTestTemplate(
-  config: OrganizationWhatsAppConfig
+  config: OrganizationWhatsAppConfig,
+  mode: WhatsAppMode = 'own',
+  organizationName?: string
 ): { key: OrganizationWhatsAppTemplateKey; contentSid: string; variables: Record<string, string> } {
   const key = WHATSAPP_TEMPLATE_KEYS.find((candidate) => config.templates[candidate]);
   if (!key) {
@@ -378,7 +446,11 @@ export function pickTestTemplate(
       'Necesitas al menos una plantilla aprobada para enviar una prueba.'
     );
   }
-  return { key, contentSid: config.templates[key]!, variables: buildTemplateSamples(key) };
+  return {
+    key,
+    contentSid: config.templates[key]!,
+    variables: buildTemplateSamples(key, mode, organizationName ? { organizationName } : {}),
+  };
 }
 
 /** Lo necesario para enviar una plantilla por su clave, sin conocer su SID ni sus posiciones. */
@@ -398,8 +470,10 @@ export function resolveTemplateForSend(
       `La plantilla "${definition.label}" todavía no está activa. Actívala en Configuración › WhatsApp.`
     );
   }
-  const provided = (context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>;
-  const missing = definition.variables.filter((variable) => {
+  const mode = resolveWhatsAppMode(organization);
+  // El nombre del negocio lo pone el servidor: quien envía no puede hacerse pasar por otro.
+  const provided = { ...((context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>), organizationName: organization.name };
+  const missing = getTemplateText(key, mode).variables.filter((variable) => {
     const value = provided[variable];
     return typeof value !== 'string' || !value.trim();
   });
@@ -409,7 +483,7 @@ export function resolveTemplateForSend(
       `Faltan datos para la plantilla "${definition.label}": ${missing.map(describeTemplateVariable).join(', ')}.`
     );
   }
-  return { contentSid, variables: buildTemplateVariables(key, provided as WhatsAppTemplateContext) };
+  return { contentSid, variables: buildTemplateVariables(key, provided as WhatsAppTemplateContext, mode) };
 }
 
 export interface WhatsAppFailureGroup {

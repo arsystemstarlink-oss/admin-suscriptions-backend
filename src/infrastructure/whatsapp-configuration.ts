@@ -2,8 +2,26 @@ import {
   Organization,
   OrganizationWhatsAppConfig,
   OrganizationWhatsAppTemplates,
+  WhatsAppMode,
 } from '../domain/entities';
 import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS } from '../domain/whatsapp-templates';
+
+/** Identificador de la cuenta de WhatsApp de la plataforma: no es una organización real. */
+export const PLATFORM_WHATSAPP_ID = '__platform__';
+
+/** Con qué cuenta envía una organización. Las anteriores a este modo conservan la suya si la tenían. */
+export function resolveWhatsAppMode(organization: Organization): WhatsAppMode {
+  if (organization.id === PLATFORM_WHATSAPP_ID) return 'platform';
+  return organization.whatsappMode ?? (organization.twilio?.accountSid ? 'own' : 'platform');
+}
+
+/**
+ * Qué textos gestiona una cuenta. Una organización siempre gestiona las plantillas de su propia
+ * cuenta, aunque hoy envíe con la plataforma; solo la plataforma usa las que nombran al negocio.
+ */
+export function accountTemplateMode(organization: Organization): WhatsAppMode {
+  return organization.id === PLATFORM_WHATSAPP_ID ? 'platform' : 'own';
+}
 
 export const DEFAULT_WHATSAPP_RULES: OrganizationWhatsAppConfig['rules'] = {
   reminderDaysBefore: [3],
@@ -40,6 +58,7 @@ export function resolveWhatsAppNotificationConfig(
     rules: saved?.rules ?? DEFAULT_WHATSAPP_RULES,
     templates: saved?.templates ?? legacyTemplates,
     ...(saved?.templateRequests ? { templateRequests: saved.templateRequests } : {}),
+    ...(saved?.lastTestAt ? { lastTestAt: saved.lastTestAt } : {}),
   };
 }
 

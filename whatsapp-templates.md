@@ -1,9 +1,36 @@
 # Integración de WhatsApp: plantillas y notificaciones
 
+## Dos modos de envío
+
+| | WhatsApp de la plataforma (`platform`, por defecto) | Número propio (`own`) |
+|---|---|---|
+| Cuenta de Twilio y de Meta | La de la plataforma, que paga los mensajes | La de la organización |
+| Qué configura la organización | Nada: solo cuándo avisar | Credenciales, plantillas y webhook |
+| Remitente que ve el cliente | El número de la plataforma; el nombre del negocio va en el texto | El número de la organización |
+| Límite | Cupo mensual según el plan | Sin cupo |
+
+El super-admin configura la cuenta de la plataforma en **Configuración › WhatsApp de la plataforma**
+(los mismos endpoints con `?organizationId=__platform__`); se guarda en `platform/whatsapp`, fuera
+de las organizaciones. Sus plantillas (`platform` en `src/domain/whatsapp-templates.ts`) llevan el
+nombre del negocio como variable adicional y se aprueban una sola vez para todas las organizaciones.
+
+`toSendingOrganization` (`src/infrastructure/whatsapp-platform.ts`) resuelve con qué cuenta envía
+cada organización; el job diario, `POST /whatsapp/send`, el mensaje de prueba y los webhooks pasan
+por ahí. El cupo (`BUSINESS_PLAN_WHATSAPP_LIMITS`) se cuenta en `organizations/{id}.whatsappUsage`.
+
+Las respuestas al número de la plataforma se asignan a la organización que conversó más
+recientemente con ese teléfono. Si un mismo teléfono es cliente de dos organizaciones en modo
+`platform`, la respuesta llega a la última que le escribió.
+
 ## Configuración por organización
 
 El administrador lo configura en **Configuración › WhatsApp** (`/config/whatsapp`): conecta su
-cuenta, solicita las plantillas, copia la URL de mensajes entrantes y envía una prueba.
+cuenta, solicita las plantillas, conecta la recepción de respuestas y envía una prueba.
+
+La recepción de respuestas se conecta con un botón: `POST /api/whatsapp/config/webhooks/connect`
+escribe en el número de Twilio la URL de mensajes entrantes y conserva el resto de su webhook.
+Copiar la URL a mano en la consola de Twilio sigue siendo válido, y es la única opción si los
+mensajes entrantes se gestionan desde un Messaging Service.
 
 Cada organización configura sus credenciales, Content SID y reglas desde
 `GET/PUT /api/whatsapp/config`. La configuración queda guardada en su documento de organización;
@@ -28,6 +55,7 @@ lista de días entre 1 y 30; una lista vacía desactiva los recordatorios previo
 1. Añade una entrada en `TEMPLATES` (`src/domain/whatsapp-templates.ts`) con su texto y sus
    variables. Con eso ya aparece en Configuración › WhatsApp, se puede solicitar y se activa al
    aprobarse. En el frontend, añade la clave a `WhatsAppTemplateKey` si la usarás desde el código.
+   Incluye también su texto `platform`, con la variable `organizationName`.
 2. Si una regla automática la necesita para enviar, define `requiredWhen`; aparecerá en los
    requisitos pendientes de `readiness`.
 3. Para usarla, envíala por su clave. El servidor resuelve el SID activo de la organización y el

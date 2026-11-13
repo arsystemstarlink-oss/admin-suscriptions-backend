@@ -51,6 +51,10 @@ jest.mock('../infrastructure/repositories', () => ({
   organizationRepository: {
     getById: jest.fn(),
     refreshExpiredStatus: jest.fn(async (organization: Organization) => organization),
+    addWhatsAppUsage: jest.fn(async () => undefined),
+  },
+  platformWhatsAppRepository: {
+    get: jest.fn(),
   },
   domainEventRepository: {
     create: jest.fn(),
@@ -101,6 +105,7 @@ import {
   clientRepository,
   jobLockRepository,
   organizationRepository,
+  platformWhatsAppRepository,
   schedulerLogRepository,
   whatsappMessageRepository,
 } from '../infrastructure/repositories';
@@ -159,6 +164,8 @@ function makeOrganization(id: string): Organization {
     trialEndsAt: null,
     planExpiresAt: new Date(Date.UTC(2027, 0, 1)),
     clientCount: 0,
+    // Estos escenarios describen organizaciones con su propia cuenta de Twilio.
+    whatsappMode: 'own',
     createdAt: new Date(),
   };
 }
@@ -689,6 +696,89 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       expect.objectContaining({ templateName: 'HX_org_A_warning' }),
       organization
     );
+  });
+
+  describe('con el WhatsApp de la plataforma', () => {
+    const orgA = 'org_A';
+    const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_due_today' };
+    const period: BillingPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_due_today'),
+      startDate: new Date(Date.UTC(2026, 5, 10)),
+      endDate: new Date(Date.UTC(2026, 6, 10)),
+      status: 'PENDING',
+    };
+    const rules = { reminderDaysBefore: [], dueDateWarningEnabled: true, suspensionNoticeEnabled: true };
+
+    function arrange(used: number): void {
+      mockedOrganizations.getById.mockResolvedValue({
+        ...makeOrganization(orgA),
+        whatsappMode: 'platform',
+        whatsappUsage: { month: '2026-07', count: used },
+        whatsappNotifications: { rules, templates: {} },
+      });
+      (platformWhatsAppRepository.get as jest.Mock).mockResolvedValue({
+        id: '__platform__',
+        name: 'Plataforma',
+        active: true,
+        whatsappMode: 'platform',
+        twilio: { accountSid: 'AC_platform', authToken: 'token_platform', phoneNumber: '+584000000000' },
+        whatsappNotifications: { rules, templates: { dueDateWarning: 'HX_platform_warning' } },
+        createdAt: new Date(0),
+      });
+      mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+      mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([period]);
+      mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([period]);
+      mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+      mockedClients.listByOrganization.mockResolvedValue([
+        {
+          id: subA.clientId,
+          organizationId: orgA,
+          firstName: 'Ana',
+          lastName: 'López',
+          phone: '+584123456789',
+          createdAt: new Date(),
+        },
+      ]);
+      mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+      mockedSchedulerConfig.updateConfig.mockResolvedValue({
+        id: orgA,
+        enabled: true,
+        cronSchedule: '0 0 * * *',
+        updatedAt: new Date(),
+      });
+      mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+      mockedWhatsApp.sendTemplate.mockResolvedValue('SM_platform');
+    }
+
+    it('envía con la cuenta y la plantilla centrales, nombra al negocio y descuenta el cupo', async () => {
+      arrange(119);
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result.notifications).toBe(1);
+      expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+        {
+          to: '+584123456789',
+          templateName: 'HX_platform_warning',
+          variables: { '1': 'Ana López', '2': 'Org org_A', '3': subA.kitNumber, '4': '2026-07-10' },
+        },
+        expect.objectContaining({ id: orgA, twilio: expect.objectContaining({ accountSid: 'AC_platform' }) })
+      );
+      expect(mockedOrganizations.addWhatsAppUsage).toHaveBeenCalledWith(orgA, '2026-07', 1);
+    });
+
+    it('no envía cuando el cupo del mes está agotado y lo deja registrado', async () => {
+      arrange(120);
+
+      const result = await runDailyJobForOrganization(orgA);
+
+      expect(result.notifications).toBe(0);
+      expect(mockedWhatsApp.sendTemplate).not.toHaveBeenCalled();
+      expect(mockedOrganizations.addWhatsAppUsage).not.toHaveBeenCalled();
+      expect(result.errors).toEqual([
+        expect.objectContaining({ phone: '+584123456789', errorMessage: expect.stringContaining('límite de 120') }),
+      ]);
+    });
   });
 
   describe('día de corte y período de activación', () => {
