@@ -24,6 +24,7 @@ jest.mock('../infrastructure/repositories', () => ({
     listByOrganization: jest.fn(),
     listByIds: jest.fn(),
     listGenerationCandidates: jest.fn(),
+    updateLastNotification: jest.fn(),
     update: jest.fn(),
     updateMany: jest.fn(),
   },
@@ -474,6 +475,15 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     const result = await runDailyJobForOrganization(orgA);
 
     expect(result.notifications).toBe(1);
+    expect(mockedSubscriptions.updateLastNotification).toHaveBeenCalledWith(
+      subA.id,
+      orgA,
+      expect.objectContaining({
+        type: 'reminder',
+        status: 'SENT',
+        messageSid: 'SM_reminder',
+      })
+    );
     expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
       expect.objectContaining({
         templateName: 'HX_org_A_reminder',
@@ -486,17 +496,177 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     );
   });
 
-  it('procesa recordatorios aunque otra suscripción SUSPENDED tenga un PENDING vencido', async () => {
+  it('envía recordatorio a suscripción activa pagada antes de que termine el período vigente', async () => {
+    const orgA = 'org_A';
+    const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_paid' };
+    const paidPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_paid'),
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 13)),
+      status: 'PAID' as const,
+      paidAt: new Date(Date.UTC(2026, 6, 5)),
+      paymentMethod: 'CASH',
+    };
+    const organization: Organization = {
+      ...makeOrganization(orgA),
+      twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+      whatsappNotifications: {
+        rules: { reminderDaysBefore: [3], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
+        templates: { reminder: 'HX_org_A_reminder' },
+      },
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([paidPeriod]);
+    mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([paidPeriod]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: subA.clientId,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+    mockedWhatsApp.sendTemplate.mockResolvedValue('SM_paid_period_reminder');
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(1);
+    expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ templateName: 'HX_org_A_reminder' }),
+      organization
+    );
+  });
+
+  it('no recuerda el fin de un período si el siguiente ya está pagado por adelantado', async () => {
+    const orgA = 'org_A';
+    const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_advance' };
+    const paidPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_paid'),
+      startDate: new Date(Date.UTC(2026, 5, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 13)),
+      status: 'PAID' as const,
+      paidAt: new Date(Date.UTC(2026, 5, 5)),
+      paymentMethod: 'CASH',
+    };
+    const advancePeriod = {
+      ...makePeriod(orgA, subA.id, 'period_advance'),
+      startDate: new Date(Date.UTC(2026, 6, 13)),
+      endDate: new Date(Date.UTC(2026, 7, 13)),
+      status: 'PAID' as const,
+      paidAt: new Date(Date.UTC(2026, 6, 10)),
+      paymentMethod: 'CASH',
+    };
+    const organization: Organization = {
+      ...makeOrganization(orgA),
+      twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+      whatsappNotifications: {
+        rules: { reminderDaysBefore: [3], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
+        templates: { reminder: 'HX_org_A_reminder' },
+      },
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([paidPeriod]);
+    mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([paidPeriod, advancePeriod]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: subA.clientId,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(0);
+    expect(mockedWhatsApp.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it('no envía recordatorio si la suscripción activa tiene otra cuota vencida', async () => {
+    const orgA = 'org_A';
+    const subA = {
+      ...makeSubscription(orgA),
+      maxOverduePeriods: 2,
+      currentPeriodId: 'period_current',
+    };
+    const oldOverdue = {
+      ...makePeriod(orgA, subA.id, 'period_old_overdue'),
+      startDate: new Date(Date.UTC(2026, 4, 5)),
+      endDate: new Date(Date.UTC(2026, 5, 5)),
+      status: 'OVERDUE' as const,
+    };
+    const currentPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_current'),
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 13)),
+      status: 'PENDING' as const,
+    };
+    const organization: Organization = {
+      ...makeOrganization(orgA),
+      twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+      whatsappNotifications: {
+        rules: { reminderDaysBefore: [3], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
+        templates: { reminder: 'HX_org_A_reminder' },
+      },
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([currentPeriod]);
+    mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([oldOverdue, currentPeriod]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: subA.clientId,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(0);
+    expect(mockedWhatsApp.sendTemplate).not.toHaveBeenCalled();
+  });
+
+  it('omite recordatorios de suscripciones SUSPENDED sin bloquear las activas', async () => {
     const orgA = 'org_A';
     const suspendedSub = {
       ...makeSubscription(orgA, 'sub_suspended'),
       status: 'SUSPENDED' as const,
-      currentPeriodId: 'period_suspended',
+      currentPeriodId: 'period_suspended_reminder',
     };
     const suspendedPeriod: BillingPeriod = {
       ...makePeriod(orgA, suspendedSub.id, 'period_suspended'),
       endDate: new Date(Date.UTC(2026, 6, 5)),
       status: 'PENDING',
+    };
+    const suspendedReminderPeriod: BillingPeriod = {
+      ...makePeriod(orgA, suspendedSub.id, 'period_suspended_reminder'),
+      startDate: new Date(Date.UTC(2026, 6, 5)),
+      endDate: new Date(Date.UTC(2026, 6, 13)),
+      status: 'PAID',
+      paidAt: new Date(Date.UTC(2026, 6, 5)),
+      paymentMethod: 'CASH',
     };
     const activeSub = { ...makeSubscription(orgA, 'sub_active'), currentPeriodId: 'period_active' };
     const activePeriod: BillingPeriod = {
@@ -516,9 +686,14 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
 
     mockedOrganizations.getById.mockResolvedValue(organization);
     mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([suspendedPeriod]);
-    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([activePeriod]);
+    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([
+      activePeriod,
+      suspendedReminderPeriod,
+    ]);
     mockedBillingPeriods.listBySubscriptionIds.mockImplementation(async (ids: string[]) =>
-      [suspendedPeriod, activePeriod].filter((p) => ids.includes(p.subscriptionId))
+      [suspendedPeriod, suspendedReminderPeriod, activePeriod].filter((p) =>
+        ids.includes(p.subscriptionId)
+      )
     );
     mockedSubscriptions.listByIds.mockImplementation(async (ids: string[]) =>
       [suspendedSub, activeSub].filter((s) => ids.includes(s.id))
@@ -782,6 +957,11 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
       expect(result.notifications).toBe(0);
       expect(mockedWhatsApp.sendTemplate).not.toHaveBeenCalled();
       expect(mockedOrganizations.addWhatsAppUsage).not.toHaveBeenCalled();
+      expect(mockedSubscriptions.updateLastNotification).toHaveBeenCalledWith(
+        subA.id,
+        orgA,
+        expect.objectContaining({ type: 'dueDateWarning', status: 'FAILED' })
+      );
       expect(result.errors).toEqual([
         expect.objectContaining({ phone: '+584123456789', errorMessage: expect.stringContaining('límite de 120') }),
       ]);

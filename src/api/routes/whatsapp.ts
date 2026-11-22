@@ -8,6 +8,7 @@ import {
   whatsappMessageRepository,
   whatsappConversationRepository,
   clientRepository,
+  subscriptionRepository,
   organizationRepository,
   userRepository,
 } from '../../infrastructure/repositories';
@@ -560,6 +561,22 @@ async function handleStatusCallback(req: Request, res: Response, next: NextFunct
       String(source.ErrorMessage || source.ErrorCode || '').trim().slice(0, 500) || undefined;
 
     await whatsappMessageRepository.updateStatusByMessageSid(message, status, errorMessage);
+
+    if (message.subscriptionId && message.notificationType && message.organizationId) {
+      await subscriptionRepository.updateLastNotification(
+        message.subscriptionId,
+        message.organizationId,
+        {
+          type: message.notificationType,
+          status,
+          attemptedAt: message.createdAt.toISOString(),
+          updatedAt: new Date().toISOString(),
+          messageSid,
+          errorMessage,
+        },
+        messageSid
+      );
+    }
 
     if (message.organizationId) {
       try {

@@ -176,6 +176,8 @@ export interface Client {
   organizationId: string;
   firstName: string;
   lastName: string;
+  /** Nombre completo normalizado (sin acentos, minúsculas): orden alfabético de la lista. */
+  sortName?: string;
   phone: string;
   dni?: string;
   email?: string;
@@ -235,6 +237,16 @@ export interface Subscription {
   currentPeriodAmount?: number | null;
   totalPeriods?: number;
   radarUpdatedAt?: Date;
+  lastNotification?: SubscriptionNotificationState;
+}
+
+export interface SubscriptionNotificationState {
+  type: WhatsAppTemplateKey;
+  status: MessageStatus;
+  attemptedAt: string;
+  updatedAt?: string;
+  messageSid?: string;
+  errorMessage?: string;
 }
 
 export interface BillingPeriod {
@@ -330,6 +342,8 @@ export interface WhatsAppMessage {
   id: string;
   organizationId?: string;
   clientId?: string;
+  subscriptionId?: string;
+  notificationType?: WhatsAppTemplateKey;
   phone: string;
   direction: MessageDirection;
   messageSid: string;

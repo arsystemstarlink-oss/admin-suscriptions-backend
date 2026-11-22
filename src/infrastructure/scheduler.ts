@@ -30,6 +30,7 @@ import {
   OrganizationWhatsAppConfig,
   SchedulerLog,
   Subscription,
+  SubscriptionNotificationState,
 } from '../domain/entities';
 import {
   resolveWhatsAppMode,
@@ -74,6 +75,8 @@ async function throttleByAccount(accountSid: string): Promise<void> {
 
 export interface NotificationFailure {
   type: NotificationType;
+  subscriptionId: string;
+  kitNumber: string;
   clientName: string;
   phone: string;
   errorCode?: number;
@@ -82,7 +85,7 @@ export interface NotificationFailure {
 
 export interface PendingNotification {
   client: { id: string; firstName: string; lastName: string; phone: string };
-  subscription: { kitNumber: string };
+  subscription: { id: string; kitNumber: string };
   period: BillingPeriod;
   type: NotificationType;
   dedupBody?: string;
@@ -525,7 +528,13 @@ async function runDailyJobForOrganizationUnlocked(
         }
       }
 
-      if (currentPeriod.status === 'PENDING') {
+      const hasOtherUnpaidPeriods = subscriptionPeriods.some(
+        (period) => period.id !== currentPeriod.id && period.status !== 'PAID'
+      );
+      if (
+        (currentPeriod.status === 'PENDING' || currentPeriod.status === 'PAID') &&
+        !hasOtherUnpaidPeriods
+      ) {
         const endDateNormalized = new Date(Date.UTC(currentPeriod.endDate.getUTCFullYear(), currentPeriod.endDate.getUTCMonth(), currentPeriod.endDate.getUTCDate()));
         const nowNormalized = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
@@ -777,7 +786,7 @@ function buildNotificationMessageBody(
 
 async function sendWhatsAppNotification(
   client: { id: string; firstName: string; lastName: string; phone: string },
-  subscription: { kitNumber: string },
+  subscription: { id: string; kitNumber: string },
   period: { endDate: Date },
   type: NotificationType,
   organizationId: string,
@@ -789,6 +798,8 @@ async function sendWhatsAppNotification(
     sent: false,
     error: {
       type,
+      subscriptionId: subscription.id,
+      kitNumber: subscription.kitNumber,
       clientName: clientFullName,
       phone: client.phone,
       errorCode,
@@ -822,6 +833,8 @@ async function sendWhatsAppNotification(
       id: createId(),
       organizationId,
       clientId: client.id,
+      subscriptionId: subscription.id,
+      notificationType: type,
       phone: client.phone,
       direction: 'OUTBOUND',
       messageSid,
@@ -845,7 +858,7 @@ async function sendWhatsAppNotification(
 
 async function sendNotificationWithThrottle(
   client: { id: string; firstName: string; lastName: string; phone: string },
-  subscription: { kitNumber: string },
+  subscription: { id: string; kitNumber: string },
   period: { endDate: Date },
   type: NotificationType,
   organizationId: string,
@@ -865,7 +878,7 @@ async function sendNotificationWithThrottle(
 function buildPendingNotification(
   type: NotificationType,
   client: { id: string; firstName: string; lastName: string; phone: string },
-  subscription: { kitNumber: string },
+  subscription: { id: string; kitNumber: string },
   period: BillingPeriod,
   notificationConfig?: OrganizationWhatsAppConfig,
   organization?: Organization
@@ -880,6 +893,25 @@ function buildPendingNotification(
   return { client, subscription, period, type, dedupBody };
 }
 
+async function saveNotificationState(
+  notification: PendingNotification,
+  organizationId: string,
+  state: SubscriptionNotificationState
+): Promise<void> {
+  try {
+    await subscriptionRepository.updateLastNotification(
+      notification.subscription.id,
+      organizationId,
+      state
+    );
+  } catch (error) {
+    console.error(
+      `[Daily Job] No se pudo guardar el estado de notificación de la suscripción ${notification.subscription.id}:`,
+      error
+    );
+  }
+}
+
 async function deliverPendingNotifications(
   notifications: PendingNotification[],
   organizationId: string,
@@ -890,7 +922,7 @@ async function deliverPendingNotifications(
   if (notifications.length === 0) return 0;
 
   let sentCount = 0;
-  const sentNotifications = new Set<string>();
+  const sentNotifications = new Map<string, WhatsAppMessage>();
   try {
     const phones = [...new Set(notifications.map((notification) => notification.client.phone))];
     const outbound = await whatsappMessageRepository.listOutboundSince({
@@ -900,7 +932,7 @@ async function deliverPendingNotifications(
     });
     outbound.forEach((message) => {
       if (message.body) {
-        sentNotifications.add(`${message.phone}:${message.body}`);
+        sentNotifications.set(`${message.phone}:${message.body}`, message);
       }
     });
   } catch (error) {
@@ -930,19 +962,36 @@ async function deliverPendingNotifications(
     const dedupKey = notification.dedupBody
       ? `${notification.client.phone}:${notification.dedupBody}`
       : undefined;
-    if (dedupKey && sentNotifications.has(dedupKey)) {
+    const existingMessage = dedupKey ? sentNotifications.get(dedupKey) : undefined;
+    if (existingMessage) {
       console.log(
         `[WhatsApp] Notificación ${notification.type} ya enviada hoy a ${notification.client.phone}. Skipping.`
       );
+      await saveNotificationState(notification, organizationId, {
+        type: notification.type,
+        status: existingMessage.status,
+        attemptedAt: existingMessage.createdAt.toISOString(),
+        messageSid: existingMessage.messageSid,
+        errorMessage: existingMessage.errorMessage,
+      });
       continue;
     }
 
     if (remainingMessages <= 0 && organization) {
-      notificationErrors.push({
+      const failure: NotificationFailure = {
         type: notification.type,
+        subscriptionId: notification.subscription.id,
+        kitNumber: notification.subscription.kitNumber,
         clientName: `${notification.client.firstName} ${notification.client.lastName}`,
         phone: notification.client.phone,
         errorMessage: describePlatformLimitReached(getPlatformWhatsAppUsage(organization).limit),
+      };
+      notificationErrors.push(failure);
+      await saveNotificationState(notification, organizationId, {
+        type: failure.type,
+        status: 'FAILED',
+        attemptedAt: new Date().toISOString(),
+        errorMessage: failure.errorMessage,
       });
       continue;
     }
@@ -961,14 +1010,26 @@ async function deliverPendingNotifications(
       remainingMessages--;
       if (organization) await recordPlatformSend(organization);
       if (notification.dedupBody) {
-        sentNotifications.add(`${notification.client.phone}:${notification.dedupBody}`);
+        sentNotifications.set(`${notification.client.phone}:${notification.dedupBody}`, result.message);
       }
       sentMessages.push(result.message);
       // Se guarda de inmediato: Twilio puede avisar un fallo segundos después del envío
       // y el callback de estado necesita encontrar el mensaje.
       await flushSent();
+      await saveNotificationState(notification, organizationId, {
+        type: notification.type,
+        status: 'SENT',
+        attemptedAt: result.message.createdAt.toISOString(),
+        messageSid: result.message.messageSid,
+      });
     } else {
       notificationErrors.push(result.error);
+      await saveNotificationState(notification, organizationId, {
+        type: result.error.type,
+        status: 'FAILED',
+        attemptedAt: new Date().toISOString(),
+        errorMessage: result.error.errorMessage,
+      });
     }
   }
 

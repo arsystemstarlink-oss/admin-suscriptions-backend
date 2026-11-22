@@ -725,7 +725,16 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
 ```typescript
 // Response 200
 {
-  subscription: SubscriptionWithDetails & { plan: Plan };
+  subscription: SubscriptionWithDetails & {
+    plan: Plan;
+    lastNotification?: {
+      type: 'reminder' | 'dueDateWarning' | 'suspensionNotice';
+      status: 'SENT' | 'DELIVERED' | 'READ' | 'FAILED';
+      attemptedAt: string;
+      updatedAt?: string;
+      errorMessage?: string;
+    };
+  };
   billingPeriods: BillingPeriod[];
   summary: {
     totalPeriods: number; paidPeriods: number; pendingPeriods: number;
@@ -1196,12 +1205,17 @@ El scheduler es siempre por organización: no existe una configuración global n
 
 // NotificationFailure
 {
-  type: 'reminder' | 'suspension-warning' | 'suspended-notice';
+  type: 'reminder' | 'dueDateWarning' | 'suspensionNotice';
+  subscriptionId: string;
+  kitNumber: string;
   clientName: string;
   phone: string;
   errorCode?: number;    // código de error de Twilio (ej: 63017, 21211)
   errorMessage: string;  // mensaje legible del error
 }
+// Subscription.lastNotification también se actualiza con el resultado más reciente.
+// SENT significa que WhatsApp aceptó el mensaje, no que confirmó su entrega;
+// DELIVERED/READ/FAILED se actualizan con los callbacks de estado de WhatsApp.
 
 // Errores posibles
 // 409 { code: 'JOB_ALREADY_RUNNING' } → el job ya estaba en ejecución
@@ -1603,7 +1617,7 @@ Codigos adelanto: `HAS_UNPAID_PERIODS` (409) | `PERIOD_ALREADY_EXISTS` (409) | `
 - La cuenta de la plataforma la administra el super-admin con estos mismos endpoints y `?organizationId=__platform__` (credenciales, plantillas, conexión, webhook, prueba y fallos). Un admin de organización no puede acceder a ella.
 - `GET /public/plans` incluye `whatsappMonthlyLimit: number | null` por plan (`null` en A medida) y las organizaciones devuelven `whatsappMode`.
 - Las organizaciones creadas guardan su configuración de notificaciones desde el inicio y no usan los Content SID de entorno.
-- Defaults: recordatorio a 3 días, aviso de vencimiento habilitado y aviso de suspensión habilitado. Los Content SID de entorno antiguos se usan solo como fallback hasta que la organización guarde su configuración.
+- Defaults: recordatorio a 3 días, aviso de vencimiento habilitado y aviso de suspensión habilitado. El recordatorio y el aviso de vencimiento se envían a suscripciones activas cuando el fin del período vigente PAID o PENDING cae dentro de los días configurados y todos los demás períodos están pagados. Si hay un período siguiente pagado por adelantado, su fecha de fin es la próxima fecha de pago y no se recuerda el vencimiento anterior que ya cubre. Los Content SID de entorno antiguos se usan solo como fallback hasta que la organización guarde su configuración.
 - `readiness.ready` y `readiness.missing` describen los requisitos activos pendientes. La falta de configuración WhatsApp no detiene el cron ni el ciclo de negocio.
 - La cuenta compartida de Twilio se guarda en `platform/whatsapp`; las credenciales propias opcionales de una organización viven en `organizations/{id}.twilio`.
 - Unicidad del número: un `phoneNumber` pertenece a una sola organización o a `__platform__`. Al crear o cambiar el número (`POST /organizations`, `POST /organizations/onboard`, `PUT /organizations/:id`, `PUT /api/whatsapp/config`) el backend reserva `twilioPhoneNumbers/{phoneNumber}` dentro de una transacción y rechaza con `409 TWILIO_NUMBER_IN_USE` si otra cuenta lo usa. La migración transfiere la reserva a `__platform__` atómicamente. Las reservas no son accesibles desde clientes (`firestore.rules`).

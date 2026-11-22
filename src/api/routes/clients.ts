@@ -16,6 +16,18 @@ import { createClientSchema, parseBody, parsePagination, updateClientSchema } fr
 
 const router = Router();
 
+function clientSortKey(client: Pick<Client, 'sortName' | 'firstName' | 'lastName'>): string {
+  return client.sortName ?? buildClientSortName(client.firstName, client.lastName);
+}
+
+/** Mismo orden que la lista paginada: nombre normalizado y, a igualdad, por id. */
+function compareClientsByName(a: Client, b: Client): number {
+  const keyA = clientSortKey(a);
+  const keyB = clientSortKey(b);
+  if (keyA !== keyB) return keyA < keyB ? -1 : 1;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
 /** El cliente ya quedó guardado: no poder traer su chat sin asignar no debe hacer fallar el alta. */
 async function claimUnassignedChatSafely(client: Pick<Client, 'id' | 'organizationId' | 'phone'>): Promise<void> {
   try {
@@ -113,6 +125,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       organizationId,
       firstName: dto.firstName,
       lastName: dto.lastName,
+      sortName: buildClientSortName(dto.firstName, dto.lastName),
       phone: normalizePhoneToE164(dto.phone),
       dni,
       email: dto.email,
@@ -171,7 +184,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     // que las páginas y el total sean correctos.
     if (subscriptionStatus || hasOverdue !== undefined) {
       const all = await clientRepository.listByOrganization(organizationId);
-      all.sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+      all.sort(compareClientsByName);
       let clients = await enrichClients(all, organizationId, include === 'subscriptions');
       if (subscriptionStatus) {
         clients = clients.filter((c) => c.subscriptionStatus === subscriptionStatus);
@@ -186,12 +199,15 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
+    // Firestore omite en un orderBy los documentos sin el campo: antes de ordenar por
+    // nombre se garantiza que todos los clientes de la organización lo tengan.
+    await clientRepository.ensureSortNames(organizationId);
     const page = await clientRepository.listPage({
       organizationId,
       limit,
       offset,
       cursor,
-      orderBy: 'createdAt',
+      orderBy: 'sortName',
       direction: 'asc',
       requireTotal: !cursor,
     });
@@ -294,6 +310,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     if (dto.email !== undefined) updated.email = dto.email;
     if (dto.address !== undefined) updated.address = dto.address;
     if (dto.notes !== undefined) updated.notes = dto.notes;
+    // Siempre se recalcula: repara también clientes antiguos que aún no lo tengan.
+    updated.sortName = buildClientSortName(updated.firstName, updated.lastName);
 
     if (dto.dni !== undefined) {
       if (dto.dni === null || dto.dni.trim() === '') {

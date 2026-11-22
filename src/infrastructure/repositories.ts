@@ -15,6 +15,7 @@ import {
   Client,
   Plan,
   Subscription,
+  SubscriptionNotificationState,
   BillingPeriod,
   BillingPeriodStatus,
   User,
@@ -743,6 +744,48 @@ export class SubscriptionFirestoreRepository extends FirestoreRepository<Subscri
     super('subscriptions');
   }
 
+  async updateLastNotification(
+    id: string,
+    organizationId: string,
+    lastNotification: SubscriptionNotificationState,
+    expectedMessageSid?: string
+  ): Promise<boolean> {
+    const ref = this.db.collection(this.collectionName).doc(id);
+    return this.db.runTransaction(async (transaction) => {
+      const snapshot = await transaction.get(ref);
+      recordDocReads();
+      const current = snapshot.data();
+      if (!current || current.organizationId !== organizationId) {
+        return false;
+      }
+      if (expectedMessageSid && current.lastNotification?.messageSid !== expectedMessageSid) {
+        return false;
+      }
+      if (current.lastNotification?.messageSid === lastNotification.messageSid) {
+        const statusRank: Record<MessageStatus, number> = {
+          SENT: 0,
+          DELIVERED: 1,
+          READ: 2,
+          FAILED: 2,
+        };
+        const currentStatus: unknown = current.lastNotification.status;
+        if (
+          (currentStatus === 'SENT' ||
+            currentStatus === 'DELIVERED' ||
+            currentStatus === 'READ' ||
+            currentStatus === 'FAILED') &&
+          statusRank[currentStatus] > statusRank[lastNotification.status]
+        ) {
+          return false;
+        }
+      }
+
+      recordWrite();
+      transaction.update(ref, { lastNotification: this.serialize(lastNotification) });
+      return true;
+    });
+  }
+
   async listByClientId(clientId: string, organizationId?: string): Promise<Subscription[]> {
     if (!organizationId) {
       return this.listByField('clientId', clientId);
@@ -1028,9 +1071,9 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
   }
 
   /**
-   * Consulta accionable del daily job: PENDING por vencer dentro de la ventana
-   * de recordatorio [startDate, endDate] (día UTC). Alimenta recordatorios y el
-   * aviso de corte del día 0. Reutiliza el índice (organizationId, status, endDate).
+   * Consulta períodos PAID o PENDING cuyo fin cae en la ventana de recordatorio
+   * [startDate, endDate] (día UTC). Permite avisar antes de que venza el período
+   * vigente incluso cuando todavía no existe el siguiente período pendiente.
    */
   async listReminderWindowCandidates(
     organizationId: string,
@@ -1041,7 +1084,7 @@ export class BillingPeriodFirestoreRepository extends FirestoreRepository<Billin
     return this.listWhere(
       [
         ['organizationId', '==', organizationId],
-        ['status', '==', 'PENDING'],
+        ['status', 'in', ['PAID', 'PENDING']],
         ['endDate', '>=', startDate],
         ['endDate', '<=', endDate],
       ],
