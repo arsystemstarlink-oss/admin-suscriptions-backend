@@ -1,7 +1,7 @@
 import { FirestoreRepository, QueryFilter, decodeCursor, encodeCursor } from './firestore-repository';
 import { getFirestore, admin } from './firebase';
 import { invalidateBadges } from './badge-cache';
-import { createId, getClientNameUpdateFields, normalizeDni } from '../domain/business-rules';
+import { buildClientSortName, createId, getClientNameUpdateFields, normalizeDni } from '../domain/business-rules';
 import {
   recordAggregation,
   recordDocReads,
@@ -479,6 +479,19 @@ const DNI_TAKEN_MESSAGE = 'Ya existe un cliente registrado con esa cédula de id
 export class ClientFirestoreRepository extends FirestoreRepository<Client> {
   constructor() {
     super('clients');
+  }
+
+  async ensureSortNames(organizationId: string): Promise<void> {
+    const clients = await this.listByOrganization(organizationId);
+    await Promise.all(
+      clients
+        .filter((client) => client.sortName !== buildClientSortName(client.firstName, client.lastName))
+        .map((client) =>
+          this.db.collection(this.collectionName).doc(client.id).update({
+            sortName: buildClientSortName(client.firstName, client.lastName),
+          }),
+        ),
+    );
   }
 
   async createWithinPlanLimit(client: Client): Promise<void> {

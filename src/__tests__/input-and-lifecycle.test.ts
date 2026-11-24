@@ -201,6 +201,18 @@ describe('validación de entrada y ciclo de vida', () => {
       expect(plan.description).toBe('');
     });
 
+    it.each([29, 30])('permite crear una suscripción con corte día %i', async (billingDay) => {
+      const response = await send('POST', '/subscriptions', {
+        clientId: client.id,
+        planId: 'plan_1',
+        kitNumber: `KIT-${billingDay}`,
+        billingDay,
+        maxOverduePeriods: 2,
+      });
+
+      expect(response.status).toBe(201);
+    });
+
     it('permite borrar la cédula con null', async () => {
       fake.seed('clients', { ...client, dni: 'V-12345678' });
 
