@@ -190,6 +190,17 @@ describe('validación de entrada y ciclo de vida', () => {
       expect(response.status).toBe(201);
     });
 
+    it('permite crear un plan sin descripción', async () => {
+      const response = await send('POST', '/plans', {
+        name: 'Plan Residencial',
+        price: 25,
+      });
+
+      expect(response.status).toBe(201);
+      const plan = await response.json();
+      expect(plan.description).toBe('');
+    });
+
     it('permite borrar la cédula con null', async () => {
       fake.seed('clients', { ...client, dni: 'V-12345678' });
 

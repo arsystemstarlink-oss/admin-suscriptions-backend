@@ -67,11 +67,11 @@ describe('SubscriptionBusinessService', () => {
           clientId: testClient.id,
           plan: testPlan,
           kitNumber: 'KIT-001',
-          billingDay: 29,
+          billingDay: 31,
           maxOverduePeriods: 2,
           registrationDate: new Date(),
         });
-      }).toThrow('El día de corte debe ser un número entre 1 y 28.');
+      }).toThrow('El día de corte debe ser un número entre 1 y 30.');
     });
 
     it('debería rechazar un plan inactivo', () => {
@@ -1509,15 +1509,16 @@ describe('SubscriptionBusinessService', () => {
 
 describe('Business Rules', () => {
   describe('isValidBillingDay', () => {
-    it('debería aceptar días entre 1 y 28', () => {
+    it('debería aceptar días entre 1 y 30', () => {
       expect(isValidBillingDay(1)).toBe(true);
       expect(isValidBillingDay(15)).toBe(true);
-      expect(isValidBillingDay(28)).toBe(true);
+      expect(isValidBillingDay(29)).toBe(true);
+      expect(isValidBillingDay(30)).toBe(true);
     });
 
     it('debería rechazar días fuera del rango', () => {
       expect(isValidBillingDay(0)).toBe(false);
-      expect(isValidBillingDay(29)).toBe(false);
+      expect(isValidBillingDay(31)).toBe(false);
       expect(isValidBillingDay(-1)).toBe(false);
     });
 
@@ -1543,6 +1544,8 @@ describe('Business Rules', () => {
     it('encadena siempre al dia de corte', () => {
       expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 0, 31)), 28)).toEqual(new Date(Date.UTC(2026, 1, 28)));
       expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 1, 28)), 28)).toEqual(new Date(Date.UTC(2026, 2, 28)));
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 0, 30)), 30)).toEqual(new Date(Date.UTC(2026, 1, 28)));
+      expect(getNextBillingPeriodEnd(new Date(Date.UTC(2026, 2, 30)), 29)).toEqual(new Date(Date.UTC(2026, 3, 29)));
     });
 
     it('al cambiar el día de corte el ciclo de transición no dura menos de un mes', () => {

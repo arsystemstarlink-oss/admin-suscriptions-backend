@@ -16,13 +16,18 @@ export const MONTH_NAMES_ES = [
 ];
 
 export function isValidBillingDay(value: number): boolean {
-  return Number.isInteger(value) && value >= 1 && value <= 28;
+  return Number.isInteger(value) && value >= 1 && value <= 30;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Duración mínima de un ciclo cobrado completo: la del mes más corto. */
 const MIN_BILLING_CYCLE_DAYS = 28;
+
+export function getClampedBillingDate(year: number, month: number, billingDay: number): Date {
+  const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(year, month, Math.min(billingDay, lastDay)));
+}
 
 export const MIN_OVERDUE_PERIODS = 1;
 export const MAX_OVERDUE_PERIODS = 3;
@@ -108,8 +113,8 @@ export function getBillingPeriodRange(referenceDate: Date, billingDay: number) {
     }
   }
 
-  const startDate = new Date(Date.UTC(startYear, startMonth, billingDay));
-  const endDate = new Date(Date.UTC(startYear, startMonth + 1, billingDay));
+  const startDate = getClampedBillingDate(startYear, startMonth, billingDay);
+  const endDate = getClampedBillingDate(startYear, startMonth + 1, billingDay);
 
   return {
     startDate,
@@ -146,11 +151,12 @@ export function getFirstBillingPeriodEnd(activationDate: Date, billingDay: numbe
   const month = activationDate.getUTCMonth();
   const day = activationDate.getUTCDate();
 
-  const firstMonth = Date.UTC(year, month, billingDay) <= Date.UTC(year, month, day) ? month + 1 : month;
-  const end = new Date(Date.UTC(year, firstMonth, billingDay));
+  const monthCutoff = getClampedBillingDate(year, month, billingDay);
+  const firstMonth = monthCutoff.getTime() <= Date.UTC(year, month, day) ? month + 1 : month;
+  const end = getClampedBillingDate(year, firstMonth, billingDay);
   const durationDays = (end.getTime() - activationDate.getTime()) / MS_PER_DAY;
   return durationDays < MIN_BILLING_CYCLE_DAYS
-    ? new Date(Date.UTC(year, firstMonth + 1, billingDay))
+    ? getClampedBillingDate(year, firstMonth + 1, billingDay)
     : end;
 }
 
@@ -173,10 +179,10 @@ export function buildBillingPeriodId(subscriptionId: string, startDate: Date): s
 export function getNextBillingPeriodEnd(periodStart: Date, billingDay: number): Date {
   const year = periodStart.getUTCFullYear();
   const month = periodStart.getUTCMonth();
-  const end = new Date(Date.UTC(year, month + 1, billingDay));
+  const end = getClampedBillingDate(year, month + 1, billingDay);
   const durationDays = (end.getTime() - periodStart.getTime()) / MS_PER_DAY;
   return durationDays < MIN_BILLING_CYCLE_DAYS
-    ? new Date(Date.UTC(year, month + 2, billingDay))
+    ? getClampedBillingDate(year, month + 2, billingDay)
     : end;
 }
 

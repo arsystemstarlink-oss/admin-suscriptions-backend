@@ -65,7 +65,7 @@ export class SubscriptionBusinessService {
     }
 
     if (!isValidBillingDay(billingDay)) {
-      throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 28.');
+      throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 30.');
     }
 
     if (!isValidMaxOverduePeriods(maxOverduePeriods)) {

@@ -15,8 +15,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const auth = getAuth(req);
     const organizationId = resolveCreateOrganizationId(req);
 
-    if (!dto.name || dto.price === undefined || !dto.description) {
-      throw new BusinessError('INVALID_DATA', 'Nombre, precio y descripción son obligatorios.');
+    if (!dto.name || dto.price === undefined) {
+      throw new BusinessError('INVALID_DATA', 'Nombre y precio son obligatorios.');
     }
 
     if (dto.price < 0) {
@@ -28,7 +28,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       organizationId,
       name: dto.name,
       price: dto.price,
-      description: dto.description,
+      description: dto.description || '',
       active: dto.active !== undefined ? dto.active : true,
       createdAt: new Date(),
       createdByUserId: auth.userId,

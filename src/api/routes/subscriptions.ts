@@ -473,7 +473,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
       if (dto.billingDay !== undefined) {
         if (!isValidBillingDay(dto.billingDay)) {
-          throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 28.');
+          throw new BusinessError('INVALID_BILLING_DAY', 'El día de corte debe ser un número entre 1 y 30.');
         }
         if (dto.billingDay !== existing.billingDay && openPeriods.length > 0) {
           throw new BusinessError(

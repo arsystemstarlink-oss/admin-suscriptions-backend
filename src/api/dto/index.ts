@@ -21,7 +21,7 @@ export interface UpdateClientDto {
 export interface CreatePlanDto {
   name: string;
   price: number;
-  description: string;
+  description?: string;
   active?: boolean;
 }
 

@@ -16,7 +16,7 @@ export function defaultOrganizationPlan(now = new Date()): Pick<
     plan: 'basico',
     clientLimit: 30,
     planStatus: 'prueba',
-    billingDay: Math.min(Math.max(now.getUTCDate(), 1), 28),
+    billingDay: Math.min(Math.max(now.getUTCDate(), 1), 30),
     trialEndsAt: new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000),
     planExpiresAt: null,
     clientCount: 0,

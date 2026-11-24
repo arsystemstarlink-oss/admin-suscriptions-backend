@@ -86,7 +86,7 @@ async function auditSubscriptions(organizationId?: string): Promise<void> {
     const sub = doc.data();
     const activationDate = toDate(sub.activationDate);
     const billingDay = Number(sub.billingDay);
-    if (!activationDate || !Number.isInteger(billingDay) || billingDay < 1 || billingDay > 28) {
+    if (!activationDate || !Number.isInteger(billingDay) || billingDay < 1 || billingDay > 30) {
       continue;
     }
 

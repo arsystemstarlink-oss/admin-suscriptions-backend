@@ -287,9 +287,9 @@ describe('transacciones contra el emulador de Firestore', () => {
   });
 
   describe('Daily Job de extremo a extremo', () => {
-    // Un día de corte válido (1-28) ya terminado.
+    // Un día de corte válido (1-30) ya terminado.
     let dueDate = new Date(today.getTime() - DAY_MS);
-    while (dueDate.getUTCDate() > 28) dueDate = new Date(dueDate.getTime() - DAY_MS);
+    while (dueDate.getUTCDate() > 30) dueDate = new Date(dueDate.getTime() - DAY_MS);
     const dueSubscription: Subscription = {
       ...subscription,
       billingDay: dueDate.getUTCDate(),

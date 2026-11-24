@@ -158,7 +158,7 @@ export const CUSTOM_PLAN_MIN_CLIENTS = 151;
 export function normalizeOrganizationBillingDay(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value);
   if (!Number.isFinite(numeric)) return 1;
-  return Math.min(Math.max(Math.trunc(numeric), 1), 28);
+  return Math.min(Math.max(Math.trunc(numeric), 1), 30);
 }
 
 export function getOrganizationBillingDay(
@@ -170,10 +170,10 @@ export function getOrganizationBillingDay(
 ): number {
   const stored = organization.billingDay;
   if (typeof stored === 'number' && Number.isInteger(stored)) {
-    return Math.min(Math.max(stored, 1), 28);
+    return Math.min(Math.max(stored, 1), 30);
   }
   const anchor = organization.createdAt ?? organization.planExpiresAt ?? organization.trialEndsAt ?? fallback;
-  return Math.min(Math.max(anchor.getUTCDate(), 1), 28);
+  return Math.min(Math.max(anchor.getUTCDate(), 1), 30);
 }
 
 export function addOrganizationBillingMonths(

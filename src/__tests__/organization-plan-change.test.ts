@@ -72,7 +72,7 @@ const proOrganization: Organization = {
   plan: 'pro',
   clientLimit: 75,
   planStatus: 'activo',
-  billingDay: expiry.getUTCDate() > 28 ? 28 : expiry.getUTCDate(),
+  billingDay: Math.min(expiry.getUTCDate(), 30),
   trialEndsAt: null,
   planExpiresAt: expiry,
   clientCount: 10,
@@ -140,7 +140,7 @@ describe('organization plan change routes', () => {
     expect(result.planChanged).toBe(true);
     expect(result.planChangeCreditDays).toBe(CREDIT_DAYS);
     expect(result.extendsCurrent).toBe(false);
-    expect(result.billingDay).toBe(Math.min(convertedEnd.getUTCDate(), 28));
+    expect(result.billingDay).toBe(Math.min(convertedEnd.getUTCDate(), 30));
     expect(result.expirations[0]).toMatchObject({
       months: 1,
       amount: 40,
@@ -188,7 +188,7 @@ describe('organization plan change routes', () => {
       (new Date(result.expirations[0].newPlanExpiresAt).getTime() - Date.now()) /
       (24 * 60 * 60 * 1000);
 
-    expect(result.billingDay).toBe(Math.min(today.getUTCDate(), 28));
+    expect(result.billingDay).toBe(Math.min(today.getUTCDate(), 30));
     expect(result.expirations[0]).toMatchObject({ months: 1, amount: 25 });
     expect(days).toBeGreaterThanOrEqual(27);
     expect(result.expirations.find((option: { months: number }) => option.months === 12)).toMatchObject({
@@ -200,7 +200,7 @@ describe('organization plan change routes', () => {
     const trialEnd = new Date(
       Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 10, 12)
     );
-    const trialDay = Math.min(trialEnd.getUTCDate(), 28);
+    const trialDay = Math.min(trialEnd.getUTCDate(), 30);
     const signupDay = trialDay === 1 ? 2 : trialDay - 1;
 
     beforeEach(() => {

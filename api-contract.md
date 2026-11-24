@@ -63,7 +63,7 @@ interface Organization {
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit: number;
   planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
-  billingDay: number; // día de corte mensual (1-28), derivado de la fecha de alta; cambia al reactivar un plan sin tiempo vigente
+  billingDay: number; // día de corte mensual (1-30), derivado de la fecha de alta; cambia al reactivar un plan sin tiempo vigente
   trialEndsAt: string | null;
   planExpiresAt: string | null;
   clientCount: number;
@@ -559,13 +559,13 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 // Meses: mismo plan → se suman al vencimiento actual.
 // Cambio entre planes fijos con tiempo vigente → el saldo se convierte en días del plan nuevo:
 // días restantes × precio actual ÷ precio nuevo, hacia arriba. Los meses se suman al terminar esos
-// días y billingDay pasa a ese día (max. 28). Hacia A medida se conserva el vencimiento y se suman los meses.
+// días y billingDay pasa a ese día (max. 30). Hacia A medida se conserva el vencimiento y se suman los meses.
 // Tope: el vencimiento resultante no puede superar 12 meses desde hoy, o desde el fin de una prueba vigente (PREPAID_LIMIT_REACHED).
 // El tope de clientes siempre se deriva del plan en los planes fijos.
 // El vencimiento se calcula desde el fin de prueba o el vencimiento vigente + meses, anclado al billingDay.
-// Sin plan vigente (vencido, suspendido) el ciclo empieza el dia del pago y billingDay pasa a ese dia (max. 28).
+// Sin plan vigente (vencido, suspendido) el ciclo empieza el dia del pago y billingDay pasa a ese dia (max. 30).
 // En una prueba vigente los meses corren desde su fin y billingDay pasa a ese dia, salvo el pago del alta (signupPayment), que conserva el corte del alta.
-// Si planExpiresAt se edito a mano (PUT /organizations/:id con plan activo), billingDay pasa al dia de esa fecha (max. 28).
+// Si planExpiresAt se edito a mano (PUT /organizations/:id con plan activo), billingDay pasa al dia de esa fecha (max. 30).
 // Errors: 400 INVALID_PAYMENT_AMOUNT | INVALID_PAYMENT_METHOD | INVALID_PLAN_DATE
 //         403 FORBIDDEN | 404 ORGANIZATION_NOT_FOUND | 409 CLIENT_LIMIT_BELOW_USAGE
 //         409 ADMIN_LIMIT_BELOW_USAGE (incluye adminCount y adminLimit)
@@ -580,7 +580,7 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
   plan: 'basico' | 'pro' | 'negocio' | 'a-medida';
   clientLimit: number;
   planStatus: 'prueba' | 'activo' | 'vencido' | 'suspendido';
-  billingDay: number; // día de corte mensual (1-28)
+  billingDay: number; // día de corte mensual (1-30)
   trialEndsAt: string | null; planExpiresAt: string | null; clientCount: number;
   createdAt: string; createdBy?: string;
   twilioConfigured: boolean; // true si accountSid+authToken+phoneNumber presentes y enabled !== false
@@ -682,8 +682,9 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 **POST /plans**
 ```typescript
 // Request
-{ name: string; price: number; description: string; active?: boolean }
+{ name: string; price: number; description?: string; active?: boolean }
 // Response 201 → Plan
+// description puede omitirse y se guarda como cadena vacía
 ```
 
 **PUT /plans/:id**
@@ -751,7 +752,7 @@ Lista por defecto todas las suscripciones de la organización, ordenadas alfabé
   planId: string;
   kitNumber: string;           // Codigo del servicio en formato libre (kit, ONT, contrato...); se convierte a UPPERCASE automaticamente
   accountNumber?: string;      // Cuenta en el proveedor, formato libre (ej: "ACC-8381534-78084-24")
-  billingDay: number;          // 1-28
+  billingDay: number;          // 1-30
   maxOverduePeriods: number;   // minimo 1
   activationDate?: string;     // Formato YYYY-MM-DD, no futura
   historicalPayments?: HistoricalPaymentDto[];
@@ -1546,7 +1547,7 @@ Authorization: Bearer {accessToken}
 
 | Regla | Detalle |
 |-------|---------|
-| billingDay | 1-28 |
+| billingDay | 1-30 |
 | kitNumber | Código del servicio, formato libre. Se convierte a UPPERCASE automaticamente |
 | accountNumber | Formato libre (ej: "ACC-8381534-78084-24") |
 | activationDate | Formato YYYY-MM-DD, no futura |

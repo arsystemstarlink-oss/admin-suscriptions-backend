@@ -281,7 +281,7 @@ describe('business plan rules', () => {
       getOrganizationBillingDay(
         organization({ billingDay: 31, planExpiresAt: new Date('2026-11-07T00:00:00.000Z') })
       )
-    ).toBe(28);
+    ).toBe(30);
   });
 
   it('anchors monthly expirations to the next billing day', () => {
@@ -569,10 +569,10 @@ describe('business plan rules', () => {
       expect(expiry.toISOString()).toBe('2026-11-19T23:59:59.999Z');
     });
 
-    it('caps the new billing day at 28 for payments at the end of the month', () => {
+    it('caps the new billing day at 30 for payments at the end of the month', () => {
       const { billingDay, expiry } = pay('2027-01-31');
 
-      expect(billingDay).toBe(28);
+      expect(billingDay).toBe(30);
       expect(expiry.toISOString()).toBe('2027-02-28T23:59:59.999Z');
     });
 
