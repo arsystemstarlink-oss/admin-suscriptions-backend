@@ -35,6 +35,7 @@ import {
   DomainEvent,
   PaymentReport,
   PlanQuoteRequest,
+  PlanPageVisit,
 } from '../domain/entities';
 import {
   createInitialWhatsAppNotifications,
@@ -1976,6 +1977,34 @@ export class PlanQuoteRequestFirestoreRepository extends FirestoreRepository<Pla
   }
 }
 
+export class PlanPageVisitFirestoreRepository extends FirestoreRepository<PlanPageVisit> {
+  constructor() {
+    super('planPageVisits');
+  }
+
+  async recordIfMissing(visit: PlanPageVisit): Promise<boolean> {
+    const ref = this.db.collection(this.collectionName).doc(visit.id);
+    recordWrite();
+    try {
+      await ref.create(this.serialize(visit));
+      return true;
+    } catch (error) {
+      const code = (error as { code?: string | number }).code;
+      if (code === 6 || code === 'already-exists' || code === 'ALREADY_EXISTS') {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async listSince(start: Date, limit: number): Promise<PlanPageVisit[]> {
+    return this.listWhere(
+      [['visitedAt', '>=', start]],
+      { orderBy: 'visitedAt', direction: 'desc', limit },
+    );
+  }
+}
+
 export class JobLockFirestoreRepository {
   private collectionName = 'jobLocks';
 
@@ -2290,4 +2319,5 @@ export const organizationPlanPaymentReportRepository =
   new OrganizationPlanPaymentReportFirestoreRepository();
 export const organizationPlanPaymentRepository = new OrganizationPlanPaymentFirestoreRepository();
 export const planQuoteRequestRepository = new PlanQuoteRequestFirestoreRepository();
+export const planPageVisitRepository = new PlanPageVisitFirestoreRepository();
 export const jobLockRepository = new JobLockFirestoreRepository();

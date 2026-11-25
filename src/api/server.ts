@@ -19,6 +19,7 @@ import publicRoutes from './routes/public';
 import paymentReportRoutes from './routes/payment-reports';
 import organizationPlanPaymentReportRoutes from './routes/organization-plan-payment-reports';
 import planQuoteRequestRoutes from './routes/plan-quote-requests';
+import { adminPageViewsRouter, publicPageViewsRouter } from './routes/page-views';
 import badgesRoutes from './routes/badges';
 import { errorHandler } from './middleware/error-handler';
 import { authenticateAdmin } from './middleware/auth';
@@ -216,6 +217,7 @@ app.post('/api/public/signup', publicSignupRateLimiter);
 app.post('/api/public/plan-quote-requests', publicQuoteRateLimiter);
 app.use('/api/public', publicRateLimiter);
 app.use('/api/auth', authRoutes);
+app.use('/api/public/page-views', publicPageViewsRouter);
 app.use('/api/public', publicRoutes);
 app.use('/api/admins', authenticateAdmin, requireWritablePlan, adminRoutes);
 app.use('/api/organizations', authenticateAdmin, organizationRoutes);
@@ -225,6 +227,7 @@ app.use(
   organizationPlanPaymentReportRoutes
 );
 app.use('/api/plan-quote-requests', authenticateAdmin, planQuoteRequestRoutes);
+app.use('/api/page-views', authenticateAdmin, adminPageViewsRouter);
 app.use('/api/dashboard', authenticateAdmin, dashboardRoutes);
 app.use('/api/clients', authenticateAdmin, requireWritablePlan, clientRoutes);
 app.use('/api/plans', authenticateAdmin, requireWritablePlan, planRoutes);

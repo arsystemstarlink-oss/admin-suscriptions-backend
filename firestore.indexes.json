@@ -280,6 +280,12 @@
   ],
   "fieldOverrides": [
     {
+      "collectionGroup": "planPageVisits",
+      "fieldPath": "expiresAt",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "refreshTokenSessions",
       "fieldPath": "expiresAt",
       "ttl": true,

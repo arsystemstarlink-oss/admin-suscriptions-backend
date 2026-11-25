@@ -958,6 +958,36 @@ crea una solicitud de cotizacion.
 //         403 CAPTCHA_REQUIRED | 403 CAPTCHA_FAILED | 503 CAPTCHA_UNAVAILABLE
 ```
 
+**POST /public/page-views** (sin auth; sujeto al límite general del portal público: 60 solicitudes / 15 min por IP)
+```typescript
+{ sessionId: string; source?: string; medium?: string; campaign?: string }
+// Response 202 → { recorded: boolean }
+// Registra una sesión de /planes una sola vez por día UTC. sessionId debe ser UUID.
+// No persiste IP, MAC ni el User-Agent completo: guarda solo su categoría de dispositivo/navegador.
+// Guarda el host del Referer (sin ruta ni parámetros), datos UTM limitados y caduca a los 90 días.
+// Errores: 400 INVALID_DATA | 429 RATE_LIMITED
+```
+
+| Metodo | Path | Descripcion |
+|--------|------|-------------|
+| GET | /page-views?days=7\|30\|90 | Solo super-admin: totales diarios y agrupaciones por fuente, dispositivo y navegador |
+
+```typescript
+// Response 200
+{
+  days: 7 | 30 | 90;
+  totalVisits: number;
+  daily: { date: string; visits: number }[];
+  sources: { label: string; visits: number }[];
+  campaigns: { label: string; visits: number }[];
+  devices: { label: string; visits: number }[];
+  browsers: { label: string; visits: number }[];
+  truncated: boolean; // true si se alcanzó el límite de 5.000 registros
+}
+// Cada visita representa una sesión de navegador por día; la sesión se almacena como hash diario.
+// Errors: 403 FORBIDDEN | 400 INVALID_FILTER
+```
+
 ```typescript
 interface PlanQuoteRequest {
   id: string;

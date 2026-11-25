@@ -134,6 +134,18 @@ export interface PlanQuoteRequest {
   handledAt?: Date;
 }
 
+export interface PlanPageVisit {
+  id: string;
+  visitedAt: Date;
+  expiresAt: Date;
+  referrerHost?: string;
+  campaignSource?: string;
+  campaignMedium?: string;
+  campaignName?: string;
+  deviceType: 'mobile' | 'tablet' | 'desktop';
+  browserFamily: 'Chrome' | 'Edge' | 'Firefox' | 'Safari' | 'Other';
+}
+
 export interface User {
   id: string;
   name: string;
