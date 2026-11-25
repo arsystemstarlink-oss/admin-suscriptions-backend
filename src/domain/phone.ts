@@ -1,8 +1,12 @@
+import { parsePhoneNumberFromString } from 'libphonenumber-js';
 import { BusinessError } from './entities';
 
 export const VENEZUELAN_COUNTRY_CODE = '58';
 export const VENEZUELAN_NATIONAL_MIN_DIGITS = 10;
 export const VENEZUELAN_NATIONAL_MAX_DIGITS = 11;
+export const SUPPORTED_PHONE_COUNTRIES = ['CO', 'BR', 'AR', 'VE', 'BO', 'CL'] as const;
+
+const supportedPhoneCountries = new Set<string>(SUPPORTED_PHONE_COUNTRIES);
 
 /**
  * Devuelve el número nacional venezolano sin código de país ni 0 troncal.
@@ -33,16 +37,39 @@ export function isValidVenezuelanNationalDigits(digits: string): boolean {
 }
 
 export function normalizePhoneToE164(value: string): string {
-  const national = normalizeVenezuelanPhoneDigits(value);
+  const trimmed = value.trim();
+  const internationalInput = trimmed.startsWith('00')
+    ? `+${trimmed.slice(2)}`
+    : trimmed;
+  const hasInternationalPrefix = internationalInput.startsWith('+');
+  let parsed = hasInternationalPrefix
+    ? parsePhoneNumberFromString(internationalInput)
+    : parsePhoneNumberFromString(internationalInput, 'VE');
 
-  if (!isValidVenezuelanNationalDigits(national)) {
+  if (!parsed?.isValid() && !hasInternationalPrefix) {
+    const digits = internationalInput.replace(/\D/g, '');
+    parsed = digits ? parsePhoneNumberFromString(`+${digits}`) : undefined;
+  }
+
+  if (
+    !parsed?.isValid() ||
+    !parsed.country ||
+    !supportedPhoneCountries.has(parsed.country)
+  ) {
     throw new BusinessError('INVALID_PHONE', 'Número de teléfono inválido.');
   }
 
-  return `+${VENEZUELAN_COUNTRY_CODE}${national}`;
+  return parsed.number;
 }
 
 export function phonesMatch(a: string, b: string): boolean {
+  const normalizedA = normalizePhoneToE164OrUndefined(a);
+  const normalizedB = normalizePhoneToE164OrUndefined(b);
+  if (normalizedA && normalizedB) return normalizedA === normalizedB;
+  if ((!normalizedA && hasInternationalPrefix(a)) || (!normalizedB && hasInternationalPrefix(b))) {
+    return false;
+  }
+
   const nationalA = normalizeVenezuelanPhoneDigits(a);
   const nationalB = normalizeVenezuelanPhoneDigits(b);
 
@@ -59,4 +86,17 @@ export function phonesMatch(a: string, b: string): boolean {
   if (tail < VENEZUELAN_NATIONAL_MIN_DIGITS) return false;
 
   return nationalA.slice(-tail) === nationalB.slice(-tail);
+}
+
+function normalizePhoneToE164OrUndefined(value: string): string | undefined {
+  try {
+    return normalizePhoneToE164(value);
+  } catch (error) {
+    if (error instanceof BusinessError && error.code === 'INVALID_PHONE') return undefined;
+    throw error;
+  }
+}
+
+function hasInternationalPrefix(value: string): boolean {
+  return /^\s*(?:\+|00)/.test(value);
 }

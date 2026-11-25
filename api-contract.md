@@ -55,6 +55,14 @@ enum BillingPeriodStatus { PENDING, PAID, OVERDUE }
 enum PaymentReportStatus { PENDING, APPROVED, REJECTED }
 ```
 
+### Teléfonos
+
+- Para teléfonos de contacto de clientes y usuarios se admiten Colombia (+57), Brasil (+55), Argentina (+54), Venezuela (+58), Bolivia (+591) y Chile (+56).
+- El frontend solicita el país, valida el número y envía el valor en E.164 (`+` + código de país + número nacional).
+- El backend valida y normaliza el E.164; conserva el código internacional recibido y acepta también el prefijo `00`.
+- Los números nacionales sin código siguen interpretándose como venezolanos por compatibilidad con integraciones anteriores. Los números de contacto de países no admitidos se rechazan.
+- La validación comprueba números válidos según el plan nacional de cada país; no garantiza que el número tenga WhatsApp habilitado.
+
 ### Entidades
 
 ```typescript
@@ -78,7 +86,7 @@ interface User {
   role: UserRole;
   organizationId: string | null; // null => super-admin; requerido para admin
   organization?: Organization; // incluido en login/me para admins; omitido para super-admin
-  phone?: string; // normalizado a E.164 (+58...)
+  phone?: string; // normalizado a E.164 para cualquiera de los seis países admitidos
   lastLoginAt?: string;
   mustChangePassword?: boolean; // true => debe cambiar la contraseña inicial antes de operar
   createdAt: string;
@@ -311,7 +319,7 @@ interface DebtorItem {
 // Request (parcial, al menos un campo)
 { name?: string; email?: string; phone?: string; currentPassword?: string }
 // currentPassword es obligatorio SOLO si email cambia
-// phone se normaliza a E.164 (+58...)
+// phone se normaliza a E.164 para los países admitidos, preservando el código internacional
 // Si email cambia, se revocan todas las sesiones y la respuesta incluye accessToken/refreshToken nuevos
 // Response 200
 { user: User; accessToken?: string; refreshToken?: string }
@@ -396,7 +404,7 @@ interface DebtorItem {
 // No requiere currentPassword del admin editado (lo hace otro admin)
 // El propio admin no puede cambiar aquí su email ni su contraseña → 403 FORBIDDEN; se hace con PUT /auth/me y POST /auth/change-password
 // newPassword: mínimo 8 caracteres, letras y números
-// phone se normaliza a E.164 (+58...)
+// phone se normaliza a E.164 para los países admitidos, preservando el código internacional
 // Si email o newPassword cambian, se revocan todas las sesiones del admin editado
 // Si el admin editado es el mismo logueado, la respuesta incluye accessToken/refreshToken nuevos
 // Response 200
@@ -636,6 +644,7 @@ Endpoints adicionales (solo super-admin): `GET /organizations/check-slug`,
 ```typescript
 // Request
 { firstName: string; lastName: string; phone: string; dni?: string; email?: string; address?: string; notes?: string }
+// phone admite E.164 de los seis países soportados; los números locales sin código se interpretan como venezolanos.
 // dni se normaliza a formato canónico con guion (ej: "v.12.345.678" -> "V-12345678", "V12345678" -> "V-12345678")
 // dni: opcional, SOLO "V-" o "J-" + 7 a 9 dígitos numéricos. Otros formatos se rechazan (ej: "9279238239" -> INVALID_DNI)
 // Response 201 → Client

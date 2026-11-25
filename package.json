@@ -48,6 +48,7 @@
     "firebase-admin": "^13.10.0",
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
+    "libphonenumber-js": "^1.13.17",
     "node-cron": "^3.0.3",
     "twilio": "^6.0.2",
     "web-push": "^3.6.7",

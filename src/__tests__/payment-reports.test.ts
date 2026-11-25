@@ -26,6 +26,37 @@ describe('payment-reports helpers', () => {
     it('rechaza números demasiado cortos', () => {
       expect(() => normalizePhoneToE164('0412')).toThrow('Número de teléfono inválido.');
     });
+
+    it.each(['+57 300 123 4567', '0057 300 123 4567', '573001234567'])(
+      'preserva el código colombiano al normalizar %s',
+      (input) => {
+        expect(normalizePhoneToE164(input)).toBe('+573001234567');
+      },
+    );
+
+    it('rechaza un número colombiano internacional con longitud inválida', () => {
+      expect(() => normalizePhoneToE164('+57 300 123 456')).toThrow(
+        'Número de teléfono inválido.',
+      );
+    });
+
+    it.each([
+      ['+573001234567', '+573001234567'],
+      ['0055 11 98765-4321', '+5511987654321'],
+      ['+5511987654321', '+5511987654321'],
+      ['+5491123456789', '+5491123456789'],
+      ['+584121234567', '+584121234567'],
+      ['+59171234567', '+59171234567'],
+      ['+56912345678', '+56912345678'],
+    ])('valida y conserva el E.164 de los países admitidos: %s', (input, expected) => {
+      expect(normalizePhoneToE164(input)).toBe(expected);
+    });
+
+    it('rechaza códigos de país que no están habilitados', () => {
+      expect(() => normalizePhoneToE164('+12025550123')).toThrow(
+        'Número de teléfono inválido.',
+      );
+    });
   });
 
   describe('phonesMatch', () => {
@@ -43,6 +74,11 @@ describe('payment-reports helpers', () => {
 
     it('no acepta coincidencias parciales de menos de 10 dígitos', () => {
       expect(phonesMatch('+584141005606', '41005606')).toBe(false);
+    });
+
+    it('compara números E.164 considerando el código de país', () => {
+      expect(phonesMatch('+573001234567', '+573001234567')).toBe(true);
+      expect(phonesMatch('+573001234567', '+583001234567')).toBe(false);
     });
   });
 
