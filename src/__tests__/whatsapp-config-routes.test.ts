@@ -8,6 +8,7 @@ import { errorHandler } from '../api/middleware/error-handler';
 import { whatsappService } from '../infrastructure/whatsapp-service';
 import { claimUnassignedChat } from '../infrastructure/whatsapp-platform';
 import { createInitialWhatsAppNotifications, getWhatsAppConfigurationReadiness } from '../infrastructure/whatsapp-configuration';
+import { WHATSAPP_CURRENT_TEMPLATE_KEYS } from '../domain/whatsapp-templates';
 import { Organization } from '../domain/entities';
 
 jest.mock('../infrastructure/firebase', () => {
@@ -66,8 +67,10 @@ describe('rutas de configuración de WhatsApp', () => {
   let server: Server;
   let baseUrl: string;
   const originalBaseUrl = process.env.BASE_URL;
+  const originalPortalBaseUrl = process.env.PORTAL_BASE_URL;
 
   beforeAll((done) => {
+    process.env.PORTAL_BASE_URL = 'https://arsystem.org';
     const app = express();
     app.use(express.json());
     app.use('/api/whatsapp', whatsappConfigRouter);
@@ -81,6 +84,7 @@ describe('rutas de configuración de WhatsApp', () => {
 
   afterAll((done) => {
     process.env.BASE_URL = originalBaseUrl;
+    process.env.PORTAL_BASE_URL = originalPortalBaseUrl;
     server.close(done);
   });
 
@@ -207,20 +211,23 @@ describe('rutas de configuración de WhatsApp', () => {
         .spyOn(whatsappService, 'fetchTemplateApproval')
         .mockResolvedValue({ status: 'received' });
 
-      const submitted = await send('POST', '/config/templates/reminder/submit', {
-        body: 'Hola {{1}}, tu pago vence el {{2}}, asociado al kit {{3}}. Gracias.',
+      const submitted = await send('POST', '/config/templates/reminderV2NoButton/submit', {
+        body: 'Hola {{1}}, te escribimos de {{2}}. El pago de tu servicio {{3}} (plan {{4}}) por {{5}} vence el {{6}}, en {{7}} días. Puedes reportar tu pago respondiendo a este mensaje.',
       });
       expect(submitted.status).toBe(201);
-      const reminder = (await submitted.json()).templates.find((t: { key: string }) => t.key === 'reminder');
+      const reminder = (await submitted.json()).templates.find((t: { key: string }) => t.key === 'reminderV2NoButton');
       expect(reminder).toMatchObject({ activeContentSid: null, request: { status: 'pending' } });
 
       let listed = await (await send('GET', '/config/templates')).json();
-      expect(listed.templates[0].activeContentSid).toBeNull();
+      expect(listed.templates.find((t: { key: string }) => t.key === 'reminderV2NoButton').activeContentSid).toBeNull();
 
       approval.mockResolvedValue({ status: 'approved' });
       listed = await (await send('GET', '/config/templates')).json();
-      expect(listed.templates[0]).toMatchObject({ activeContentSid: 'HX_new', request: { status: 'approved' } });
-      expect((await storedConfig()).templates.reminder).toBe('HX_new');
+      expect(listed.templates.find((t: { key: string }) => t.key === 'reminderV2NoButton')).toMatchObject({
+        activeContentSid: 'HX_new',
+        request: { status: 'approved' },
+      });
+      expect((await storedConfig()).templates.reminderV2NoButton).toBe('HX_new');
     });
 
     it.each([
@@ -245,15 +252,21 @@ describe('rutas de configuración de WhatsApp', () => {
 
     const { templates } = await (await send('GET', '/config/templates')).json();
 
-    expect(templates.find((template: any) => template.key === 'reminder')).toMatchObject({
+    expect(templates.find((template: any) => template.key === 'reminderV2')).toMatchObject({
       required: true,
       variables: [
         { placeholder: '{{1}}', description: 'nombre del cliente', sample: 'María Pérez' },
-        { placeholder: '{{2}}', description: 'fecha de vencimiento', sample: '2026-12-15' },
+        { placeholder: '{{2}}', description: 'nombre del negocio', sample: 'Internet Los Andes' },
         { placeholder: '{{3}}', description: 'número de kit (código del servicio)', sample: 'KIT28J720NS8' },
+        { placeholder: '{{4}}', description: 'nombre del plan', sample: 'Hogar 50 Mbps' },
+        { placeholder: '{{5}}', description: 'monto formateado', sample: 'USD 50,00' },
+        { placeholder: '{{6}}', description: 'fecha de vencimiento', sample: '2026-12-15' },
+        { placeholder: '{{7}}', description: 'días antes del vencimiento', sample: '3' },
+        { placeholder: '{{8}}', description: 'enlace del portal del negocio', sample: 'internet-los-andes', scope: 'button' },
       ],
+      button: { title: 'Ver mi cuenta', sampleUrl: 'https://arsystem.org/consulta/internet-los-andes' },
     });
-    expect(templates.find((template: any) => template.key === 'suspensionNotice').required).toBe(false);
+    expect(templates.find((template: any) => template.key === 'suspensionNoticeV2NoButton').required).toBe(false);
   });
 
   describe('WhatsApp de la plataforma', () => {
@@ -278,7 +291,7 @@ describe('rutas de configuración de WhatsApp', () => {
           phoneNumber: '+584000000000',
           enabled: true,
         },
-        whatsappNotifications: { rules, templates: { dueDateWarning: 'HX_platform_due' } },
+        whatsappNotifications: { rules, templates: { dueDateWarning: 'HX_platform_due', dueDateWarningV2NoButton: 'HX_platform_due_v2' } },
       });
     };
 
@@ -297,9 +310,9 @@ describe('rutas de configuración de WhatsApp', () => {
         'El aviso de suspensión aún no está disponible en la plataforma',
       ]);
       expect(JSON.stringify(config)).not.toContain('platform-token');
-      expect(config.platform.templates.find((template: any) => template.key === 'dueDateWarning')).toMatchObject({
-        contentSid: 'HX_platform_due',
-        body: expect.stringContaining('{{2}} te informa'),
+      expect(config.platform.templates.find((template: any) => template.key === 'dueDateWarningV2NoButton')).toMatchObject({
+        contentSid: 'HX_platform_due_v2',
+        body: expect.stringContaining('Hoy vence'),
       });
     });
 
@@ -313,8 +326,15 @@ describe('rutas de configuración de WhatsApp', () => {
       expect(sendTemplate).toHaveBeenCalledWith(
         {
           to: '+584120000000',
-          templateName: 'HX_platform_due',
-          variables: { '1': 'María Pérez', '2': 'ORG', '3': 'KIT28J720NS8', '4': '2026-12-15' },
+          templateName: 'HX_platform_due_v2',
+          variables: {
+            '1': 'María Pérez',
+            '2': 'ORG',
+            '3': 'KIT28J720NS8',
+            '4': 'Hogar 50 Mbps',
+            '5': 'USD 50,00',
+            '6': '15 dic 2026',
+          },
         },
         expect.objectContaining({ id: 'org_1', twilio: expect.objectContaining({ phoneNumber: '+584000000000' }) })
       );
@@ -588,52 +608,62 @@ describe('rutas de configuración de WhatsApp', () => {
       seedOrganization({
         whatsappNotifications: {
           rules,
-          templates: { reminder: 'HX_active' },
-          templateRequests: { suspensionNotice: { ...pendingRequest, status: 'rejected' } },
+          templates: { reminderV2: 'HX_active' },
+          templateRequests: { suspensionNoticeV2: { ...pendingRequest, status: 'rejected' } },
         },
       });
       const create = jest.spyOn(whatsappService, 'createTextTemplate').mockResolvedValue('HX_new');
+      jest.spyOn(whatsappService, 'createTemplate').mockResolvedValue('HX_new');
       jest.spyOn(whatsappService, 'submitTemplateForApproval').mockResolvedValue();
 
       const response = await send('POST', '/config/templates/submit-missing');
 
       expect(response.status).toBe(201);
       const body = await response.json();
-      expect(body.submitted).toEqual(['dueDateWarning']);
+      const expected = WHATSAPP_CURRENT_TEMPLATE_KEYS.filter(
+        (key) => key !== 'reminderV2' && key !== 'suspensionNoticeV2',
+      );
+      expect(body.submitted).toEqual(expected);
       expect(body.failed).toEqual([]);
-      expect(create).toHaveBeenCalledTimes(1);
-      expect(body.templates.find((t: { key: string }) => t.key === 'suspensionNotice').request.status).toBe('rejected');
+      expect(create).toHaveBeenCalledTimes(5);
+      expect(
+        body.templates.find((t: { key: string }) => t.key === 'suspensionNoticeV2').request.status,
+      ).toBe('rejected');
     });
 
     it('sigue con las demás si una falla y conserva las que sí salieron', async () => {
+      jest.spyOn(whatsappService, 'createTemplate').mockResolvedValue('HX_button');
       jest
         .spyOn(whatsappService, 'createTextTemplate')
-        .mockResolvedValueOnce('HX_1')
+        .mockResolvedValue('HX_1')
         .mockRejectedValueOnce(twilioError(63018))
-        .mockResolvedValueOnce('HX_3');
+        .mockResolvedValue('HX_3');
       jest.spyOn(whatsappService, 'submitTemplateForApproval').mockResolvedValue();
 
       const body = await (await send('POST', '/config/templates/submit-missing')).json();
 
-      expect(body.submitted).toEqual(['reminder', 'suspensionNotice']);
       expect(body.failed).toEqual([
-        expect.objectContaining({ key: 'dueDateWarning', message: expect.stringContaining('límite de envíos') }),
+        expect.objectContaining({ key: 'reminderV2NoButton', message: expect.stringContaining('límite de envíos') }),
       ]);
+      expect(body.submitted).toHaveLength(WHATSAPP_CURRENT_TEMPLATE_KEYS.length - 1);
       const stored = fake.read('organizations', 'org_1') as unknown as Organization;
-      expect(Object.keys(stored.whatsappNotifications?.templateRequests ?? {}).sort()).toEqual([
-        'reminder',
-        'suspensionNotice',
-      ]);
+      expect(Object.keys(stored.whatsappNotifications?.templateRequests ?? {})).toHaveLength(
+        WHATSAPP_CURRENT_TEMPLATE_KEYS.length - 1,
+      );
     });
 
     it('con credenciales rechazadas informa una sola vez', async () => {
       const create = jest.spyOn(whatsappService, 'createTextTemplate').mockRejectedValue(twilioError(20003));
+      const createTemplate = jest
+        .spyOn(whatsappService, 'createTemplate')
+        .mockRejectedValue(twilioError(20003));
 
       const response = await send('POST', '/config/templates/submit-missing');
 
       expect(response.status).toBe(400);
       expect((await response.json()).error.code).toBe('INVALID_TWILIO_CREDENTIALS');
-      expect(create).toHaveBeenCalledTimes(1);
+      expect(createTemplate).toHaveBeenCalledTimes(1);
+      expect(create).not.toHaveBeenCalled();
     });
 
     it('no hace nada si no falta ninguna', async () => {
@@ -641,7 +671,9 @@ describe('rutas de configuración de WhatsApp', () => {
       seedOrganization({
         whatsappNotifications: {
           rules,
-          templates: { reminder: 'HX_a', dueDateWarning: 'HX_b', suspensionNotice: 'HX_c' },
+          templates: Object.fromEntries(
+            WHATSAPP_CURRENT_TEMPLATE_KEYS.map((key) => [key, `HX_${key}`]),
+          ),
         },
       });
       const create = jest.spyOn(whatsappService, 'createTextTemplate');

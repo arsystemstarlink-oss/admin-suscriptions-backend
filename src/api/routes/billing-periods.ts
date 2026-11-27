@@ -12,6 +12,7 @@ import { invalidateBadges } from '../../infrastructure/badge-cache';
 import { BillingPeriod, BusinessError } from '../../domain/entities';
 import { SubscriptionBusinessService } from '../../domain/subscription-service';
 import { applyPeriodPayment, subscriptionTransactions } from '../../infrastructure/billing-transactions';
+import { sendPaymentConfirmation } from '../../infrastructure/whatsapp-notifications';
 import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { validatePaymentMethod } from '../../domain/payment-methods';
@@ -294,6 +295,18 @@ router.post('/:id/pay', async (req: Request, res: Response, next: NextFunction) 
     );
     scheduleStatsRecompute(organizationId);
     invalidateBadges(organizationId);
+
+    // Best-effort: un fallo de WhatsApp no cambia el pago ya registrado.
+    void sendPaymentConfirmation({
+      organizationId,
+      subscriptionId: period.subscriptionId,
+      billingPeriod: payment.billingPeriod,
+      currentPeriod: payment.currentPeriod,
+      previousStatus: payment.previousStatus,
+      subscription: payment.subscription,
+    }).catch((error) => {
+      console.error('[WhatsApp] Error en la confirmación de pago:', error);
+    });
 
     res.json({
       billingPeriod: payment.billingPeriod,

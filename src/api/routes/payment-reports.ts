@@ -15,6 +15,7 @@ import { parseDateOnly, isValidDateString } from '../../domain/business-rules';
 import { validateReportPaymentMethod } from '../../domain/payment-reports';
 import { scheduleStatsRecompute } from '../../infrastructure/stats-service';
 import { invalidateBadges } from '../../infrastructure/badge-cache';
+import { sendPaymentConfirmation } from '../../infrastructure/whatsapp-notifications';
 import { getAuth, requireOrganizationId } from '../middleware/tenant';
 import { QueryFilter } from '../../infrastructure/firestore-repository';
 import { ReviewPaymentReportDto } from '../dto';
@@ -243,6 +244,17 @@ router.post('/:id/review', async (req: Request, res: Response, next: NextFunctio
     );
     scheduleStatsRecompute(organizationId);
     invalidateBadges(organizationId);
+
+    void sendPaymentConfirmation({
+      organizationId,
+      subscriptionId: report.subscriptionId,
+      billingPeriod: payment.billingPeriod,
+      currentPeriod: payment.currentPeriod,
+      previousStatus: payment.previousStatus,
+      subscription: payment.subscription,
+    }).catch((error) => {
+      console.error('[WhatsApp] Error en la confirmación de pago aprobado:', error);
+    });
 
     const [enriched] = await enrichReports([approved], organizationId);
     res.json({

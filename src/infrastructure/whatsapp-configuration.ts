@@ -4,7 +4,13 @@ import {
   OrganizationWhatsAppTemplates,
   WhatsAppMode,
 } from '../domain/entities';
-import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS } from '../domain/whatsapp-templates';
+import {
+  getPortalBaseUrl,
+  isLegacyTemplate,
+  WHATSAPP_CURRENT_TEMPLATE_KEYS,
+  WHATSAPP_NOTIFICATION_CATEGORIES,
+  WHATSAPP_TEMPLATE_CATALOG,
+} from '../domain/whatsapp-templates';
 
 /** Identificador de la cuenta de WhatsApp de la plataforma: no es una organización real. */
 export const PLATFORM_WHATSAPP_ID = '__platform__';
@@ -46,16 +52,24 @@ export function resolveWhatsAppTemplateMode(
  */
 export const REMINDER_DAY_OPTIONS: readonly number[] = [3, 5, 7];
 
-/** Descarta los días guardados antes de que las opciones se limitaran. */
-function withAllowedReminderDays(rules: OrganizationWhatsAppConfig['rules']): OrganizationWhatsAppConfig['rules'] {
+/** Completa las reglas guardadas antes de que existieran las dos nuevas. */
+function normalizeRules(rules: OrganizationWhatsAppConfig['rules']): OrganizationWhatsAppConfig['rules'] {
   const days = (rules.reminderDaysBefore ?? []).filter((day) => REMINDER_DAY_OPTIONS.includes(day));
-  return days.length === rules.reminderDaysBefore?.length ? rules : { ...rules, reminderDaysBefore: days };
+  return {
+    reminderDaysBefore: days,
+    dueDateWarningEnabled: rules.dueDateWarningEnabled ?? true,
+    suspensionNoticeEnabled: rules.suspensionNoticeEnabled ?? true,
+    overdueReminderEnabled: rules.overdueReminderEnabled ?? true,
+    paymentConfirmationEnabled: rules.paymentConfirmationEnabled ?? true,
+  };
 }
 
 export const DEFAULT_WHATSAPP_RULES: OrganizationWhatsAppConfig['rules'] = {
   reminderDaysBefore: [3],
   dueDateWarningEnabled: true,
   suspensionNoticeEnabled: true,
+  overdueReminderEnabled: true,
+  paymentConfirmationEnabled: true,
 };
 
 /**
@@ -84,12 +98,42 @@ export function resolveWhatsAppNotificationConfig(
   ) as OrganizationWhatsAppTemplates;
 
   return {
-    rules: withAllowedReminderDays(saved?.rules ?? DEFAULT_WHATSAPP_RULES),
+    rules: normalizeRules(saved?.rules ?? DEFAULT_WHATSAPP_RULES),
     templates: saved?.templates ?? legacyTemplates,
     ...(saved?.templateModes ? { templateModes: saved.templateModes } : {}),
     ...(saved?.templateRequests ? { templateRequests: saved.templateRequests } : {}),
     ...(saved?.lastTestAt ? { lastTestAt: saved.lastTestAt } : {}),
   };
+}
+
+/** Si la categoría tiene al menos una plantilla activa: V2 (con o sin botón) o la anterior. */
+export function isCategoryTemplateActive(
+  templates: OrganizationWhatsAppTemplates,
+  category: keyof typeof WHATSAPP_NOTIFICATION_CATEGORIES
+): boolean {
+  const definition = WHATSAPP_NOTIFICATION_CATEGORIES[category];
+  return Boolean(
+    templates[definition.buttonKey] ||
+      templates[definition.noButtonKey] ||
+      (definition.legacyKey && templates[definition.legacyKey])
+  );
+}
+
+/** Las plantillas con botón activas necesitan la dirección pública y el slug del negocio. */
+function portalRequirements(
+  organization: Organization,
+  templates: OrganizationWhatsAppTemplates
+): string[] {
+  const missing: string[] = [];
+  const usesButton = WHATSAPP_CURRENT_TEMPLATE_KEYS.some(
+    (key) => !isLegacyTemplate(key) && WHATSAPP_TEMPLATE_CATALOG[key].button && templates[key]
+  );
+  if (!usesButton) return missing;
+  if (!getPortalBaseUrl()) missing.push('Dirección pública del portal (PORTAL_BASE_URL)');
+  if (organization.id !== PLATFORM_WHATSAPP_ID && !organization.slug) {
+    missing.push('Enlace del portal del negocio (slug de la organización)');
+  }
+  return missing;
 }
 
 export function getWhatsAppConfigurationReadiness(
@@ -103,12 +147,16 @@ export function getWhatsAppConfigurationReadiness(
   if (!twilio?.accountSid) missing.push('Account SID de Twilio');
   if (!twilio?.authToken) missing.push('Auth Token de Twilio');
   if (!twilio?.phoneNumber) missing.push('Número de WhatsApp de Twilio');
-  for (const key of WHATSAPP_TEMPLATE_KEYS) {
-    const { label, requiredWhen } = WHATSAPP_TEMPLATE_CATALOG[key];
-    if (requiredWhen?.(config.rules) && !config.templates[key]) {
-      missing.push(`Plantilla de ${label.toLowerCase()}`);
+  for (const [category, definition] of Object.entries(WHATSAPP_NOTIFICATION_CATEGORIES)) {
+    if (
+      definition.legacyKey &&
+      definition.requiredWhen(config.rules) &&
+      !isCategoryTemplateActive(config.templates, category as keyof typeof WHATSAPP_NOTIFICATION_CATEGORIES)
+    ) {
+      missing.push(`Plantilla de ${definition.label.toLowerCase()}`);
     }
   }
+  missing.push(...portalRequirements(organization, config.templates));
 
   return {
     ready: missing.length === 0,

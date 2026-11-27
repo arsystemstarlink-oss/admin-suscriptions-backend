@@ -23,6 +23,10 @@ export interface OrganizationWhatsAppRules {
   reminderDaysBefore: number[];
   dueDateWarningEnabled: boolean;
   suspensionNoticeEnabled: boolean;
+  /** Aviso el primer día en que un período pasa a vencido. Ausente en datos anteriores: true. */
+  overdueReminderEnabled: boolean;
+  /** Confirmación al registrar o aprobar un pago. Ausente en datos anteriores: true. */
+  paymentConfirmationEnabled: boolean;
 }
 
 export type OrganizationWhatsAppTemplates = Partial<Record<WhatsAppTemplateKey, string>>;

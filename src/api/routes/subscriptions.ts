@@ -10,6 +10,7 @@ import { BillingPeriod, BusinessError, Subscription } from '../../domain/entitie
 import { SubscriptionBusinessService, HistoricalPaymentInput } from '../../domain/subscription-service';
 import { applyRadarToSubscription, buildSubscriptionRadarFields } from '../../infrastructure/subscription-radar';
 import { subscriptionTransactions } from '../../infrastructure/billing-transactions';
+import { sendPaymentConfirmation } from '../../infrastructure/whatsapp-notifications';
 import { getExpiringWindow, parseDateOnly, isValidDateString, createId, buildPeriodLabel, buildClientName, buildClientSortName, isValidBillingDay, isValidMaxOverduePeriods } from '../../domain/business-rules';
 import { validatePaymentMethod } from '../../domain/payment-methods';
 import { assertPaidAtNotFuture } from '../../domain/payment-date';
@@ -674,6 +675,17 @@ router.post('/:id/pay-advance', async (req: Request, res: Response, next: NextFu
       return { advancePeriod, updatedSubscription, previousStatus: subscription.status };
     });
     scheduleStatsRecompute(organizationId);
+
+    void sendPaymentConfirmation({
+      organizationId,
+      subscriptionId: req.params.id,
+      billingPeriod: result.advancePeriod,
+      currentPeriod: result.advancePeriod,
+      previousStatus: result.previousStatus,
+      subscription: result.updatedSubscription,
+    }).catch((error) => {
+      console.error('[WhatsApp] Error en la confirmación del adelanto:', error);
+    });
 
     res.json({
       billingPeriod: result.advancePeriod,

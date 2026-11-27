@@ -245,13 +245,36 @@ export class WhatsAppService {
     credentials: TwilioCredentials,
     template: { friendlyName: string; language: string; body: string; samples: Record<string, string> }
   ): Promise<string> {
-    // El SDK envía este objeto tal cual como JSON, así que usa los nombres de la API
-    // de Twilio aunque sus tipos declaren camelCase (`friendlyName`, `twilioText`).
+    return this.createTemplate(credentials, template);
+  }
+
+  /**
+   * Crea el contenido en Twilio. Con botón usa `twilio/call-to-action`; sin botón, texto
+   * simple. Los nombres de campo son los de la API, no los del SDK.
+   */
+  async createTemplate(
+    credentials: TwilioCredentials,
+    template: {
+      friendlyName: string;
+      language: string;
+      body: string;
+      samples: Record<string, string>;
+      button?: { title: string; url: string };
+    }
+  ): Promise<string> {
+    const types = template.button
+      ? {
+          'twilio/call-to-action': {
+            body: template.body,
+            actions: [{ type: 'URL', title: template.button.title, url: template.button.url }],
+          },
+        }
+      : { 'twilio/text': { body: template.body } };
     const payload = {
       friendly_name: template.friendlyName,
       language: template.language,
       variables: template.samples,
-      types: { 'twilio/text': { body: template.body } },
+      types,
     };
     const content = await this.getClient(credentials).content.v1.contents.create(payload as never);
     return content.sid;

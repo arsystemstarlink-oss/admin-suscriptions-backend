@@ -1,6 +1,13 @@
 import { BusinessError, Client, Organization } from '../domain/entities';
 import { resolveWhatsAppMonthlyLimit } from '../domain/business-plan';
-import { WHATSAPP_TEMPLATE_CATALOG, WHATSAPP_TEMPLATE_KEYS, getTemplateText } from '../domain/whatsapp-templates';
+import {
+  getTemplateText,
+  resolveTemplateButtonUrl,
+  sampleTemplateVariable,
+  WHATSAPP_CURRENT_TEMPLATE_KEYS,
+  WHATSAPP_NOTIFICATION_CATEGORIES,
+  WHATSAPP_TEMPLATE_CATALOG,
+} from '../domain/whatsapp-templates';
 import {
   clientRepository,
   organizationRepository,
@@ -9,6 +16,7 @@ import {
   whatsappMessageRepository,
 } from './repositories';
 import {
+  isCategoryTemplateActive,
   PLATFORM_WHATSAPP_ID,
   UNASSIGNED_WHATSAPP_ID,
   resolveWhatsAppMode,
@@ -123,10 +131,17 @@ export function getPlatformModeReadiness(
   if (!resolveTwilioCredentials(platform)) {
     missing.push('El WhatsApp de la plataforma todavía no está disponible');
   } else {
-    for (const key of WHATSAPP_TEMPLATE_KEYS) {
-      const { label, requiredWhen } = WHATSAPP_TEMPLATE_CATALOG[key];
-      if (requiredWhen?.(rules) && !platformTemplates[key]) {
-        missing.push(`El ${label.toLowerCase()} aún no está disponible en la plataforma`);
+    for (const [category, definition] of Object.entries(WHATSAPP_NOTIFICATION_CATEGORIES)) {
+      if (
+        definition.legacyKey &&
+        definition.requiredWhen(rules) &&
+        !isCategoryTemplateActive(
+          platformTemplates,
+          category as keyof typeof WHATSAPP_NOTIFICATION_CATEGORIES
+        )
+      ) {
+        const article = definition.label.toLowerCase().startsWith('confirmación') ? 'La' : 'El';
+        missing.push(`${article} ${definition.label.toLowerCase()} aún no está disponible en la plataforma`);
       }
     }
   }
@@ -144,18 +159,32 @@ export function toPlatformSummary(organization: Organization, platform: Organiza
     available: Boolean(resolveTwilioCredentials(platform)),
     phoneNumber: platform.twilio?.phoneNumber ?? null,
     usage: getPlatformWhatsAppUsage(organization, now),
-    templates: WHATSAPP_TEMPLATE_KEYS.map((key) => {
+    templates: WHATSAPP_CURRENT_TEMPLATE_KEYS.map((key) => {
       const contentSid = config.templates[key] ?? null;
       const request = config.templateRequests?.[key];
       const mode = resolveWhatsAppTemplateMode(platform, key);
       const text = getTemplateText(key, mode);
+      const definition = WHATSAPP_TEMPLATE_CATALOG[key];
+      const buttonIndex = definition.button ? text.variables.indexOf(definition.button.variable) + 1 : undefined;
       return {
         key,
-        label: WHATSAPP_TEMPLATE_CATALOG[key].label,
+        label: definition.label,
         // Solo se conoce el texto aprobado si se solicitó desde la app.
         body: request?.status === 'approved' && request.contentSid === contentSid ? request.body : text.defaultBody,
         variables: toTemplateVariablesResponse(text.variables),
         contentSid,
+        maxBodyLength: definition.maxBodyLength,
+        ...(definition.button && buttonIndex
+          ? {
+              button: {
+                title: definition.button.title,
+                sampleUrl: (resolveTemplateButtonUrl(key) ?? definition.button.urlTemplate).replace(
+                  `{{${buttonIndex}}}`,
+                  sampleTemplateVariable(definition.button.variable)
+                ),
+              },
+            }
+          : {}),
       };
     }),
   };

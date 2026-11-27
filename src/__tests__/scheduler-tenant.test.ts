@@ -880,6 +880,143 @@ describe('runDailyJobForOrganization (aislamiento por organización)', () => {
     );
   });
 
+  it('usa la variante con botón y formatea monto y fecha en las plantillas nuevas', async () => {
+    const orgA = 'org_A';
+    const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_due_v2' };
+    const period: BillingPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_due_v2'),
+      startDate: new Date(Date.UTC(2026, 5, 10)),
+      endDate: new Date(Date.UTC(2026, 6, 10)),
+      status: 'PENDING',
+    };
+    const organization: Organization = {
+      ...makeOrganization(orgA),
+      slug: 'org-a',
+      twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+      whatsappNotifications: {
+        rules: { reminderDaysBefore: [], dueDateWarningEnabled: true, suspensionNoticeEnabled: true },
+        templates: { dueDateWarningV2: 'HX_v2_button' },
+      },
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([]);
+    mockedBillingPeriods.listReminderWindowCandidates.mockResolvedValue([period]);
+    mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([period]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: subA.clientId,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        dni: 'V-12345678',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedSchedulerConfig.updateConfig.mockResolvedValue({
+      id: orgA,
+      enabled: true,
+      cronSchedule: '0 0 * * *',
+      updatedAt: new Date(),
+    });
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+    mockedWhatsApp.sendTemplate.mockResolvedValue('SM_v2');
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(1);
+    expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateName: 'HX_v2_button',
+        variables: {
+          '1': 'Ana López',
+          '2': 'Org org_A',
+          '3': 'KIT-org_A',
+          '4': 'Plan',
+          '5': 'USD\u00A050,00',
+          '6': '10 jul 2026',
+          '7': 'org-a',
+        },
+      }),
+      organization
+    );
+    expect(mockedSubscriptions.updateLastNotification).toHaveBeenCalledWith(
+      subA.id,
+      orgA,
+      expect.objectContaining({ type: 'dueDateWarningV2', status: 'SENT' })
+    );
+  });
+
+  it('envía el recordatorio de deuda vencida una vez y no lo repite al día siguiente', async () => {
+    const orgA = 'org_A';
+    const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_new_overdue', maxOverduePeriods: 3 };
+    const period: BillingPeriod = {
+      ...makePeriod(orgA, subA.id, 'period_new_overdue'),
+      startDate: new Date(Date.UTC(2026, 5, 10)),
+      endDate: new Date(Date.UTC(2026, 6, 9)),
+      status: 'PENDING',
+    };
+    const organization: Organization = {
+      ...makeOrganization(orgA),
+      slug: 'org-a',
+      twilio: { authToken: 'token_org_A', phoneNumber: '+584111111111' },
+      whatsappNotifications: {
+        rules: {
+          reminderDaysBefore: [],
+          dueDateWarningEnabled: false,
+          suspensionNoticeEnabled: false,
+          overdueReminderEnabled: true,
+          paymentConfirmationEnabled: true,
+        },
+        templates: { overdueReminder: 'HX_overdue_v2' },
+      },
+    };
+
+    mockedOrganizations.getById.mockResolvedValue(organization);
+    mockedBillingPeriods.listPendingOverdueCandidates.mockResolvedValue([period]);
+    mockedBillingPeriods.listBySubscriptionIds.mockResolvedValue([period]);
+    mockedSubscriptions.listByIds.mockResolvedValue([subA]);
+    mockedClients.listByOrganization.mockResolvedValue([
+      {
+        id: subA.clientId,
+        organizationId: orgA,
+        firstName: 'Ana',
+        lastName: 'López',
+        phone: '+584123456789',
+        dni: 'V-12345678',
+        createdAt: new Date(),
+      },
+    ]);
+    mockedPlans.listByOrganization.mockResolvedValue([makePlan(orgA)]);
+    mockedSchedulerConfig.updateConfig.mockResolvedValue({
+      id: orgA,
+      enabled: true,
+      cronSchedule: '0 0 * * *',
+      updatedAt: new Date(),
+    });
+    mockedPush.sendBroadcastToOrganization.mockResolvedValue(0);
+    mockedWhatsApp.sendTemplate.mockResolvedValue('SM_overdue');
+
+    const result = await runDailyJobForOrganization(orgA);
+
+    expect(result.notifications).toBe(1);
+    expect(mockedWhatsApp.sendTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateName: 'HX_overdue_v2',
+        variables: expect.objectContaining({ '4': 'USD\u00A050,00', '5': '9 jul 2026' }),
+      }),
+      organization
+    );
+    expect(mockedSubscriptions.updateLastNotification).toHaveBeenCalledWith(
+      subA.id,
+      orgA,
+      expect.objectContaining({ type: 'overdueReminder' })
+    );
+  });
+
   describe('con el WhatsApp de la plataforma', () => {
     const orgA = 'org_A';
     const subA = { ...makeSubscription(orgA), currentPeriodId: 'period_due_today' };

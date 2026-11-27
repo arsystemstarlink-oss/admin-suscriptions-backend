@@ -7,13 +7,24 @@ import {
   WhatsAppMode,
   WhatsAppTemplateRequestStatus,
 } from '../domain/entities';
+import { normalizeDni } from '../domain/business-rules';
 import {
   buildTemplateSamples,
   buildTemplateVariables,
   describeTemplateVariable,
+  formatWhatsAppCurrency,
+  formatWhatsAppDate,
+  getTemplateButton,
   getTemplateText,
+  isBodyTemplateVariable,
+  isLegacyTemplate,
   isWhatsAppTemplateKey,
+  resolveTemplateButtonUrl,
+  resolveTemplateCategory,
   sampleTemplateVariable,
+  templateVariableScope,
+  WHATSAPP_CURRENT_TEMPLATE_KEYS,
+  WHATSAPP_NOTIFICATION_CATEGORIES,
   WHATSAPP_TEMPLATE_CATALOG,
   WHATSAPP_TEMPLATE_KEYS,
   WhatsAppTemplateContext,
@@ -40,7 +51,6 @@ import {
   whatsappService,
 } from './whatsapp-service';
 
-const MAX_TEMPLATE_BODY_LENGTH = 1024;
 const TWILIO_AUTH_ERROR_CODE = 20003;
 
 const TWILIO_ERROR_DESCRIPTIONS: Record<number, string> = {
@@ -88,17 +98,20 @@ export function validateTemplateBody(
   mode: WhatsAppMode = 'own'
 ): string {
   const definition = getTemplateText(key, mode);
+  const maxBodyLength = WHATSAPP_TEMPLATE_CATALOG[key].maxBodyLength;
   const fail = (message: string): BusinessError => new BusinessError('INVALID_WHATSAPP_TEMPLATE', message);
 
   if (typeof rawBody !== 'string' || !rawBody.trim()) {
     throw fail('Escribe el texto de la plantilla.');
   }
   const body = rawBody.trim();
-  if (body.length > MAX_TEMPLATE_BODY_LENGTH) {
-    throw fail(`El texto no puede superar ${MAX_TEMPLATE_BODY_LENGTH} caracteres.`);
+  if (body.length > maxBodyLength) {
+    throw fail(`El texto no puede superar ${maxBodyLength} caracteres.`);
   }
 
-  const expected = definition.variables.map((_, index) => `{{${index + 1}}}`);
+  // La variable del botón no se escribe en el cuerpo: Twilio la resuelve en la URL.
+  const bodyVariables = definition.variables.filter(isBodyTemplateVariable);
+  const expected = bodyVariables.map((variable) => `{{${definition.variables.indexOf(variable) + 1}}}`);
   const found = new Set(body.match(/\{\{[^{}]*\}\}/g) ?? []);
   const missing = expected.filter((variable) => !found.has(variable));
   if (missing.length > 0) {
@@ -147,14 +160,29 @@ export async function submitTemplateForApproval(
 
   const now = new Date();
   const name = buildTemplateName(key, now);
+  const button = getTemplateButton(key);
+  const buttonUrl = button ? resolveTemplateButtonUrl(key) : undefined;
+  if (button && !buttonUrl) {
+    throw new BusinessError(
+      'WHATSAPP_PORTAL_NOT_CONFIGURED',
+      'Configura PORTAL_BASE_URL con la dirección pública https del portal para pedir plantillas con botón.'
+    );
+  }
   let contentSid: string;
   try {
-    contentSid = await whatsappService.createTextTemplate(credentials, {
+    const template = {
       friendlyName: name,
       language: 'es',
       body,
       samples: buildTemplateSamples(key, mode),
-    });
+    };
+    contentSid =
+      button && buttonUrl
+        ? await whatsappService.createTemplate(credentials, {
+            ...template,
+            button: { title: button.title, url: buttonUrl },
+          })
+        : await whatsappService.createTextTemplate(credentials, template);
   } catch (error) {
     rethrowAsCredentialsError(error);
     throw error;
@@ -201,7 +229,7 @@ export async function submitMissingTemplates(organization: Organization): Promis
   const config = resolveWhatsAppNotificationConfig(organization);
   const result: SubmitMissingTemplatesResult = { organization, submitted: [], failed: [] };
 
-  for (const key of WHATSAPP_TEMPLATE_KEYS) {
+  for (const key of WHATSAPP_CURRENT_TEMPLATE_KEYS) {
     if (config.templates[key] || config.templateRequests?.[key]) continue;
     try {
       result.organization = await submitTemplateForApproval(result.organization, key, undefined);
@@ -291,16 +319,19 @@ export function toTemplateVariablesResponse(variables: readonly WhatsAppTemplate
     placeholder: `{{${index + 1}}}`,
     description: describeTemplateVariable(variable),
     sample: sampleTemplateVariable(variable),
+    scope: templateVariableScope(variable),
   }));
 }
 
 export function toTemplatesResponse(organization: Organization) {
   const config = resolveWhatsAppNotificationConfig(organization);
   return {
-    templates: WHATSAPP_TEMPLATE_KEYS.map((key) => {
+    templates: WHATSAPP_CURRENT_TEMPLATE_KEYS.map((key) => {
       const definition = WHATSAPP_TEMPLATE_CATALOG[key];
       const templateMode = resolveWhatsAppTemplateMode(organization, key);
       const text = getTemplateText(key, templateMode);
+      const button = definition.button;
+      const buttonIndex = button ? text.variables.indexOf(button.variable) + 1 : undefined;
       return {
         key,
         label: definition.label,
@@ -310,6 +341,18 @@ export function toTemplatesResponse(organization: Organization) {
         required: definition.requiredWhen?.(config.rules) ?? false,
         activeContentSid: config.templates[key] ?? null,
         request: config.templateRequests?.[key] ?? null,
+        maxBodyLength: definition.maxBodyLength,
+        ...(button && buttonIndex
+          ? {
+              button: {
+                title: button.title,
+                sampleUrl: (resolveTemplateButtonUrl(key) ?? button.urlTemplate).replace(
+                  `{{${buttonIndex}}}`,
+                  sampleTemplateVariable(button.variable)
+                ),
+              },
+            }
+          : {}),
       };
     }),
   };
@@ -440,7 +483,10 @@ export function pickTestTemplate(
   mode: WhatsAppMode = 'own',
   organizationName?: string
 ): { key: OrganizationWhatsAppTemplateKey; contentSid: string; variables: Record<string, string> } {
-  const key = WHATSAPP_TEMPLATE_KEYS.find((candidate) => config.templates[candidate]);
+  // Primero las plantillas actuales; las anteriores solo si ninguna de las nuevas está activa.
+  const key =
+    WHATSAPP_CURRENT_TEMPLATE_KEYS.find((candidate) => config.templates[candidate]) ??
+    WHATSAPP_TEMPLATE_KEYS.find((candidate) => config.templates[candidate]);
   if (!key) {
     throw new BusinessError(
       'WHATSAPP_TEMPLATE_REQUIRED',
@@ -462,23 +508,51 @@ export function pickTestTemplate(
 export function resolveTemplateForSend(
   organization: Organization,
   key: unknown,
-  context: unknown
+  context: unknown,
+  clientDni?: string
 ): { contentSid: string; variables: Record<string, string> } {
   if (!isWhatsAppTemplateKey(key)) {
     throw new BusinessError('INVALID_DATA', 'La plantilla indicada no existe.');
   }
-  const definition = WHATSAPP_TEMPLATE_CATALOG[key];
-  const contentSid = resolveWhatsAppNotificationConfig(organization).templates[key];
+  let resolvedKey = key;
+  const config = resolveWhatsAppNotificationConfig(organization);
+  if (!isLegacyTemplate(key)) {
+    const category = resolveTemplateCategory(key);
+    const noButtonKey = WHATSAPP_NOTIFICATION_CATEGORIES[category].noButtonKey;
+    const canUseButton = Boolean(normalizeDni(clientDni ?? '')) && Boolean(organization.slug);
+    if (!canUseButton && config.templates[noButtonKey]) resolvedKey = noButtonKey;
+  }
+  const definition = WHATSAPP_TEMPLATE_CATALOG[resolvedKey];
+  const contentSid = config.templates[resolvedKey];
   if (!contentSid) {
     throw new BusinessError(
       'WHATSAPP_TEMPLATE_REQUIRED',
       `La plantilla "${definition.label}" todavía no está activa. Actívala en Configuración › WhatsApp.`
     );
   }
-  const mode = resolveWhatsAppTemplateMode(organization, key);
-  // El nombre del negocio lo pone el servidor: quien envía no puede hacerse pasar por otro.
-  const provided = { ...((context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>), organizationName: organization.name };
-  const missing = getTemplateText(key, mode).variables.filter((variable) => {
+  const mode = resolveWhatsAppTemplateMode(organization, resolvedKey);
+  // El negocio y el portal los pone el servidor: quien envía no puede hacerse pasar por otro.
+  const raw = (context ?? {}) as Partial<Record<WhatsAppTemplateVariable, unknown>>;
+  const provided: WhatsAppTemplateContext = {};
+  for (const variable of getTemplateText(resolvedKey, mode).variables) {
+    const value = raw[variable];
+    if (typeof value === 'string') provided[variable] = value;
+    else if (typeof value === 'number' && Number.isFinite(value)) provided[variable] = String(value);
+  }
+  provided.organizationName = organization.name;
+  provided.portalSlug = organization.slug;
+
+  // El servidor formatea fechas y montos; el cliente envía valores crudos.
+  if (!isLegacyTemplate(resolvedKey)) {
+    if (provided.amount) {
+      const amount = Number(provided.amount);
+      if (Number.isFinite(amount)) provided.amount = formatWhatsAppCurrency(amount);
+    }
+    if (provided.dueDate) provided.dueDate = formatWhatsAppDate(provided.dueDate);
+    if (provided.coveredUntil) provided.coveredUntil = formatWhatsAppDate(provided.coveredUntil);
+  }
+
+  const missing = getTemplateText(resolvedKey, mode).variables.filter((variable) => {
     const value = provided[variable];
     return typeof value !== 'string' || !value.trim();
   });
@@ -488,7 +562,7 @@ export function resolveTemplateForSend(
       `Faltan datos para la plantilla "${definition.label}": ${missing.map(describeTemplateVariable).join(', ')}.`
     );
   }
-  return { contentSid, variables: buildTemplateVariables(key, provided as WhatsAppTemplateContext, mode) };
+  return { contentSid, variables: buildTemplateVariables(resolvedKey, provided, mode) };
 }
 
 export interface WhatsAppFailureGroup {

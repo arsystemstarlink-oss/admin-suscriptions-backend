@@ -14,7 +14,7 @@ import {
   jobLockRepository,
 } from '../infrastructure/repositories';
 import { SubscriptionBusinessService } from '../domain/subscription-service';
-import { isDateAfter, isPeriodPastDue, areSameDay, createId } from '../domain/business-rules';
+import { isDateAfter, isPeriodPastDue, areSameDay, createId, normalizeDni } from '../domain/business-rules';
 import { whatsappService, resolveTwilioCredentials, extractTwilioError } from './whatsapp-service';
 import { pushService } from './push-service';
 import { applyRadarToSubscription, hasRadarChanged } from './subscription-radar';
@@ -45,7 +45,15 @@ import {
   toSendingOrganization,
 } from './whatsapp-platform';
 import { syncPendingTemplateRequests } from './whatsapp-setup';
-import { buildTemplateVariables, WhatsAppTemplateKey } from '../domain/whatsapp-templates';
+import {
+  buildTemplateVariables,
+  formatWhatsAppCurrency,
+  formatWhatsAppDate,
+  isLegacyTemplate,
+  resolveActiveTemplateKey,
+  WhatsAppNotificationCategory,
+  WhatsAppTemplateKey,
+} from '../domain/whatsapp-templates';
 import { canOrganizationWrite, resolveEffectiveClientLimit, validatePlanConfiguration } from '../domain/business-plan';
 
 const businessService = new SubscriptionBusinessService();
@@ -84,11 +92,14 @@ export interface NotificationFailure {
 }
 
 export interface PendingNotification {
-  client: { id: string; firstName: string; lastName: string; phone: string };
+  client: { id: string; firstName: string; lastName: string; phone: string; dni?: string };
   subscription: { id: string; kitNumber: string };
   period: BillingPeriod;
+  /** Clave real que se envía, ya resuelta entre la variante con botón, sin botón o la anterior. */
   type: NotificationType;
-  dedupBody?: string;
+  templateName: string;
+  variables: Record<string, string>;
+  dedupBody: string;
 }
 
 export interface DailyJobResult {
@@ -463,9 +474,21 @@ async function runDailyJobForOrganizationUnlocked(
 
       const client = clients.find((c) => c.id === subscription.clientId);
       if (client && notificationConfig?.rules.suspensionNoticeEnabled !== false) {
-        change.notifications.push(
-          buildPendingNotification('suspensionNotice', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
+        const debt = summarizeOverdue(subscriptionPeriods);
+        const notification = buildPendingNotification(
+          'suspensionNotice',
+          client,
+          subscription,
+          currentPeriod,
+          {
+            planName: plansById.get(subscription.planId)?.name,
+            amount: debt.amount,
+            dueDate: debt.oldest,
+          },
+          notificationConfig,
+          sendingOrganization
         );
+        if (notification) change.notifications.push(notification);
       }
 
       change.events.push(
@@ -476,6 +499,32 @@ async function runDailyJobForOrganizationUnlocked(
     }
 
     if (finalSubscription.status === 'ACTIVE') {
+      // Aviso único al primer día vencido, solo si la suscripción sigue activa. Si se suspende
+      // en esta misma ejecución no se envía: ese caso lo cubre el aviso de suspensión.
+      if (
+        change.overduePeriodIds.length > 0 &&
+        notificationConfig?.rules.overdueReminderEnabled !== false
+      ) {
+        const client = clients.find((c) => c.id === subscription.clientId);
+        if (client) {
+          const debt = summarizeOverdue(subscriptionPeriods);
+          const notification = buildPendingNotification(
+            'overdueReminder',
+            client,
+            subscription,
+            currentPeriod,
+            {
+              planName: plansById.get(subscription.planId)?.name,
+              amount: debt.amount,
+              dueDate: debt.oldest,
+            },
+            notificationConfig,
+            sendingOrganization
+          );
+          if (notification) change.notifications.push(notification);
+        }
+      }
+
       // Un PENDING sigue vigente durante su día de corte: el ciclo avanza cuando pasa a
       // OVERDUE. El período de activación nunca vence, así que avanza al terminar ese día.
       const isActivationPeriod = activationPeriodIds.has(currentPeriod.id);
@@ -540,17 +589,41 @@ async function runDailyJobForOrganizationUnlocked(
         const daysUntilDue = Math.round((endDateNormalized.getTime() - nowNormalized.getTime()) / (1000 * 60 * 60 * 24));
         const client = clients.find((c) => c.id === subscription.clientId);
         if (client) {
+          const planName = plansById.get(subscription.planId)?.name;
           if (notificationConfig?.rules.reminderDaysBefore.includes(daysUntilDue)) {
-            change.notifications.push(
-              buildPendingNotification('reminder', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
+            const notification = buildPendingNotification(
+              'reminder',
+              client,
+              subscription,
+              currentPeriod,
+              {
+                planName,
+                amount: currentPeriod.amount,
+                dueDate: currentPeriod.endDate,
+                daysBefore: daysUntilDue,
+              },
+              notificationConfig,
+              sendingOrganization
             );
+            if (notification) change.notifications.push(notification);
           } else if (
             daysUntilDue === 0 &&
             notificationConfig?.rules.dueDateWarningEnabled
           ) {
-            change.notifications.push(
-              buildPendingNotification('dueDateWarning', client, subscription, currentPeriod, notificationConfig, sendingOrganization)
+            const notification = buildPendingNotification(
+              'dueDateWarning',
+              client,
+              subscription,
+              currentPeriod,
+              {
+                planName,
+                amount: currentPeriod.amount,
+                dueDate: currentPeriod.endDate,
+              },
+              notificationConfig,
+              sendingOrganization
             );
+            if (notification) change.notifications.push(notification);
           }
         }
       }
@@ -758,20 +831,63 @@ export function stopScheduler(): void {
 
 type NotificationType = WhatsAppTemplateKey;
 
+interface NotificationClient {
+  id: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  dni?: string;
+}
+
+interface NotificationOptions {
+  planName?: string;
+  amount?: number;
+  dueDate: Date;
+  daysBefore?: number;
+}
+
+/** Total vencido y fecha del período vencido más antiguo. */
+function summarizeOverdue(periods: BillingPeriod[]): { amount: number; oldest: Date } {
+  const overdue = periods.filter((period) => period.status === 'OVERDUE');
+  if (overdue.length === 0) {
+    return { amount: 0, oldest: new Date(0) };
+  }
+  const oldest = overdue.reduce(
+    (current, period) => (period.endDate < current ? period.endDate : current),
+    overdue[0].endDate
+  );
+  return {
+    amount: overdue.reduce((total, period) => total + period.amount, 0),
+    oldest,
+  };
+}
+
 function buildNotificationVariables(
   type: NotificationType,
-  client: { firstName: string; lastName: string },
+  client: NotificationClient,
   subscription: { kitNumber: string },
-  period: { endDate: Date },
+  options: NotificationOptions,
   organization?: Organization
 ): Record<string, string> {
+  const legacy = isLegacyTemplate(type);
   return buildTemplateVariables(
     type,
     {
       clientName: `${client.firstName} ${client.lastName}`,
       organizationName: organization?.name,
       serviceCode: subscription.kitNumber,
-      dueDate: period.endDate.toISOString().split('T')[0],
+      planName: options.planName,
+      amount:
+        options.amount === undefined
+          ? undefined
+          : legacy
+            ? String(options.amount)
+            : formatWhatsAppCurrency(options.amount),
+      dueDate: legacy
+        ? options.dueDate.toISOString().split('T')[0]
+        : formatWhatsAppDate(options.dueDate),
+      daysBefore: options.daysBefore === undefined ? undefined : String(options.daysBefore),
+      portalSlug: organization?.slug,
     },
     organization ? resolveWhatsAppTemplateMode(organization, type) : 'own'
   );
@@ -785,13 +901,11 @@ function buildNotificationMessageBody(
 }
 
 async function sendWhatsAppNotification(
-  client: { id: string; firstName: string; lastName: string; phone: string },
-  subscription: { id: string; kitNumber: string },
-  period: { endDate: Date },
-  type: NotificationType,
+  notification: PendingNotification,
   organizationId: string,
   organization?: Organization
 ): Promise<{ sent: true; message: WhatsAppMessage } | { sent: false; error: NotificationFailure }> {
+  const { client, subscription, type } = notification;
   const clientFullName = `${client.firstName} ${client.lastName}`;
 
   const failure = (errorMessage: string, errorCode?: number): { sent: false; error: NotificationFailure } => ({
@@ -807,26 +921,15 @@ async function sendWhatsAppNotification(
     },
   });
 
-  const notificationConfig = organization
-    ? resolveWhatsAppNotificationConfig(organization)
-    : undefined;
-  const templateName = notificationConfig?.templates[type];
-
-  if (!templateName) {
-    return failure(`Plantilla no configurada para la notificación ${type} en la configuración de WhatsApp de la organización.`);
-  }
-
   if (!resolveTwilioCredentials(organization)) {
     return failure('La organización no tiene credenciales de Twilio configuradas o están deshabilitadas.');
   }
 
-  const variables = buildNotificationVariables(type, client, subscription, period, organization);
-
   try {
     const messageSid = await whatsappService.sendTemplate({
       to: client.phone,
-      templateName,
-      variables,
+      templateName: notification.templateName,
+      variables: notification.variables,
     }, organization);
 
     const whatsappMsg: WhatsAppMessage = {
@@ -838,8 +941,8 @@ async function sendWhatsAppNotification(
       phone: client.phone,
       direction: 'OUTBOUND',
       messageSid,
-      body: buildNotificationMessageBody(templateName, variables),
-      templateName,
+      body: notification.dedupBody,
+      templateName: notification.templateName,
       status: 'SENT',
       createdAt: new Date(),
     };
@@ -857,10 +960,7 @@ async function sendWhatsAppNotification(
 }
 
 async function sendNotificationWithThrottle(
-  client: { id: string; firstName: string; lastName: string; phone: string },
-  subscription: { id: string; kitNumber: string },
-  period: { endDate: Date },
-  type: NotificationType,
+  notification: PendingNotification,
   organizationId: string,
   organization?: Organization
 ): Promise<{ sent: true; message: WhatsAppMessage } | { sent: false; error: NotificationFailure }> {
@@ -872,25 +972,39 @@ async function sendNotificationWithThrottle(
     await throttleByAccount(accountSid);
   }
 
-  return sendWhatsAppNotification(client, subscription, period, type, organizationId, organization);
+  return sendWhatsAppNotification(notification, organizationId, organization);
 }
 
 function buildPendingNotification(
-  type: NotificationType,
-  client: { id: string; firstName: string; lastName: string; phone: string },
+  category: WhatsAppNotificationCategory,
+  client: NotificationClient,
   subscription: { id: string; kitNumber: string },
   period: BillingPeriod,
+  options: NotificationOptions,
   notificationConfig?: OrganizationWhatsAppConfig,
   organization?: Organization
-): PendingNotification {
-  const templateName = notificationConfig?.templates[type];
-  const dedupBody = templateName
-    ? buildNotificationMessageBody(
-        templateName,
-        buildNotificationVariables(type, client, subscription, period, organization)
-      )
-    : undefined;
-  return { client, subscription, period, type, dedupBody };
+): PendingNotification | undefined {
+  if (!notificationConfig) return undefined;
+  const hasClientDni = Boolean(normalizeDni(client.dni ?? '')) && Boolean(organization?.slug);
+  const type = resolveActiveTemplateKey(notificationConfig, category, hasClientDni);
+  if (!type) {
+    console.log(
+      `[WhatsApp] Sin plantilla activa para ${category}; se omite el aviso de ${client.firstName} ${client.lastName}.`
+    );
+    return undefined;
+  }
+  const templateName = notificationConfig.templates[type];
+  if (!templateName) return undefined;
+  const variables = buildNotificationVariables(type, client, subscription, options, organization);
+  return {
+    client,
+    subscription,
+    period,
+    type,
+    templateName,
+    variables,
+    dedupBody: buildNotificationMessageBody(templateName, variables),
+  };
 }
 
 async function saveNotificationState(
@@ -959,10 +1073,8 @@ async function deliverPendingNotifications(
   let remainingMessages = organization ? getRemainingPlatformMessages(organization) : Number.POSITIVE_INFINITY;
 
   for (const notification of notifications) {
-    const dedupKey = notification.dedupBody
-      ? `${notification.client.phone}:${notification.dedupBody}`
-      : undefined;
-    const existingMessage = dedupKey ? sentNotifications.get(dedupKey) : undefined;
+    const dedupKey = `${notification.client.phone}:${notification.dedupBody}`;
+    const existingMessage = sentNotifications.get(dedupKey);
     if (existingMessage) {
       console.log(
         `[WhatsApp] Notificación ${notification.type} ya enviada hoy a ${notification.client.phone}. Skipping.`
@@ -996,22 +1108,13 @@ async function deliverPendingNotifications(
       continue;
     }
 
-    const result = await sendNotificationWithThrottle(
-      notification.client,
-      notification.subscription,
-      notification.period,
-      notification.type,
-      organizationId,
-      organization
-    );
+    const result = await sendNotificationWithThrottle(notification, organizationId, organization);
 
     if (result.sent) {
       sentCount++;
       remainingMessages--;
       if (organization) await recordPlatformSend(organization);
-      if (notification.dedupBody) {
-        sentNotifications.set(`${notification.client.phone}:${notification.dedupBody}`, result.message);
-      }
+      sentNotifications.set(dedupKey, result.message);
       sentMessages.push(result.message);
       // Se guarda de inmediato: Twilio puede avisar un fallo segundos después del envío
       // y el callback de estado necesita encontrar el mensaje.

@@ -19,6 +19,8 @@ describe('WhatsApp configuration by organization', () => {
       reminderDaysBefore: [3],
       dueDateWarningEnabled: true,
       suspensionNoticeEnabled: true,
+      overdueReminderEnabled: true,
+      paymentConfirmationEnabled: true,
     });
     expect(getWhatsAppConfigurationReadiness(organization, config).usingLegacyTemplates).toBe(true);
   });
@@ -38,11 +40,15 @@ describe('WhatsApp configuration by organization', () => {
           reminderDaysBefore: [5, 3],
           dueDateWarningEnabled: true,
           suspensionNoticeEnabled: true,
+          overdueReminderEnabled: true,
+          paymentConfirmationEnabled: true,
         },
         templates: {
           reminder: 'HX_reminder',
           dueDateWarning: 'HX_due',
           suspensionNotice: 'HX_suspension',
+          overdueReminderNoButton: 'HX_overdue',
+          paymentConfirmationNoButton: 'HX_payment',
         },
       },
       createdAt: new Date(),
@@ -70,6 +76,8 @@ describe('WhatsApp configuration by organization', () => {
           reminderDaysBefore: [],
           dueDateWarningEnabled: false,
           suspensionNoticeEnabled: false,
+          overdueReminderEnabled: false,
+          paymentConfirmationEnabled: false,
         },
         templates: {},
       },

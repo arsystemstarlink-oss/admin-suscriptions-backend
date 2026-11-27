@@ -20,6 +20,8 @@ import {
   buildTemplateSamples,
   buildTemplateVariables,
   getTemplateText,
+  WHATSAPP_CURRENT_TEMPLATE_KEYS,
+  WHATSAPP_LEGACY_TEMPLATE_KEYS,
   WHATSAPP_TEMPLATE_CATALOG,
   WHATSAPP_TEMPLATE_KEYS,
 } from '../domain/whatsapp-templates';
@@ -102,11 +104,16 @@ describe('catálogo de plantillas', () => {
     expect(buildTemplateVariables('suspensionNotice', context)).toEqual({ '1': 'Ana', '2': 'KIT1' });
   });
 
-  it.each(WHATSAPP_TEMPLATE_KEYS)('%s de la plataforma termina con la firma automática', (key) => {
+  it.each(WHATSAPP_LEGACY_TEMPLATE_KEYS)('%s de la plataforma conserva su firma aprobada', (key) => {
     const body = getTemplateText(key, 'platform').defaultBody;
 
     expect(body).toContain('\n\nA|R SYSTEM\nNotificación automática. Por favor, no respondas a este mensaje.');
     expect(() => validateTemplateBody(key, body, 'platform')).not.toThrow();
+  });
+
+  it.each(WHATSAPP_CURRENT_TEMPLATE_KEYS)('%s usa el mismo texto en todas las cuentas', (key) => {
+    expect(getTemplateText(key, 'platform').defaultBody).toBe(getTemplateText(key, 'own').defaultBody);
+    expect(getTemplateText(key, 'platform').defaultBody).not.toContain('A|R SYSTEM');
   });
 });
 

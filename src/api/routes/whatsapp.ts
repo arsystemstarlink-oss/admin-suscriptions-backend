@@ -97,8 +97,22 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
     }
     assertPlatformQuotaAvailable(organization);
 
+    const matchedClients = await clientRepository.listByFields(
+      [
+        ['organizationId', organizationId],
+        ['phone', to],
+      ],
+      1
+    );
+    const client = matchedClients[0];
+
     if (templateKey !== undefined) {
-      ({ contentSid: templateName, variables } = resolveTemplateForSend(organization, templateKey, context));
+      ({ contentSid: templateName, variables } = resolveTemplateForSend(
+        organization,
+        templateKey,
+        context,
+        client?.dni
+      ));
     }
 
     let messageSid: string;
@@ -113,15 +127,6 @@ router.post('/send', authenticateAdmin, requireWritablePlan, async (req: Request
       messageSid = await whatsappService.sendMessage({ to, body }, organization);
     }
     await recordPlatformSend(organization);
-
-    const matchedClients = await clientRepository.listByFields(
-      [
-        ['organizationId', organizationId],
-        ['phone', to],
-      ],
-      1
-    );
-    const client = matchedClients[0];
 
     const whatsappMsg: WhatsAppMessage = {
       id: createId(),

@@ -51,7 +51,7 @@ import {
   syncPendingTemplateRequests,
   toTemplatesResponse,
 } from '../../infrastructure/whatsapp-setup';
-import { isWhatsAppTemplateKey, WHATSAPP_TEMPLATE_KEYS } from '../../domain/whatsapp-templates';
+import { isWhatsAppTemplateKey, getPortalBaseUrl, WHATSAPP_TEMPLATE_KEYS } from '../../domain/whatsapp-templates';
 import { authenticateAdmin } from '../middleware/auth';
 import { requireWritablePlan } from '../middleware/organization-plan-access';
 import { requireOrganizationId } from '../middleware/tenant';
@@ -184,17 +184,18 @@ function validateRulesPatch(
     updated.reminderDaysBefore = [...days].sort((a, b) => b - a);
   }
 
-  for (const key of ['dueDateWarningEnabled', 'suspensionNoticeEnabled'] as const) {
+  for (const key of [
+    'dueDateWarningEnabled',
+    'suspensionNoticeEnabled',
+    'overdueReminderEnabled',
+    'paymentConfirmationEnabled',
+  ] as const) {
     if (!(key in input)) continue;
     const enabled = input[key];
     if (typeof enabled !== 'boolean') {
       throw new BusinessError('INVALID_DATA', `"rules.${key}" debe ser booleano.`);
     }
-    if (key === 'dueDateWarningEnabled') {
-      updated.dueDateWarningEnabled = enabled;
-    } else {
-      updated.suspensionNoticeEnabled = enabled;
-    }
+    updated[key] = enabled;
   }
   return updated;
 }
@@ -221,6 +222,11 @@ async function toConfigResponse(organization: Organization) {
     templates: config.templates,
     readiness,
     webhooks: getWhatsAppWebhookUrls(),
+    // El botón al portal se construye con estos dos datos; si faltan, el frontend lo avisa.
+    portal: {
+      slug: organization.slug ?? null,
+      url: getPortalBaseUrl() ?? null,
+    },
     lastTestAt: config.lastTestAt ?? null,
   };
 }
